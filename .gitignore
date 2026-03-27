@@ -4,3 +4,5 @@
 /vcpkg-buildtrees
 /vcpkg-downloads
 /vcpkg-packages
+__pycache__/
+*.pyc
