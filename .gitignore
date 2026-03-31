@@ -6,3 +6,5 @@
 /vcpkg-packages
 __pycache__/
 *.pyc
+tmp/
+*.png

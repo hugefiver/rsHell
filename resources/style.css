@@ -1,143 +1,300 @@
+/* ShellX — Fluent UI Dark Theme (Compact) */
+
+/* ── Window & Root ───────────────────────────────── */
+window {
+    background: #202020;
+    color: #ffffff;
+}
+
 .shellx-root {
-  background: linear-gradient(180deg, rgba(245, 247, 252, 0.96), rgba(232, 237, 245, 0.96));
+    background: #202020;
 }
 
+/* ── HeaderBar / Toolbar ─────────────────────────── */
+headerbar {
+    background: #2d2d2d;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.0837);
+    box-shadow: none;
+    min-height: 32px;
+    padding: 0 4px;
+}
+
+headerbar button {
+    min-height: 24px;
+    padding: 1px 8px;
+    border-radius: 4px;
+    font-size: 11px;
+    color: #d6d6d6;
+    background: transparent;
+    border: 1px solid transparent;
+}
+
+headerbar button:hover {
+    background: rgba(255, 255, 255, 0.0605);
+    color: #ffffff;
+}
+
+headerbar button:active {
+    background: rgba(255, 255, 255, 0.0419);
+    color: #d6d6d6;
+}
+
+.connect-button {
+    background: #60cdff;
+    color: #003e5c;
+    font-weight: 600;
+    border: 1px solid transparent;
+}
+
+.connect-button:hover {
+    background: #98dcff;
+    color: #003e5c;
+}
+
+.connect-button:active {
+    background: #4ac2f8;
+    color: #003e5c;
+}
+
+.toast-label {
+    color: #adadad;
+    font-size: 10px;
+    padding: 0 4px;
+}
+
+/* ── Sidebar ─────────────────────────────────────── */
 .sidebar {
-  background: rgba(255, 255, 255, 0.78);
-  border-right: 1px solid rgba(120, 120, 140, 0.14);
-  padding: 18px;
+    background: #272727;
+    border-right: 1px solid rgba(255, 255, 255, 0.0837);
+    padding: 0;
 }
 
-.sidebar-title,
-.section-title {
-  color: #1f2430;
-  font-size: 13px;
-  font-weight: 700;
-  letter-spacing: 0.02em;
+.sidebar-header {
+    color: #adadad;
+    font-size: 9px;
+    font-weight: 600;
+    letter-spacing: 0.08em;
+    padding: 6px 8px 2px 8px;
 }
 
-.card,
-.terminal-card,
-.header-card,
-.status-card {
-  background: rgba(255, 255, 255, 0.72);
-  border-radius: 14px;
-  border: 1px solid rgba(120, 120, 140, 0.12);
-  box-shadow: 0 10px 30px rgba(15, 23, 42, 0.05);
+.sidebar-toolbar {
+    padding: 2px 4px;
 }
 
-.header-card,
-.status-card,
-.terminal-card {
-  padding: 16px;
+.sidebar-toolbar button {
+    min-height: 20px;
+    min-width: 20px;
+    padding: 1px 6px;
+    border-radius: 3px;
+    font-size: 10px;
+    color: #adadad;
+    background: transparent;
 }
 
-.terminal-card {
-  background: rgba(16, 18, 24, 0.94);
-  border-color: rgba(255, 255, 255, 0.06);
+.sidebar-toolbar button:hover {
+    background: rgba(255, 255, 255, 0.0605);
+    color: #d6d6d6;
 }
 
-.terminal-title,
-.connection-name {
-  color: #1e293b;
-  font-size: 14px;
-  font-weight: 700;
+/* ── Connection List ─────────────────────────────── */
+.connection-list {
+    background: transparent;
 }
 
-.connection-meta,
-.caption {
-  color: #5b6475;
-  font-size: 12px;
+.connection-list row {
+    padding: 0 2px;
+    border-radius: 3px;
 }
 
-.status-indicator {
-  border-radius: 999px;
-  padding: 2px 10px;
-  font-size: 11px;
-  font-weight: 700;
-  background: rgba(0, 120, 212, 0.12);
-  color: #005fb8;
-}
-
-.status-indicator.connected {
-  background: rgba(24, 138, 79, 0.16);
-  color: #0f6c3b;
-}
-
-.status-indicator.error {
-  background: rgba(196, 43, 28, 0.12);
-  color: #b42318;
-}
-
-.terminal-view {
-  background: rgba(12, 12, 15, 1);
-  color: #e5e7eb;
-  padding: 18px;
-  font-family: "Cascadia Mono", "JetBrains Mono", monospace;
-  font-size: 12px;
-}
-
-.terminal-toolbar {
-  padding: 4px 0 0 0;
-}
-
-.primary-pill {
-  background: #0078d4;
-  color: white;
-  border-radius: 999px;
-  padding: 4px 12px;
-}
-
-.muted-button {
-  border-radius: 10px;
-}
-
-.pill-button {
-  border-radius: 999px;
-  padding: 6px 14px;
-}
-
-.status-chip {
-  background: rgba(0, 120, 212, 0.1);
-  color: #005fb8;
-  border-radius: 999px;
-  padding: 4px 10px;
+.connection-list row:selected {
+    background: rgba(96, 205, 255, 0.12);
 }
 
 .connection-row {
-  padding: 12px;
-  border-radius: 12px;
-  background: rgba(255, 255, 255, 0.64);
+    padding: 3px 8px;
+    border-radius: 3px;
 }
 
-.connection-row:selected {
-  background: rgba(0, 120, 212, 0.1);
+.connection-name {
+    color: #e0e0e0;
+    font-size: 11px;
+    font-weight: 600;
 }
 
-.connection-list,
-.tab-strip {
-  background: transparent;
+.connection-meta {
+    color: #adadad;
+    font-size: 9px;
 }
 
-.tab-row {
-  padding: 10px 12px;
-  border-radius: 12px;
-  background: rgba(255, 255, 255, 0.06);
+.folder-header {
+    color: #adadad;
+    font-size: 9px;
+    font-weight: 600;
+    letter-spacing: 0.04em;
+    padding: 6px 8px 1px 8px;
 }
 
-.metric-value {
-  color: #111827;
-  font-size: 22px;
-  font-weight: 800;
-}
-
+/* ── Editor Dialog ───────────────────────────────── */
 .editor-group {
-  padding: 16px;
+    padding: 8px 12px;
+}
+
+.editor-group label {
+    color: #adadad;
+    font-size: 10px;
+    margin-top: 2px;
 }
 
 .editor-group entry,
-.editor-group spinbutton,
-.editor-group dropdown,
-.editor-group textview {
-  border-radius: 10px;
+.editor-group spinbutton {
+    min-height: 26px;
+    border-radius: 4px;
+    font-size: 12px;
+    background: #1f1f1f;
+    color: #ffffff;
+    border: 1px solid rgba(255, 255, 255, 0.0837);
+}
+
+.editor-group entry:focus,
+.editor-group spinbutton:focus {
+    border-color: #60cdff;
+}
+
+.editor-dialog {
+    background: #2d2d2d;
+}
+
+/* ── Tab Bar ─────────────────────────────────────── */
+.tab-bar {
+    background: #1f1f1f;
+    padding: 1px 2px 0 2px;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.0419);
+}
+
+.tab-button {
+    background: transparent;
+    color: #adadad;
+    border-radius: 3px 3px 0 0;
+    padding: 2px 8px;
+    font-size: 11px;
+    border: none;
+    min-height: 24px;
+    margin-right: 1px;
+}
+
+.tab-button:hover {
+    background: rgba(255, 255, 255, 0.0605);
+    color: #d6d6d6;
+}
+
+.tab-button.active-tab {
+    background: #2d2d2d;
+    color: #ffffff;
+    font-weight: 600;
+}
+
+.tab-add {
+    background: transparent;
+    color: #adadad;
+    border-radius: 3px 3px 0 0;
+    padding: 2px 8px;
+    min-height: 24px;
+    border: none;
+}
+
+.tab-add:hover {
+    background: rgba(255, 255, 255, 0.0605);
+    color: #d6d6d6;
+}
+
+.tab-close {
+    background: transparent;
+    color: #6e6e6e;
+    border: none;
+    border-radius: 3px;
+    padding: 0 3px;
+    min-height: 16px;
+    min-width: 16px;
+    font-size: 9px;
+}
+
+.tab-close:hover {
+    background: rgba(255, 255, 255, 0.12);
+    color: #ff99a4;
+}
+
+/* ── Terminal View ───────────────────────────────── */
+.terminal-view {
+    background: #1a1a1a;
+    color: #cccccc;
+    padding: 2px 4px;
+    font-family: "Cascadia Mono", "JetBrains Mono", "Consolas", monospace;
+    font-size: 13px;
+}
+
+.terminal-container {
+    background: #1a1a1a;
+}
+
+/* ── Status Bar ──────────────────────────────────── */
+.status-bar {
+    background: #0078d4;
+    padding: 0 8px;
+    min-height: 18px;
+}
+
+.status-label {
+    color: #ffffff;
+    font-size: 10px;
+    font-weight: 500;
+}
+
+/* ── Paned Separators ────────────────────────────── */
+paned > separator {
+    background: rgba(255, 255, 255, 0.0837);
+    min-width: 3px;
+    min-height: 3px;
+}
+
+paned > separator:hover {
+    background: rgba(96, 205, 255, 0.5);
+}
+
+/* ── Scrollbar ───────────────────────────────────── */
+scrollbar {
+    background: transparent;
+}
+
+scrollbar slider {
+    background: rgba(255, 255, 255, 0.10);
+    border-radius: 999px;
+    min-width: 4px;
+    min-height: 4px;
+}
+
+scrollbar slider:hover {
+    background: rgba(255, 255, 255, 0.20);
+}
+
+/* ── Global Entry/SpinButton ─────────────────────── */
+entry, spinbutton, passwordentry {
+    background: #1f1f1f;
+    color: #ffffff;
+    border: 1px solid rgba(255, 255, 255, 0.0837);
+    border-radius: 4px;
+}
+
+entry:focus, spinbutton:focus, passwordentry:focus-within {
+    border-color: #60cdff;
+}
+
+/* ── CheckButton ─────────────────────────────────── */
+checkbutton {
+    color: #d6d6d6;
+    font-size: 11px;
+}
+
+/* ── Placeholder ─────────────────────────────────── */
+.dim-label {
+    color: #6e6e6e;
 }
