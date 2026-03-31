@@ -199,7 +199,7 @@ impl TerminalSessionHandle {
         F: FnOnce(&Terminal) -> R,
     {
         let terminal = self.terminal.lock().ok()?;
-        Some(f(&*terminal))
+        Some(f(&terminal))
     }
 }
 
@@ -407,14 +407,14 @@ fn start_session_threads(
                             pixel_width: cols.saturating_mul(8),
                             pixel_height: rows.saturating_mul(16),
                         };
-                        if let Ok(master) = cmd_master.lock() {
-                            if let Err(error) = master.resize(size) {
-                                set_status(
-                                    &cmd_state,
-                                    SessionPhase::Attention,
-                                    format!("Resize request failed: {error}"),
-                                );
-                            }
+                        if let Ok(master) = cmd_master.lock()
+                            && let Err(error) = master.resize(size)
+                        {
+                            set_status(
+                                &cmd_state,
+                                SessionPhase::Attention,
+                                format!("Resize request failed: {error}"),
+                            );
                         }
                     }
                 }
@@ -668,14 +668,14 @@ impl Write for SharedWriter {
     fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
         self.master
             .lock()
-            .map_err(|_| std::io::Error::new(std::io::ErrorKind::Other, "PTY lock poisoned"))?
+            .map_err(|_| std::io::Error::other("PTY lock poisoned"))?
             .write(buf)
     }
 
     fn flush(&mut self) -> std::io::Result<()> {
         self.master
             .lock()
-            .map_err(|_| std::io::Error::new(std::io::ErrorKind::Other, "PTY lock poisoned"))?
+            .map_err(|_| std::io::Error::other("PTY lock poisoned"))?
             .flush()
     }
 }

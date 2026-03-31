@@ -269,17 +269,17 @@ impl ShellXApp {
     }
 
     fn status_text(&self) -> String {
-        if let Some(group) = self.selected_group() {
-            if let Some(pane) = group.panes.get(group.active_pane) {
-                let snap = pane.handle.snapshot();
-                return format!(
-                    "{}  ·  {}  ·  {}  ·  Panes: {}",
-                    snap.phase.label(),
-                    pane.name,
-                    snap.status_line,
-                    group.panes.len()
-                );
-            }
+        if let Some(group) = self.selected_group()
+            && let Some(pane) = group.panes.get(group.active_pane)
+        {
+            let snap = pane.handle.snapshot();
+            return format!(
+                "{}  ·  {}  ·  {}  ·  Panes: {}",
+                snap.phase.label(),
+                pane.name,
+                snap.status_line,
+                group.panes.len()
+            );
         }
         format!(
             "Sessions: {}  ·  Live: {}",
@@ -316,19 +316,19 @@ impl ShellXApp {
                 self.draft_dirty.set(true);
             }
             AppMsg::DeleteSelected => {
-                if let Some(id) = self.selected_connection_id {
-                    if let Some(removed) = self.store.remove(id) {
-                        self.toast = format!("Deleted {}", removed.name);
-                        self.selected_connection_id = self.store.connections.first().map(|p| p.id);
-                        if self.selected_connection_id.is_some() {
-                            self.load_draft_from_selection();
-                        } else {
-                            self.draft = ConnectionDraft::empty();
-                        }
-                        self.save_store();
-                        self.connections_dirty.set(true);
-                        self.draft_dirty.set(true);
+                if let Some(id) = self.selected_connection_id
+                    && let Some(removed) = self.store.remove(id)
+                {
+                    self.toast = format!("Deleted {}", removed.name);
+                    self.selected_connection_id = self.store.connections.first().map(|p| p.id);
+                    if self.selected_connection_id.is_some() {
+                        self.load_draft_from_selection();
+                    } else {
+                        self.draft = ConnectionDraft::empty();
                     }
+                    self.save_store();
+                    self.connections_dirty.set(true);
+                    self.draft_dirty.set(true);
                 }
             }
             AppMsg::ToggleSidebar => {
@@ -524,26 +524,25 @@ impl ShellXApp {
                 } else {
                     false
                 };
-                if should_remove_group {
-                    if let Some(gi) = self.selected_group {
-                        self.update_impl(AppMsg::CloseGroup(gi), sender);
-                    }
+                if should_remove_group
+                    && let Some(gi) = self.selected_group
+                {
+                    self.update_impl(AppMsg::CloseGroup(gi), sender);
                 }
             }
             AppMsg::FocusPane(index) => {
-                if let Some(group) = self.selected_group_mut() {
-                    if index < group.panes.len() {
-                        group.active_pane = index;
-                    }
+                if let Some(group) = self.selected_group_mut()
+                    && index < group.panes.len()
+                {
+                    group.active_pane = index;
                 }
             }
             AppMsg::PaneKeyPress(pane_index, key, modifiers) => {
-                if let Some(bytes) = key_to_bytes(key, modifiers) {
-                    if let Some(group) = self.selected_group() {
-                        if let Some(pane) = group.panes.get(pane_index) {
-                            let _ = pane.handle.send_bytes(bytes);
-                        }
-                    }
+                if let Some(bytes) = key_to_bytes(key, modifiers)
+                    && let Some(group) = self.selected_group()
+                    && let Some(pane) = group.panes.get(pane_index)
+                {
+                    let _ = pane.handle.send_bytes(bytes);
                 }
             }
             AppMsg::RefreshSessions => {
@@ -599,7 +598,7 @@ impl ShellXApp {
             .connect_btn
             .set_sensitive(self.selected_connection_id.is_some());
         let has_group = self.selected_group.is_some();
-        let can_split = self.selected_group().map_or(false, |g| g.can_split());
+        let can_split = self.selected_group().is_some_and(|g| g.can_split());
         widgets.split_h_btn.set_sensitive(has_group && can_split);
         widgets.split_v_btn.set_sensitive(has_group && can_split);
         widgets.close_pane_btn.set_sensitive(has_group);
@@ -804,12 +803,12 @@ fn key_to_bytes(key: gdk::Key, modifiers: gdk::ModifierType) -> Option<Vec<u8>> 
     let ctrl = modifiers.contains(gdk::ModifierType::CONTROL_MASK);
     let alt = modifiers.contains(gdk::ModifierType::ALT_MASK);
 
-    if ctrl {
-        if let Some(ch) = key.to_unicode() {
-            let ch = ch.to_ascii_lowercase();
-            if ch.is_ascii_lowercase() {
-                return Some(vec![(ch as u8) - b'a' + 1]);
-            }
+    if ctrl
+        && let Some(ch) = key.to_unicode()
+    {
+        let ch = ch.to_ascii_lowercase();
+        if ch.is_ascii_lowercase() {
+            return Some(vec![(ch as u8) - b'a' + 1]);
         }
     }
 
@@ -979,12 +978,11 @@ impl SimpleComponent for ShellXApp {
     type Widgets = AppWidgets;
 
     fn init_root() -> Self::Root {
-        let w = gtk::Window::builder()
+        gtk::Window::builder()
             .title("ShellX")
             .default_width(1280)
             .default_height(800)
-            .build();
-        w
+            .build()
     }
 
     fn init(
@@ -1453,23 +1451,22 @@ impl SimpleComponent for ShellXApp {
         {
             let s = sender.clone();
             connection_list.connect_row_selected(move |_, row| {
-                if let Some(row) = row {
-                    if let Some(id) = row.tooltip_text() {
-                        if let Ok(id) = Uuid::parse_str(id.as_str()) {
-                            s.input(AppMsg::SelectConnection(id));
-                        }
-                    }
+                if let Some(row) = row
+                    && let Some(id) = row.tooltip_text()
+                    && let Ok(id) = Uuid::parse_str(id.as_str())
+                {
+                    s.input(AppMsg::SelectConnection(id));
                 }
             });
         }
         {
             let s = sender.clone();
             connection_list.connect_row_activated(move |_, row| {
-                if let Some(id) = row.tooltip_text() {
-                    if let Ok(id) = Uuid::parse_str(id.as_str()) {
-                        s.input(AppMsg::SelectConnection(id));
-                        s.input(AppMsg::LaunchSelected);
-                    }
+                if let Some(id) = row.tooltip_text()
+                    && let Ok(id) = Uuid::parse_str(id.as_str())
+                {
+                    s.input(AppMsg::SelectConnection(id));
+                    s.input(AppMsg::LaunchSelected);
                 }
             });
         }

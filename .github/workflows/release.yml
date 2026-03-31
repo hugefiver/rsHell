@@ -14,6 +14,9 @@ permissions:
 
 env:
   CARGO_TERM_COLOR: always
+  GVSBUILD_VERSION: '2025.3.0'
+  VCPKG_OPENSSL_VERSION: '3.4.1'
+  VCPKG_LIBSSH2_VERSION: '1.11.1'
 
 jobs:
   build:
@@ -24,7 +27,7 @@ jobs:
       matrix:
         include:
           - name: linux-x86_64
-            os: ubuntu-latest
+            os: ubuntu-24.04
             target: x86_64-unknown-linux-gnu
           - name: macos-arm64
             os: macos-latest
@@ -40,16 +43,29 @@ jobs:
         with:
           targets: ${{ matrix.target }}
 
-      - name: Install dependencies (Linux)
+      - name: Cache apt packages
         if: runner.os == 'Linux'
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y libgtk-4-dev libssh2-1-dev libssl-dev pkg-config
+        uses: awalsh128/cache-apt-pkgs-action@latest
+        with:
+          packages: libgtk-4-dev libssh2-1-dev libssl-dev pkg-config
+          version: 1.0
+
+      - name: Cache Homebrew packages
+        if: runner.os == 'macOS'
+        uses: actions/cache@v4
+        id: cache-brew
+        with:
+          path: |
+            ~/Library/Caches/Homebrew
+            /opt/homebrew/Cellar/gtk4
+            /opt/homebrew/Cellar/libssh2
+            /opt/homebrew/Cellar/openssl@3
+          key: brew-gtk4-libssh2-openssl-${{ runner.os }}-v1
 
       - name: Install dependencies (macOS)
         if: runner.os == 'macOS'
         run: |
-          brew install gtk4 libssh2 openssl pkg-config
+          brew install gtk4 libssh2 openssl pkg-config || true
           echo "PKG_CONFIG_PATH=$(brew --prefix openssl)/lib/pkgconfig:$(brew --prefix libssh2)/lib/pkgconfig${PKG_CONFIG_PATH:+:$PKG_CONFIG_PATH}" >> $GITHUB_ENV
 
       - uses: actions/setup-python@v5
@@ -63,23 +79,24 @@ jobs:
         uses: actions/cache@v4
         with:
           path: C:\gtk-build
-          key: gvsbuild-gtk4-v1
+          key: gvsbuild-${{ env.GVSBUILD_VERSION }}-gtk4
 
       - name: Build GTK4 via gvsbuild
         if: runner.os == 'Windows' && steps.cache-gtk.outputs.cache-hit != 'true'
         run: |
-          pip install gvsbuild
+          pip install gvsbuild==${{ env.GVSBUILD_VERSION }}
           gvsbuild build gtk4
 
       - name: Cache vcpkg packages
         if: runner.os == 'Windows'
+        id: cache-vcpkg
         uses: actions/cache@v4
         with:
           path: C:\vcpkg\installed
-          key: vcpkg-x64-static-md-v1
+          key: vcpkg-openssl${{ env.VCPKG_OPENSSL_VERSION }}-libssh2${{ env.VCPKG_LIBSSH2_VERSION }}-x64-static-md
 
       - name: Install OpenSSL and libssh2 (Windows)
-        if: runner.os == 'Windows'
+        if: runner.os == 'Windows' && steps.cache-vcpkg.outputs.cache-hit != 'true'
         run: vcpkg install openssl:x64-windows-static-md libssh2:x64-windows-static-md
 
       - name: Setup Windows environment
