@@ -75,7 +75,7 @@ impl TerminalGroup {
     }
 }
 
-pub struct ShellXApp {
+pub struct RshellApp {
     repository: ConnectionRepository,
     store: ConnectionStore,
     selected_connection_id: Option<Uuid>,
@@ -224,7 +224,7 @@ pub struct AppWidgets {
     toast_label: gtk::Label,
 }
 
-impl ShellXApp {
+impl RshellApp {
     fn selected_profile(&self) -> Option<&ConnectionProfile> {
         self.selected_connection_id
             .and_then(|id| self.store.connection(id))
@@ -289,7 +289,7 @@ impl ShellXApp {
     }
 }
 
-impl ShellXApp {
+impl RshellApp {
     fn update_impl(&mut self, message: AppMsg, sender: &ComponentSender<Self>) {
         match message {
             AppMsg::SelectConnection(id) => {
@@ -865,7 +865,7 @@ fn scroll_wrap(child: &gtk::TextView) -> gtk::ScrolledWindow {
         .build()
 }
 
-fn build_pane_view(index: usize, sender: &ComponentSender<ShellXApp>) -> gtk::TextView {
+fn build_pane_view(index: usize, sender: &ComponentSender<RshellApp>) -> gtk::TextView {
     let tv = gtk::TextView::new();
     tv.set_editable(false);
     tv.set_cursor_visible(true);
@@ -898,7 +898,7 @@ fn build_pane_view(index: usize, sender: &ComponentSender<ShellXApp>) -> gtk::Te
 fn rebuild_terminal_panes(
     container: &gtk::Box,
     group: &TerminalGroup,
-    sender: &ComponentSender<ShellXApp>,
+    sender: &ComponentSender<RshellApp>,
 ) -> Vec<gtk::TextView> {
     while let Some(child) = container.first_child() {
         container.remove(&child);
@@ -970,7 +970,7 @@ fn rebuild_terminal_panes(
     views
 }
 
-impl SimpleComponent for ShellXApp {
+impl SimpleComponent for RshellApp {
     type Init = ();
     type Input = AppMsg;
     type Output = ();
@@ -979,7 +979,7 @@ impl SimpleComponent for ShellXApp {
 
     fn init_root() -> Self::Root {
         gtk::Window::builder()
-            .title("ShellX")
+            .title("rsHell")
             .default_width(1280)
             .default_height(800)
             .build()
@@ -1007,7 +1007,7 @@ impl SimpleComponent for ShellXApp {
             .map(|p| ConnectionDraft::from_profile(&store, p))
             .unwrap_or_else(ConnectionDraft::empty);
 
-        let mut model = ShellXApp {
+        let mut model = RshellApp {
             repository,
             store,
             selected_connection_id,
@@ -1049,17 +1049,17 @@ impl SimpleComponent for ShellXApp {
             .hexpand(true)
             .vexpand(true)
             .build();
-        root_vbox.add_css_class("shellx-root");
+        root_vbox.add_css_class("rshell-root");
 
         let header_bar = gtk::HeaderBar::new();
-        header_bar.add_css_class("shellx-toolbar");
+        header_bar.add_css_class("rshell-toolbar");
 
         let menu = gio::Menu::new();
         menu.append(Some("Toggle Sidebar"), Some("win.toggle-sidebar"));
         menu.append(Some("New Session"), Some("win.new-session"));
         menu.append(Some("New Local Tab"), Some("win.new-local-tab"));
         let section2 = gio::Menu::new();
-        section2.append(Some("About ShellX"), Some("win.about"));
+        section2.append(Some("About rsHell"), Some("win.about"));
         menu.append_section(None, &section2);
 
         let menu_btn = gtk::MenuButton::new();
@@ -1097,7 +1097,7 @@ impl SimpleComponent for ShellXApp {
             let win_ref = window.clone();
             action_about.connect_activate(move |_, _| {
                 let about = gtk::AboutDialog::builder()
-                    .program_name("ShellX")
+                    .program_name("rsHell")
                     .version("0.1.0")
                     .comments("Cross-platform SSH Terminal Manager")
                     .transient_for(&win_ref)

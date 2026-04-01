@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <gresources>
-  <gresource prefix="/io/github/hugefiver/shellx">
+  <gresource prefix="/io/github/hugefiver/rshell">
     <file>style.css</file>
   </gresource>
 </gresources>

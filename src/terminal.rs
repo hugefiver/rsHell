@@ -204,7 +204,7 @@ impl TerminalSessionHandle {
 }
 
 pub fn find_local_shell() -> PathBuf {
-    if let Ok(shell) = std::env::var("SHELLX_SHELL") {
+    if let Ok(shell) = std::env::var("RSHELL_SHELL") {
         return PathBuf::from(shell);
     }
 
@@ -304,8 +304,8 @@ fn start_session_threads(
 
     let terminal = Terminal::new(
         terminal_size(initial_size),
-        Arc::new(ShellXTerminalConfig { scrollback: 6_000 }),
-        "ShellX",
+        Arc::new(RshellTerminalConfig { scrollback: 6_000 }),
+        "rsHell",
         env!("CARGO_PKG_VERSION"),
         Box::new(terminal_writer),
     );
@@ -645,11 +645,11 @@ fn pump_wezterm_events(
 }
 
 #[derive(Debug)]
-struct ShellXTerminalConfig {
+struct RshellTerminalConfig {
     scrollback: usize,
 }
 
-impl TerminalConfiguration for ShellXTerminalConfig {
+impl TerminalConfiguration for RshellTerminalConfig {
     fn scrollback_size(&self) -> usize {
         self.scrollback
     }

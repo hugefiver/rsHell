@@ -1,4 +1,4 @@
-/* ShellX — Fluent UI Dark Theme (Compact) */
+/* rsHell — Fluent UI Dark Theme (Compact) */
 
 /* ── Window & Root ───────────────────────────────── */
 window {
@@ -6,7 +6,7 @@ window {
     color: #ffffff;
 }
 
-.shellx-root {
+.rshell-root {
     background: #202020;
 }
 

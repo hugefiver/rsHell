@@ -1,9 +1,9 @@
 use relm4::RelmApp;
-use shellx::app::ShellXApp;
+use rshell::app::RshellApp;
 
 fn main() {
     suppress_gio_warnings();
-    RelmApp::new("io.github.hugefiver.shellx").run::<ShellXApp>(());
+    RelmApp::new("io.github.hugefiver.rshell").run::<RshellApp>(());
 }
 
 fn suppress_gio_warnings() {

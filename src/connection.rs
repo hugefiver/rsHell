@@ -308,7 +308,7 @@ fn default_repository_path() -> PathBuf {
         .or_else(dirs::data_local_dir)
         .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
 
-    base.join("shellx").join("connections.json")
+    base.join("rshell").join("connections.json")
 }
 
 const fn default_ssh_port() -> u16 {
@@ -325,7 +325,7 @@ mod tests {
 
     #[test]
     fn repository_roundtrip_preserves_connections() {
-        let path = std::env::temp_dir().join(format!("shellx-test-{}.json", Uuid::new_v4()));
+        let path = std::env::temp_dir().join(format!("rshell-test-{}.json", Uuid::new_v4()));
         let repository = ConnectionRepository::new(&path);
 
         let mut store = ConnectionStore::default();
