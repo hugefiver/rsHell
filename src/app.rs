@@ -1241,9 +1241,13 @@ impl SimpleComponent for RshellApp {
         let backend_wezterm = gtk::CheckButton::with_label("WezTerm");
         backend_wezterm.set_group(Some(&backend_system));
 
-        let grid = gtk::Grid::builder()
+        let conn_grid = gtk::Grid::builder()
             .row_spacing(3)
             .column_spacing(6)
+            .margin_top(6)
+            .margin_bottom(6)
+            .margin_start(6)
+            .margin_end(6)
             .build();
 
         let mut row = 0;
@@ -1254,49 +1258,52 @@ impl SimpleComponent for RshellApp {
             let lbl = gtk::Label::new(Some(label_text));
             lbl.set_halign(gtk::Align::End);
             lbl.set_valign(gtk::Align::Center);
-            grid.attach(&lbl, 0, row, 1, 1);
-            grid.attach(widget, 1, row, col_span, 1);
+            conn_grid.attach(&lbl, 0, row, 1, 1);
+            conn_grid.attach(widget, 1, row, col_span, 1);
             row += 1;
         }
 
         let sep1 = gtk::Separator::new(gtk::Orientation::Horizontal);
         sep1.set_margin_top(2);
         sep1.set_margin_bottom(2);
-        grid.attach(&sep1, 0, row, 4, 1);
+        conn_grid.attach(&sep1, 0, row, 4, 1);
         row += 1;
 
         let lbl_host = gtk::Label::new(Some("Host"));
         lbl_host.set_halign(gtk::Align::End);
         lbl_host.set_valign(gtk::Align::Center);
-        grid.attach(&lbl_host, 0, row, 1, 1);
-        grid.attach(&draft_host, 1, row, 1, 1);
+        conn_grid.attach(&lbl_host, 0, row, 1, 1);
+        conn_grid.attach(&draft_host, 1, row, 1, 1);
         let lbl_port = gtk::Label::new(Some("Port"));
         lbl_port.set_halign(gtk::Align::End);
         lbl_port.set_valign(gtk::Align::Center);
-        grid.attach(&lbl_port, 2, row, 1, 1);
-        grid.attach(&draft_port, 3, row, 1, 1);
+        conn_grid.attach(&lbl_port, 2, row, 1, 1);
+        conn_grid.attach(&draft_port, 3, row, 1, 1);
         row += 1;
 
         for (label_text, widget) in [
             ("User", draft_user.upcast_ref::<gtk::Widget>()),
             ("Password", draft_password.upcast_ref::<gtk::Widget>()),
             ("Key file", draft_identity.upcast_ref::<gtk::Widget>()),
-            ("Command", draft_command.upcast_ref::<gtk::Widget>()),
         ] {
             let lbl = gtk::Label::new(Some(label_text));
             lbl.set_halign(gtk::Align::End);
             lbl.set_valign(gtk::Align::Center);
-            grid.attach(&lbl, 0, row, 1, 1);
-            grid.attach(widget, 1, row, 3, 1);
+            conn_grid.attach(&lbl, 0, row, 1, 1);
+            conn_grid.attach(widget, 1, row, 3, 1);
             row += 1;
         }
 
-        let sep2 = gtk::Separator::new(gtk::Orientation::Horizontal);
-        sep2.set_margin_top(2);
-        sep2.set_margin_bottom(2);
-        grid.attach(&sep2, 0, row, 4, 1);
-        row += 1;
+        let adv_grid = gtk::Grid::builder()
+            .row_spacing(3)
+            .column_spacing(6)
+            .margin_top(6)
+            .margin_bottom(6)
+            .margin_start(6)
+            .margin_end(6)
+            .build();
 
+        row = 0;
         let backend_box = gtk::Box::builder()
             .orientation(gtk::Orientation::Horizontal)
             .spacing(8)
@@ -1306,20 +1313,31 @@ impl SimpleComponent for RshellApp {
         let lbl_backend = gtk::Label::new(Some("Backend"));
         lbl_backend.set_halign(gtk::Align::End);
         lbl_backend.set_valign(gtk::Align::Center);
-        grid.attach(&lbl_backend, 0, row, 1, 1);
-        grid.attach(&backend_box, 1, row, 3, 1);
+        adv_grid.attach(&lbl_backend, 0, row, 1, 1);
+        adv_grid.attach(&backend_box, 1, row, 3, 1);
         row += 1;
 
-        grid.attach(&accept_new_host, 1, row, 3, 1);
+        adv_grid.attach(&accept_new_host, 1, row, 3, 1);
+        row += 1;
+
+        let lbl_command = gtk::Label::new(Some("Command"));
+        lbl_command.set_halign(gtk::Align::End);
+        lbl_command.set_valign(gtk::Align::Center);
+        adv_grid.attach(&lbl_command, 0, row, 1, 1);
+        adv_grid.attach(&draft_command, 1, row, 3, 1);
         row += 1;
 
         let lbl_notes = gtk::Label::new(Some("Notes"));
         lbl_notes.set_halign(gtk::Align::End);
         lbl_notes.set_valign(gtk::Align::Start);
-        grid.attach(&lbl_notes, 0, row, 1, 1);
-        grid.attach(&note_scroll, 1, row, 3, 1);
+        adv_grid.attach(&lbl_notes, 0, row, 1, 1);
+        adv_grid.attach(&note_scroll, 1, row, 3, 1);
 
-        editor.append(&grid);
+        let editor_notebook = gtk::Notebook::new();
+        editor_notebook.set_tab_pos(gtk::PositionType::Top);
+        editor_notebook.append_page(&conn_grid, Some(&gtk::Label::new(Some("Connection"))));
+        editor_notebook.append_page(&adv_grid, Some(&gtk::Label::new(Some("Advanced"))));
+        editor.append(&editor_notebook);
 
         let save_draft_btn = gtk::Button::with_label("Save");
         save_draft_btn.add_css_class("connect-button");
