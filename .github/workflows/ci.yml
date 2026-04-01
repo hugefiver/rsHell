@@ -65,6 +65,7 @@ jobs:
         with:
           path: C:\gtk-build
           key: gvsbuild-${{ env.GVSBUILD_VERSION }}-gtk4
+          save-always: true
 
       - name: Build GTK4 via gvsbuild
         if: runner.os == 'Windows' && steps.cache-gtk.outputs.cache-hit != 'true'
@@ -79,6 +80,7 @@ jobs:
         with:
           path: C:\vcpkg\installed
           key: vcpkg-openssl${{ env.VCPKG_OPENSSL_VERSION }}-libssh2${{ env.VCPKG_LIBSSH2_VERSION }}-x64-static-md
+          save-always: true
 
       - name: Install OpenSSL and libssh2 (Windows)
         if: runner.os == 'Windows' && steps.cache-vcpkg.outputs.cache-hit != 'true'
