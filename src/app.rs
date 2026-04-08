@@ -492,6 +492,7 @@ pub struct RshellApp {
 #[derive(Debug)]
 pub enum AppMsg {
     SelectConnection(Uuid),
+    DeselectConnection,
     NewConnection,
     SaveDraft,
     DeleteSelected,
@@ -734,6 +735,11 @@ impl RshellApp {
             AppMsg::SelectConnection(id) => {
                 self.selected_connection_id = Some(id);
                 self.load_draft_from_selection();
+                self.draft_dirty.set(true);
+            }
+            AppMsg::DeselectConnection => {
+                self.selected_connection_id = None;
+                self.draft = ConnectionDraft::empty();
                 self.draft_dirty.set(true);
             }
             AppMsg::NewConnection => {
@@ -1216,10 +1222,14 @@ impl RshellApp {
             );
 
             for (folder, connections) in grouped {
-                let header = gtk::Label::new(Some(&folder));
-                header.set_halign(gtk::Align::Start);
-                header.add_css_class("folder-header");
-                widgets.connection_list.append(&header);
+                let header_label = gtk::Label::new(Some(&folder));
+                header_label.set_halign(gtk::Align::Start);
+                header_label.add_css_class("folder-header");
+                let header_row = gtk::ListBoxRow::new();
+                header_row.set_child(Some(&header_label));
+                header_row.set_selectable(false);
+                header_row.set_activatable(false);
+                widgets.connection_list.append(&header_row);
 
                 for conn in connections {
                     let row = gtk::ListBoxRow::new();
@@ -1786,41 +1796,60 @@ fn draw_terminal(
     }
 
     if cursor_vis == CursorVisibility::Visible && cursor_y < rows {
-        let cx = cursor_x as f64 * cell_w;
-        let cy = cursor_y as f64 * cell_h;
+        let is_blinking = matches!(
+            cursor_shape,
+            CursorShape::Default
+                | CursorShape::BlinkingBlock
+                | CursorShape::BlinkingUnderline
+                | CursorShape::BlinkingBar
+        );
+        let blink_visible = if is_blinking {
+            let epoch_ms = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_millis();
+            (epoch_ms / 530) % 2 == 0
+        } else {
+            true
+        };
 
-        match cursor_shape {
-            CursorShape::BlinkingBlock | CursorShape::SteadyBlock | CursorShape::Default => {
-                cr.set_source_rgba(
-                    cursor_bg_color.0 as f64,
-                    cursor_bg_color.1 as f64,
-                    cursor_bg_color.2 as f64,
-                    0.7,
-                );
-                cr.rectangle(cx, cy, cell_w, cell_h);
-                let _ = cr.fill();
-            }
-            CursorShape::BlinkingUnderline | CursorShape::SteadyUnderline => {
-                cr.set_source_rgb(
-                    cursor_bg_color.0 as f64,
-                    cursor_bg_color.1 as f64,
-                    cursor_bg_color.2 as f64,
-                );
-                cr.set_line_width(2.0);
-                cr.move_to(cx, cy + cell_h - 1.0);
-                cr.line_to(cx + cell_w, cy + cell_h - 1.0);
-                let _ = cr.stroke();
-            }
-            CursorShape::BlinkingBar | CursorShape::SteadyBar => {
-                cr.set_source_rgb(
-                    cursor_bg_color.0 as f64,
-                    cursor_bg_color.1 as f64,
-                    cursor_bg_color.2 as f64,
-                );
-                cr.set_line_width(2.0);
-                cr.move_to(cx, cy);
-                cr.line_to(cx, cy + cell_h);
-                let _ = cr.stroke();
+        if blink_visible {
+            let cx = cursor_x as f64 * cell_w;
+            let cy = cursor_y as f64 * cell_h;
+
+            match cursor_shape {
+                CursorShape::BlinkingBlock | CursorShape::SteadyBlock | CursorShape::Default => {
+                    cr.set_source_rgba(
+                        cursor_bg_color.0 as f64,
+                        cursor_bg_color.1 as f64,
+                        cursor_bg_color.2 as f64,
+                        0.7,
+                    );
+                    cr.rectangle(cx, cy, cell_w, cell_h);
+                    let _ = cr.fill();
+                }
+                CursorShape::BlinkingUnderline | CursorShape::SteadyUnderline => {
+                    cr.set_source_rgb(
+                        cursor_bg_color.0 as f64,
+                        cursor_bg_color.1 as f64,
+                        cursor_bg_color.2 as f64,
+                    );
+                    cr.set_line_width(2.0);
+                    cr.move_to(cx, cy + cell_h - 1.0);
+                    cr.line_to(cx + cell_w, cy + cell_h - 1.0);
+                    let _ = cr.stroke();
+                }
+                CursorShape::BlinkingBar | CursorShape::SteadyBar => {
+                    cr.set_source_rgb(
+                        cursor_bg_color.0 as f64,
+                        cursor_bg_color.1 as f64,
+                        cursor_bg_color.2 as f64,
+                    );
+                    cr.set_line_width(2.0);
+                    cr.move_to(cx, cy);
+                    cr.line_to(cx, cy + cell_h);
+                    let _ = cr.stroke();
+                }
             }
         }
     }
@@ -2526,10 +2555,11 @@ impl SimpleComponent for RshellApp {
 
         let repository = ConnectionRepository::default();
         let mut store = repository.load().unwrap_or_default();
-        if store.connections.is_empty() {
-            let mut sample = ConnectionProfile::new("Demo host", "127.0.0.1");
-            sample.note = "Sample profile".into();
-            store.upsert(sample.clone());
+        let had_sample = store.connections.len();
+        store.connections.retain(|p| {
+            !(p.name == "Demo host" && p.host == "127.0.0.1" && p.note == "Sample profile")
+        });
+        if store.connections.len() != had_sample {
             let _ = repository.save(&store);
         }
 
@@ -3091,11 +3121,24 @@ impl SimpleComponent for RshellApp {
         {
             let s = sender.clone();
             connection_list.connect_row_selected(move |_, row| {
-                if let Some(row) = row
-                    && let Some(id) = row.tooltip_text()
-                    && let Ok(id) = Uuid::parse_str(id.as_str())
-                {
-                    s.input(AppMsg::SelectConnection(id));
+                match row {
+                    Some(row)
+                        if row.tooltip_text().is_some()
+                            && Uuid::parse_str(
+                                row.tooltip_text().unwrap().as_str(),
+                            )
+                            .is_ok() =>
+                    {
+                        let id = Uuid::parse_str(
+                            row.tooltip_text().unwrap().as_str(),
+                        )
+                        .unwrap();
+                        s.input(AppMsg::SelectConnection(id));
+                    }
+                    _ => {
+                        // Clicked blank area or non-connection row — clear selection
+                        s.input(AppMsg::DeselectConnection);
+                    }
                 }
             });
         }
@@ -3286,7 +3329,7 @@ impl SimpleComponent for RshellApp {
             });
         }
 
-        glib::timeout_add_local(std::time::Duration::from_millis(250), {
+        glib::timeout_add_local(std::time::Duration::from_millis(50), {
             let s = sender.clone();
             move || {
                 s.input(AppMsg::RefreshSessions);

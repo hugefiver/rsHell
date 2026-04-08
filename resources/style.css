@@ -1,67 +1,90 @@
-/* rsHell — Theme-adaptive styles */
+/* rsHell — Modern Dark Theme */
 /* Terminal area is always dark. App chrome follows GTK theme (light/dark). */
 
 /* ── Accent Colors (shared) ──────────────────────── */
 .connect-button {
-    background: #60cdff;
-    color: #003e5c;
+    background: linear-gradient(to bottom, #62cbfb, #4cb8ee);
+    color: #002b40;
     font-weight: 600;
-    border: 1px solid transparent;
+    border: 1px solid rgba(0, 0, 0, 0.15);
+    border-radius: 5px;
+    padding: 2px 14px;
+    transition: background 120ms ease, box-shadow 120ms ease;
+    box-shadow: 0 1px 2px rgba(0, 0, 0, 0.12);
 }
 
 .connect-button:hover {
-    background: #98dcff;
-    color: #003e5c;
+    background: linear-gradient(to bottom, #7ed6ff, #62cbfb);
+    color: #002b40;
+    box-shadow: 0 1px 4px rgba(96, 205, 255, 0.25);
 }
 
 .connect-button:active {
-    background: #4ac2f8;
-    color: #003e5c;
+    background: #4ab5e6;
+    color: #002b40;
+    box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.2);
 }
 
 /* ── HeaderBar / Toolbar ─────────────────────────── */
 headerbar {
     box-shadow: none;
-    min-height: 32px;
-    padding: 0 4px;
+    min-height: 34px;
+    padding: 0 6px;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.06);
 }
 
 headerbar button {
     min-height: 24px;
-    padding: 1px 8px;
-    border-radius: 4px;
+    padding: 2px 8px;
+    border-radius: 5px;
     font-size: 11px;
+    transition: background 100ms ease;
+}
+
+headerbar button:hover {
+    background: rgba(255, 255, 255, 0.08);
+}
+
+headerbar button:active {
+    background: rgba(255, 255, 255, 0.04);
 }
 
 .toast-label {
     font-size: 10px;
-    padding: 0 4px;
-    opacity: 0.6;
+    padding: 0 6px;
+    opacity: 0.55;
 }
 
 /* ── Sidebar ─────────────────────────────────────── */
 .sidebar {
     padding: 0;
+    border-right: 1px solid rgba(255, 255, 255, 0.06);
 }
 
 .sidebar-header {
     font-size: 9px;
-    font-weight: 600;
-    letter-spacing: 0.08em;
-    padding: 6px 8px 2px 8px;
-    opacity: 0.6;
+    font-weight: 700;
+    letter-spacing: 0.1em;
+    padding: 8px 10px 3px 10px;
+    opacity: 0.5;
+    text-transform: uppercase;
 }
 
 .sidebar-toolbar {
-    padding: 2px 4px;
+    padding: 3px 6px;
 }
 
 .sidebar-toolbar button {
-    min-height: 20px;
-    min-width: 20px;
-    padding: 1px 6px;
-    border-radius: 3px;
+    min-height: 22px;
+    min-width: 22px;
+    padding: 2px 6px;
+    border-radius: 4px;
     font-size: 10px;
+    transition: background 100ms ease;
+}
+
+.sidebar-toolbar button:hover {
+    background: rgba(255, 255, 255, 0.08);
 }
 
 /* ── Connection List ─────────────────────────────── */
@@ -70,17 +93,22 @@ headerbar button {
 }
 
 .connection-list row {
-    padding: 0 2px;
-    border-radius: 3px;
+    padding: 1px 4px;
+    border-radius: 4px;
+    transition: background 80ms ease;
+}
+
+.connection-list row:hover {
+    background: rgba(255, 255, 255, 0.04);
 }
 
 .connection-list row:selected {
-    background: alpha(@accent_bg_color, 0.2);
+    background: alpha(@accent_bg_color, 0.18);
 }
 
 .connection-row {
-    padding: 3px 8px;
-    border-radius: 3px;
+    padding: 4px 8px;
+    border-radius: 4px;
 }
 
 .connection-name {
@@ -90,97 +118,106 @@ headerbar button {
 
 .connection-meta {
     font-size: 9px;
-    opacity: 0.6;
+    opacity: 0.5;
 }
 
 .folder-header {
     font-size: 9px;
-    font-weight: 600;
-    letter-spacing: 0.04em;
-    padding: 6px 8px 1px 8px;
-    opacity: 0.6;
+    font-weight: 700;
+    letter-spacing: 0.06em;
+    padding: 8px 10px 2px 10px;
+    opacity: 0.5;
 }
 
 /* ── Editor / Settings Dialog ────────────────────── */
 .editor-group {
-    padding: 8px 12px;
+    padding: 10px 14px;
 }
 
 .editor-group label {
     font-size: 10px;
-    margin-top: 2px;
-    opacity: 0.6;
+    margin-top: 3px;
+    opacity: 0.55;
 }
 
 .editor-group entry,
 .editor-group spinbutton {
-    min-height: 26px;
-    border-radius: 4px;
+    min-height: 28px;
+    border-radius: 5px;
     font-size: 12px;
+    border: 1px solid rgba(255, 255, 255, 0.1);
+    transition: border-color 120ms ease, box-shadow 120ms ease;
 }
 
 .editor-group entry:focus,
 .editor-group spinbutton:focus {
     border-color: #60cdff;
+    box-shadow: 0 0 0 1px rgba(96, 205, 255, 0.25);
 }
 
 /* ── Tab Bar ─────────────────────────────────────── */
 .tab-bar {
-    background: #1f1f1f;
-    padding: 1px 2px 0 2px;
-    border-bottom: 1px solid rgba(255, 255, 255, 0.04);
+    background: #1e1e1e;
+    padding: 0 2px;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.06);
 }
 
 .tab-button {
     background: transparent;
-    color: #adadad;
-    border-radius: 3px 3px 0 0;
-    padding: 2px 8px;
+    color: #9d9d9d;
+    border-radius: 0;
+    padding: 4px 12px;
     font-size: 11px;
     border: none;
-    min-height: 24px;
-    margin-right: 1px;
+    min-height: 26px;
+    margin: 0 0;
+    border-bottom: 2px solid transparent;
+    transition: color 100ms ease, border-color 150ms ease, background 100ms ease;
 }
 
 .tab-button:hover {
-    background: rgba(255, 255, 255, 0.06);
-    color: #d6d6d6;
+    background: rgba(255, 255, 255, 0.05);
+    color: #d4d4d4;
 }
 
 .tab-button.active-tab {
-    background: #2d2d2d;
+    background: transparent;
     color: #ffffff;
     font-weight: 600;
+    border-bottom: 2px solid #60cdff;
 }
 
 .tab-add {
     background: transparent;
-    color: #adadad;
-    border-radius: 3px 3px 0 0;
+    color: #9d9d9d;
+    border-radius: 4px;
     padding: 2px 8px;
-    min-height: 24px;
+    min-height: 22px;
     border: none;
+    margin: 2px 2px;
+    transition: background 100ms ease, color 100ms ease;
 }
 
 .tab-add:hover {
-    background: rgba(255, 255, 255, 0.06);
-    color: #d6d6d6;
+    background: rgba(255, 255, 255, 0.08);
+    color: #d4d4d4;
 }
 
 .tab-close {
     background: transparent;
     color: #6e6e6e;
     border: none;
-    border-radius: 3px;
+    border-radius: 4px;
     padding: 0 3px;
     min-height: 16px;
     min-width: 16px;
     font-size: 9px;
+    transition: background 80ms ease, color 80ms ease;
 }
 
 .tab-close:hover {
-    background: rgba(255, 255, 255, 0.12);
-    color: #ff99a4;
+    background: rgba(255, 80, 100, 0.15);
+    color: #ff8a95;
 }
 
 /* ── Terminal View (always dark) ─────────────────── */
@@ -198,8 +235,8 @@ headerbar button {
 /* ── Status Bar ──────────────────────────────────── */
 .status-bar {
     background: #0078d4;
-    padding: 0 8px;
-    min-height: 18px;
+    padding: 0 10px;
+    min-height: 20px;
 }
 
 .status-label {
@@ -210,12 +247,14 @@ headerbar button {
 
 /* ── Paned Separators ────────────────────────────── */
 paned > separator {
-    min-width: 3px;
-    min-height: 3px;
+    min-width: 2px;
+    min-height: 2px;
+    background: rgba(255, 255, 255, 0.04);
+    transition: background 150ms ease;
 }
 
 paned > separator:hover {
-    background: rgba(96, 205, 255, 0.5);
+    background: rgba(96, 205, 255, 0.45);
 }
 
 /* ── Scrollbar (terminal area) ───────────────────── */
@@ -224,14 +263,19 @@ paned > separator:hover {
 }
 
 .terminal-container scrollbar slider {
-    background: rgba(255, 255, 255, 0.10);
+    background: rgba(255, 255, 255, 0.08);
     border-radius: 999px;
-    min-width: 4px;
-    min-height: 4px;
+    min-width: 5px;
+    min-height: 5px;
+    transition: background 120ms ease;
 }
 
 .terminal-container scrollbar slider:hover {
     background: rgba(255, 255, 255, 0.20);
+}
+
+.terminal-container scrollbar slider:active {
+    background: rgba(255, 255, 255, 0.30);
 }
 
 /* ── CheckButton ─────────────────────────────────── */
@@ -242,4 +286,96 @@ checkbutton {
 /* ── Placeholder ─────────────────────────────────── */
 .dim-label {
     opacity: 0.4;
+}
+
+/* ── Right-Click Context Menu (Windows 10 Classic) ─ */
+/* Override GTK4 popover to achieve flat, sharp-cornered,
+   compact menu style like Windows 10 traditional context menu */
+
+popover.menu {
+    background: #2b2b2b;
+    border: 1px solid #5a5a5a;
+    border-radius: 0;
+    box-shadow: 2px 2px 6px rgba(0, 0, 0, 0.50);
+    padding: 2px 0;
+}
+
+popover.menu > contents {
+    background: transparent;
+    border-radius: 0;
+    padding: 2px 0;
+    border: none;
+    box-shadow: none;
+}
+
+popover.menu arrow {
+    background: transparent;
+    border: none;
+    min-width: 0;
+    min-height: 0;
+}
+
+popover.menu modelbutton {
+    font-size: 12px;
+    min-height: 24px;
+    padding: 2px 24px 2px 28px;
+    border-radius: 0;
+    color: #e8e8e8;
+    transition: none;
+}
+
+popover.menu modelbutton:hover {
+    background: #0078d4;
+    color: #ffffff;
+}
+
+popover.menu modelbutton:active {
+    background: #005a9e;
+    color: #ffffff;
+}
+
+popover.menu separator {
+    min-height: 1px;
+    background: #4a4a4a;
+    margin: 2px 2px;
+    border: none;
+}
+
+/* Submenu arrow styling */
+popover.menu modelbutton arrow {
+    min-width: 12px;
+    min-height: 12px;
+    color: #b0b0b0;
+}
+
+popover.menu modelbutton:hover arrow {
+    color: #ffffff;
+}
+
+/* Accelerator / shortcut labels inside menu items */
+popover.menu accelerator {
+    font-size: 11px;
+    color: #888888;
+    opacity: 1;
+}
+
+popover.menu modelbutton:hover accelerator {
+    color: rgba(255, 255, 255, 0.8);
+}
+
+/* ── HeaderBar Menu Popover (same Windows 10 style) ─ */
+menubutton > popover.menu {
+    background: #2b2b2b;
+    border: 1px solid #5a5a5a;
+    border-radius: 0;
+    box-shadow: 2px 2px 6px rgba(0, 0, 0, 0.50);
+    padding: 2px 0;
+}
+
+menubutton > popover.menu > contents {
+    background: transparent;
+    border-radius: 0;
+    padding: 2px 0;
+    border: none;
+    box-shadow: none;
 }
