@@ -8,32 +8,29 @@ window {
 }
 
 window.csd {
-    box-shadow: none;
+    box-shadow: 0 0 0 1px rgba(128, 128, 128, 0.25);
     margin: 0;
 }
 
 /* ── Accent Colors (shared) ──────────────────────── */
 .connect-button {
-    background: linear-gradient(to bottom, #62cbfb, #4cb8ee);
+    background: #60cdff;
     color: #002b40;
     font-weight: 600;
-    border: 1px solid rgba(0, 0, 0, 0.15);
-    border-radius: 5px;
+    border: none;
+    border-radius: 4px;
     padding: 2px 14px;
-    transition: background 120ms ease, box-shadow 120ms ease;
-    box-shadow: 0 1px 2px rgba(0, 0, 0, 0.12);
+    transition: background 120ms ease;
 }
 
 .connect-button:hover {
-    background: linear-gradient(to bottom, #7ed6ff, #62cbfb);
+    background: #78d6ff;
     color: #002b40;
-    box-shadow: 0 1px 4px rgba(96, 205, 255, 0.25);
 }
 
 .connect-button:active {
     background: #4ab5e6;
     color: #002b40;
-    box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.2);
 }
 
 /* ── HeaderBar / Toolbar ─────────────────────────── */
@@ -48,17 +45,17 @@ headerbar button {
     min-height: 26px;
     min-width: 26px;
     padding: 2px 8px;
-    border-radius: 5px;
+    border-radius: 4px;
     font-size: 11px;
     transition: background 100ms ease;
 }
 
 headerbar button:hover {
-    background: alpha(@window_fg_color, 0.08);
+    background: alpha(@window_fg_color, 0.06);
 }
 
 headerbar button:active {
-    background: alpha(@window_fg_color, 0.04);
+    background: alpha(@window_fg_color, 0.03);
 }
 
 /* Pane action buttons in headerbar — consistent icon sizing */
@@ -116,7 +113,7 @@ headerbar button:active {
 }
 
 .connection-list row:selected {
-    background: alpha(@accent_bg_color, 0.18);
+    background: alpha(#d0dff0, 0.18);
 }
 
 .connection-row {
@@ -144,11 +141,27 @@ headerbar button:active {
 
 /* ── Editor / Settings Dialog ────────────────────── */
 .editor-dialog {
-    background: @window_bg_color;
+    background-color: @window_bg_color;
 }
 
 .editor-group {
-    padding: 10px 16px;
+    background-color: #fafafa;
+    padding: 6px 10px;
+}
+
+.editor-dialog notebook {
+    border: none;
+    background: transparent;
+}
+
+.editor-dialog notebook > stack {
+    border: none;
+    background: transparent;
+}
+
+.editor-dialog scrolledwindow {
+    border: none;
+    border-radius: 0;
 }
 
 .editor-group label {
@@ -164,24 +177,26 @@ passwordentry {
     min-height: 30px;
     border-radius: 4px;
     font-size: 12px;
-    border: 1px solid alpha(@borders, 0.8);
-    background: alpha(@view_bg_color, 0.6);
-    transition: border-color 120ms ease, box-shadow 120ms ease;
+    border: 1px solid alpha(@borders, 0.6);
+    border-bottom: 2px solid alpha(@borders, 0.8);
+    background: alpha(@view_bg_color, 0.5);
+    transition: border-color 120ms ease;
 }
 
 entry:focus,
 spinbutton:focus,
 passwordentry:focus {
-    border-color: @accent_bg_color;
-    box-shadow: 0 0 0 1px alpha(@accent_bg_color, 0.3);
-    background: alpha(@view_bg_color, 0.8);
+    border-color: alpha(@borders, 0.6);
+    border-bottom: 2px solid #d0dff0;
+    background: alpha(@view_bg_color, 0.7);
 }
 
 entry:disabled,
 spinbutton:disabled,
 passwordentry:disabled {
     opacity: 0.45;
-    border-color: alpha(@borders, 0.3);
+    border-color: alpha(@borders, 0.2);
+    border-bottom-color: alpha(@borders, 0.3);
 }
 
 /* ── Notebook (tabs inside dialogs) ──────────────── */
@@ -191,7 +206,7 @@ passwordentry:disabled {
 }
 
 .editor-dialog notebook > header tab {
-    padding: 4px 14px;
+    padding: 6px 14px;
     font-size: 11px;
     border-radius: 0;
     border-bottom: 2px solid transparent;
@@ -199,7 +214,7 @@ passwordentry:disabled {
 }
 
 .editor-dialog notebook > header tab:checked {
-    border-bottom-color: @accent_bg_color;
+    border-bottom-color: #d0dff0;
 }
 
 .editor-dialog notebook > header tab:hover:not(:checked) {
@@ -224,13 +239,43 @@ passwordentry:disabled {
 /* ── Drop Down (theme selector etc.) ─────────────── */
 dropdown {
     min-height: 30px;
-    border: 1px solid alpha(@borders, 0.8);
+    border: 1px solid alpha(@borders, 0.6);
+    border-bottom: 2px solid alpha(@borders, 0.8);
     border-radius: 4px;
-    background: alpha(@view_bg_color, 0.6);
+    background: alpha(@view_bg_color, 0.5);
 }
 
 dropdown:focus {
-    border-color: @accent_bg_color;
+    border-color: alpha(@borders, 0.6);
+    border-bottom: 2px solid #d0dff0;
+}
+
+/* Dropdown popup list */
+dropdown > popover {
+    border: 1px solid alpha(@borders, 0.5);
+    border-radius: 6px;
+    padding: 3px;
+}
+
+dropdown > popover > contents {
+    border: none;
+    background: transparent;
+}
+
+dropdown > popover listview > row {
+    padding: 4px 10px;
+    border-radius: 4px;
+    font-size: 12px;
+    min-height: 24px;
+    transition: background 80ms ease;
+}
+
+dropdown > popover listview > row:hover {
+    background: alpha(@window_fg_color, 0.06);
+}
+
+dropdown > popover listview > row:selected {
+    background: alpha(#d0dff0, 0.18);
 }
 
 /* ── CheckButton ─────────────────────────────────── */
@@ -245,8 +290,8 @@ checkbutton indicator {
 }
 
 checkbutton:checked indicator {
-    background: @accent_bg_color;
-    border-color: @accent_bg_color;
+    background: #d0dff0;
+    border-color: #d0dff0;
 }
 
 /* ── TextView (notes field) ──────────────────────── */
@@ -265,7 +310,7 @@ scrolledwindow {
     border-radius: 4px;
 }
 
-/* Don't add border to terminal/sidebar scrolls */
+/* Don't add border to terminal/sidebar/connection/editor-wrapper scrolls */
 .terminal-container scrolledwindow,
 .sidebar scrolledwindow,
 .connection-list scrolledwindow {
@@ -282,7 +327,7 @@ paned > separator {
 }
 
 paned > separator:hover {
-    background: alpha(@accent_bg_color, 0.55);
+    background: alpha(#d0dff0, 0.55);
 }
 
 /* ══════════════════════════════════════════════════ */
@@ -419,26 +464,24 @@ paned > separator:hover {
 }
 
 /* ══════════════════════════════════════════════════ */
-/* ── Right-Click Context Menu (Windows 10 Classic) ─ */
+/* ── Right-Click Context Menu (Fluent Dark) ──────── */
 /* Always dark — overlays terminal area.             */
 /* ══════════════════════════════════════════════════ */
 
 popover.menu,
 menubutton > popover.menu {
-    background: #2b2b2b;
-    border: 1px solid #5a5a5a;
-    border-radius: 0;
-    box-shadow: 2px 2px 8px rgba(0, 0, 0, 0.55);
-    padding: 2px 0;
+    background: #2c2c2c;
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    border-radius: 6px;
+    padding: 3px;
 }
 
 popover.menu > contents,
 menubutton > popover.menu > contents {
     background: transparent;
-    border-radius: 0;
-    padding: 2px 0;
+    border-radius: 4px;
+    padding: 0;
     border: none;
-    box-shadow: none;
 }
 
 popover.menu arrow {
@@ -450,27 +493,27 @@ popover.menu arrow {
 
 popover.menu modelbutton {
     font-size: 12px;
-    min-height: 26px;
-    padding: 3px 24px 3px 28px;
-    border-radius: 0;
+    min-height: 28px;
+    padding: 4px 12px 4px 12px;
+    border-radius: 4px;
     color: #e0e0e0;
-    transition: none;
+    transition: background 80ms ease;
 }
 
 popover.menu modelbutton:hover {
-    background: #0078d4;
+    background: rgba(255, 255, 255, 0.06);
     color: #ffffff;
 }
 
 popover.menu modelbutton:active {
-    background: #005a9e;
+    background: rgba(255, 255, 255, 0.04);
     color: #ffffff;
 }
 
 popover.menu separator {
     min-height: 1px;
-    background: #4a4a4a;
-    margin: 2px 2px;
+    background: rgba(255, 255, 255, 0.06);
+    margin: 3px 4px;
     border: none;
 }
 
@@ -478,20 +521,20 @@ popover.menu separator {
 popover.menu modelbutton arrow {
     min-width: 12px;
     min-height: 12px;
-    color: #b0b0b0;
+    color: #888888;
 }
 
 popover.menu modelbutton:hover arrow {
-    color: #ffffff;
+    color: #d4d4d4;
 }
 
 /* Accelerator / shortcut labels inside menu items */
 popover.menu accelerator {
     font-size: 11px;
-    color: #888888;
+    color: #6e6e6e;
     opacity: 1;
 }
 
 popover.menu modelbutton:hover accelerator {
-    color: rgba(255, 255, 255, 0.8);
+    color: rgba(255, 255, 255, 0.6);
 }

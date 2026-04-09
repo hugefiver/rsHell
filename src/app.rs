@@ -688,7 +688,7 @@ pub struct AppWidgets {
     draft_name: gtk::Entry,
     draft_folder: gtk::Entry,
     draft_host: gtk::Entry,
-    draft_port: gtk::SpinButton,
+    draft_port: gtk::Entry,
     draft_user: gtk::Entry,
     draft_password: gtk::PasswordEntry,
     draft_identity: gtk::Entry,
@@ -1221,7 +1221,7 @@ impl RshellApp {
             widgets.draft_name.set_text(&self.draft.name);
             widgets.draft_folder.set_text(&self.draft.folder);
             widgets.draft_host.set_text(&self.draft.host);
-            widgets.draft_port.set_value(self.draft.port as f64);
+            widgets.draft_port.set_text(&self.draft.port.to_string());
             widgets.draft_user.set_text(&self.draft.user);
             widgets.draft_password.set_text(&self.draft.password);
             widgets.draft_identity.set_text(&self.draft.identity_file);
@@ -2942,10 +2942,10 @@ impl SimpleComponent for RshellApp {
         sep1.set_margin_start(4);
         sep1.set_margin_end(4);
 
-        let split_h_btn = gtk::Button::from_icon_name("object-flip-horizontal-symbolic");
+        let split_h_btn = gtk::Button::with_label("│");
         split_h_btn.set_tooltip_text(Some("Horizontal Split"));
         split_h_btn.add_css_class("pane-action-btn");
-        let split_v_btn = gtk::Button::from_icon_name("object-flip-vertical-symbolic");
+        let split_v_btn = gtk::Button::with_label("─");
         split_v_btn.set_tooltip_text(Some("Vertical Split"));
         split_v_btn.add_css_class("pane-action-btn");
         let close_pane_btn = gtk::Button::from_icon_name("window-close-symbolic");
@@ -3003,7 +3003,7 @@ impl SimpleComponent for RshellApp {
         let btn_new = gtk::Button::with_label("New");
         let btn_edit = gtk::Button::with_label("Edit");
         let btn_del = gtk::Button::with_label("Del");
-        let btn_settings = gtk::Button::with_label("⚙");
+        let btn_settings = gtk::Button::with_label("Set");
         sidebar_toolbar.append(&btn_new);
         sidebar_toolbar.append(&btn_edit);
         sidebar_toolbar.append(&btn_del);
@@ -3028,10 +3028,13 @@ impl SimpleComponent for RshellApp {
             .resizable(false)
             .build();
         editor_dialog.add_css_class("editor-dialog");
+        editor_dialog.add_css_class("background");
 
         let editor = gtk::Box::builder()
             .orientation(gtk::Orientation::Vertical)
             .spacing(4)
+            .hexpand(true)
+            .vexpand(true)
             .build();
         editor.add_css_class("editor-group");
 
@@ -3045,8 +3048,10 @@ impl SimpleComponent for RshellApp {
         let draft_host = gtk::Entry::new();
         draft_host.set_placeholder_text(Some("hostname or IP"));
         draft_host.set_hexpand(true);
-        let draft_port = gtk::SpinButton::with_range(1.0, 65535.0, 1.0);
+        let draft_port = gtk::Entry::new();
         draft_port.set_width_chars(6);
+        draft_port.set_placeholder_text(Some("22"));
+        draft_port.set_input_purpose(gtk::InputPurpose::Digits);
 
         let draft_user = gtk::Entry::new();
         draft_user.set_placeholder_text(Some("root"));
@@ -3190,13 +3195,7 @@ impl SimpleComponent for RshellApp {
         btn_row.append(&save_draft_btn);
         editor.append(&btn_row);
 
-        let editor_scroll = gtk::ScrolledWindow::builder()
-            .hexpand(true)
-            .vexpand(true)
-            .child(&editor)
-            .build();
-
-        editor_dialog.set_child(Some(&editor_scroll));
+        editor_dialog.set_child(Some(&editor));
 
         sidebar.append(&sidebar_header);
         sidebar.append(&sidebar_toolbar);
@@ -3365,8 +3364,10 @@ impl SimpleComponent for RshellApp {
         }
         {
             let s = sender.clone();
-            draft_port.connect_value_changed(move |e| {
-                s.input(AppMsg::DraftPortChanged(e.value() as u16));
+            draft_port.connect_changed(move |e| {
+                if let Ok(port) = e.text().parse::<u16>() {
+                    s.input(AppMsg::DraftPortChanged(port));
+                }
             });
         }
         {
@@ -3503,6 +3504,7 @@ impl SimpleComponent for RshellApp {
             .resizable(false)
             .build();
         settings_dialog.add_css_class("editor-dialog");
+        settings_dialog.add_css_class("background");
         settings_dialog.set_child(Some(&settings_content));
         connect_terminal_settings_signals(&global_terminal, &sender, AppMsg::GlobalTerminalChanged);
         {
