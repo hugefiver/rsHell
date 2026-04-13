@@ -46,7 +46,7 @@ headerbar button {
     min-width: 26px;
     padding: 2px 8px;
     border-radius: 4px;
-    font-size: 11px;
+    font-size: 13px;
     transition: background 100ms ease;
 }
 
@@ -72,7 +72,7 @@ headerbar button:active {
 }
 
 .sidebar-header {
-    font-size: 9px;
+    font-size: 11px;
     font-weight: 700;
     letter-spacing: 0.1em;
     padding: 8px 10px 3px 10px;
@@ -89,7 +89,7 @@ headerbar button:active {
     min-width: 22px;
     padding: 2px 6px;
     border-radius: 4px;
-    font-size: 10px;
+    font-size: 12px;
     transition: background 100ms ease;
 }
 
@@ -122,17 +122,17 @@ headerbar button:active {
 }
 
 .connection-name {
-    font-size: 11px;
+    font-size: 13px;
     font-weight: 600;
 }
 
 .connection-meta {
-    font-size: 9px;
+    font-size: 11px;
     opacity: 0.5;
 }
 
 .folder-header {
-    font-size: 9px;
+    font-size: 11px;
     font-weight: 700;
     letter-spacing: 0.06em;
     padding: 8px 10px 2px 10px;
@@ -165,7 +165,7 @@ headerbar button:active {
 }
 
 .editor-group label {
-    font-size: 11px;
+    font-size: 13px;
     margin-top: 4px;
     opacity: 0.7;
 }
@@ -176,7 +176,7 @@ spinbutton,
 passwordentry {
     min-height: 30px;
     border-radius: 4px;
-    font-size: 12px;
+    font-size: 14px;
     border: 1px solid alpha(@borders, 0.6);
     border-bottom: 2px solid alpha(@borders, 0.8);
     background: alpha(@view_bg_color, 0.5);
@@ -207,7 +207,7 @@ passwordentry:disabled {
 
 .editor-dialog notebook > header tab {
     padding: 6px 14px;
-    font-size: 11px;
+    font-size: 13px;
     border-radius: 0;
     border-bottom: 2px solid transparent;
     transition: border-color 120ms ease, color 120ms ease;
@@ -226,14 +226,14 @@ passwordentry:disabled {
 .editor-dialog .connect-button {
     min-height: 30px;
     padding: 4px 20px;
-    font-size: 12px;
+    font-size: 14px;
 }
 
 .editor-dialog button {
     min-height: 28px;
     padding: 4px 14px;
     border-radius: 4px;
-    font-size: 12px;
+    font-size: 14px;
 }
 
 /* ── Drop Down (theme selector etc.) ─────────────── */
@@ -265,7 +265,7 @@ dropdown > popover > contents {
 dropdown > popover listview > row {
     padding: 4px 10px;
     border-radius: 4px;
-    font-size: 12px;
+    font-size: 14px;
     min-height: 24px;
     transition: background 80ms ease;
 }
@@ -280,7 +280,7 @@ dropdown > popover listview > row:selected {
 
 /* ── CheckButton ─────────────────────────────────── */
 checkbutton {
-    font-size: 11px;
+    font-size: 13px;
 }
 
 checkbutton indicator {
@@ -296,7 +296,7 @@ checkbutton:checked indicator {
 
 /* ── TextView (notes field) ──────────────────────── */
 textview {
-    font-size: 12px;
+    font-size: 14px;
     padding: 4px 6px;
 }
 
@@ -347,7 +347,7 @@ paned > separator:hover {
     color: #9d9d9d;
     border-radius: 0;
     padding: 4px 12px;
-    font-size: 11px;
+    font-size: 13px;
     border: none;
     min-height: 26px;
     margin: 0 0;
@@ -391,7 +391,7 @@ paned > separator:hover {
     padding: 0 3px;
     min-height: 16px;
     min-width: 16px;
-    font-size: 9px;
+    font-size: 11px;
     transition: background 80ms ease, color 80ms ease;
 }
 
@@ -405,7 +405,6 @@ paned > separator:hover {
     background: #1a1a1a;
     color: #cccccc;
     font-family: "Cascadia Mono", "JetBrains Mono", "Consolas", monospace;
-    font-size: 13px;
 }
 
 .terminal-container {
@@ -421,7 +420,7 @@ paned > separator:hover {
 
 .status-label {
     color: #ffffff;
-    font-size: 10px;
+    font-size: 12px;
     font-weight: 500;
 }
 
@@ -453,7 +452,7 @@ paned > separator:hover {
 
 /* ── Grid labels in dialogs ──────────────────────── */
 .editor-dialog grid > label {
-    font-size: 11px;
+    font-size: 13px;
     opacity: 0.75;
 }
 
@@ -492,7 +491,7 @@ popover.menu arrow {
 }
 
 popover.menu modelbutton {
-    font-size: 12px;
+    font-size: 14px;
     min-height: 28px;
     padding: 4px 12px 4px 12px;
     border-radius: 4px;
@@ -530,7 +529,7 @@ popover.menu modelbutton:hover arrow {
 
 /* Accelerator / shortcut labels inside menu items */
 popover.menu accelerator {
-    font-size: 11px;
+    font-size: 13px;
     color: #6e6e6e;
     opacity: 1;
 }

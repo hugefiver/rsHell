@@ -120,6 +120,7 @@ struct PaneRenderState {
     cached_dims: (i32, i32),
     cached_scale: f64,
     cached_selection: Option<(CellCoord, CellCoord)>,
+    cached_font_size: f64,
 }
 
 impl Default for PaneRenderState {
@@ -135,6 +136,7 @@ impl Default for PaneRenderState {
             cached_dims: (0, 0),
             cached_scale: 1.0,
             cached_selection: None,
+            cached_font_size: 0.0,
         }
     }
 }
@@ -183,9 +185,10 @@ struct TerminalSettingsWidgets {
     scroll_output: gtk::CheckButton,
     scroll_keypress: gtk::CheckButton,
     answerback: gtk::Entry,
+    font_size: gtk::SpinButton,
 }
 
-fn build_terminal_settings_notebook() -> (gtk::Notebook, TerminalSettingsWidgets) {
+fn build_terminal_settings_notebook(show_font_size: bool) -> (gtk::Notebook, TerminalSettingsWidgets) {
     let general = gtk::Grid::builder()
         .row_spacing(8)
         .column_spacing(12)
@@ -234,6 +237,16 @@ fn build_terminal_settings_notebook() -> (gtk::Notebook, TerminalSettingsWidgets
     lbl.set_halign(gtk::Align::End);
     general.attach(&lbl, 0, row, 1, 1);
     general.attach(&scrollback, 1, row, 3, 1);
+    row += 1;
+    let font_size = gtk::SpinButton::with_range(6.0, 72.0, 1.0);
+    font_size.set_width_chars(5);
+    font_size.set_hexpand(true);
+    if show_font_size {
+        let lbl = gtk::Label::new(Some("Font Size"));
+        lbl.set_halign(gtk::Align::End);
+        general.attach(&lbl, 0, row, 1, 1);
+        general.attach(&font_size, 1, row, 3, 1);
+    }
 
     let keyboard = gtk::Grid::builder()
         .row_spacing(8)
@@ -385,6 +398,7 @@ fn build_terminal_settings_notebook() -> (gtk::Notebook, TerminalSettingsWidgets
         scroll_output,
         scroll_keypress,
         answerback,
+        font_size,
     };
 
     (notebook, widgets)
@@ -488,6 +502,13 @@ fn connect_terminal_settings_signals<F>(
             s.input(f(TerminalSettingChange::Answerback(e.text().to_string())));
         });
     }
+    {
+        let s = sender.clone();
+        let f = wrap.clone();
+        w.font_size.connect_value_changed(move |e| {
+            s.input(f(TerminalSettingChange::FontSize(e.value() as u16)));
+        });
+    }
 }
 
 fn populate_terminal_settings(w: &TerminalSettingsWidgets, resolved: &ResolvedTerminalSettings) {
@@ -519,6 +540,7 @@ fn populate_terminal_settings(w: &TerminalSettingsWidgets, resolved: &ResolvedTe
     w.scroll_output.set_active(resolved.scroll_on_output);
     w.scroll_keypress.set_active(resolved.scroll_on_keypress);
     w.answerback.set_text(&resolved.answerback);
+    w.font_size.set_value(resolved.font_size as f64);
 }
 
 pub struct RshellApp {
@@ -606,6 +628,7 @@ pub enum TerminalSettingChange {
     ScrollOnOutput(bool),
     ScrollOnKeypress(bool),
     Answerback(String),
+    FontSize(u16),
 }
 
 #[derive(Default, Clone)]
@@ -707,9 +730,9 @@ pub struct AppWidgets {
     tab_bar: gtk::Box,
     terminal_container: gtk::Box,
     pane_views: Vec<gtk::DrawingArea>,
-    pane_sizes: Vec<(u16, u16)>,
+    pane_sizes: Vec<(u16, u16, u16, u16)>,
     status_label: gtk::Label,
-
+    terminal_font_size: Rc<Cell<f64>>,
 }
 
 impl RshellApp {
@@ -909,7 +932,11 @@ impl RshellApp {
                 let name = profile.name.clone();
                 let host = profile.host.clone();
                 let input_tx = sender.input_sender().clone();
-                let settings = self.resolve_settings(&profile.terminal);
+                let mut settings = self.resolve_settings(&profile.terminal);
+                // Font size is global-only (no per-session UI); override so
+                // the initial PTY geometry matches the rendering pipeline
+                // which always reads the global value.
+                settings.font_size = self.default_resolved_settings().font_size;
                 thread::spawn(move || match launch_session(&profile, settings) {
                     Ok(handle) => {
                         let _ =
@@ -1148,6 +1175,7 @@ impl RshellApp {
                         TerminalSettingChange::ScrollOnOutput(v) => t.scroll_on_output = Some(v),
                         TerminalSettingChange::ScrollOnKeypress(v) => t.scroll_on_keypress = Some(v),
                         TerminalSettingChange::Answerback(v) => t.answerback = Some(v),
+                        TerminalSettingChange::FontSize(v) => t.font_size = Some(v),
                     }
                 }
             }
@@ -1171,6 +1199,7 @@ impl RshellApp {
                         TerminalSettingChange::ScrollOnOutput(v) => t.scroll_on_output = Some(v),
                         TerminalSettingChange::ScrollOnKeypress(v) => t.scroll_on_keypress = Some(v),
                         TerminalSettingChange::Answerback(v) => t.answerback = Some(v),
+                        TerminalSettingChange::FontSize(v) => t.font_size = Some(v),
                     }
                     self.settings_dirty.set(true);
                 }
@@ -1373,8 +1402,8 @@ impl RshellApp {
         if self.terminal_dirty.get() {
             if let Some(group) = self.selected_group() {
                 widgets.pane_views =
-                    rebuild_terminal_panes(&widgets.terminal_container, group, &sender);
-                widgets.pane_sizes = vec![(0, 0); widgets.pane_views.len()];
+                    rebuild_terminal_panes(&widgets.terminal_container, group, &sender, &widgets.terminal_font_size);
+                widgets.pane_sizes = vec![(0, 0, 0, 0); widgets.pane_views.len()];
             } else {
                 while let Some(child) = widgets.terminal_container.first_child() {
                     widgets.terminal_container.remove(&child);
@@ -1390,6 +1419,10 @@ impl RshellApp {
             self.terminal_dirty.set(false);
         }
 
+        widgets.terminal_font_size.set(
+            self.default_resolved_settings().font_size as f64,
+        );
+
         if let Some(group) = self.selected_group() {
             for (i, pane) in group.panes.iter().enumerate() {
                 if let Some(area) = widgets.pane_views.get(i) {
@@ -1399,21 +1432,27 @@ impl RshellApp {
                     let h = area.height();
                     if w > 0 && h > 0 {
                         let pad = 4;
-                        let font_desc = pango::FontDescription::from_string("Monospace 11");
+                        let font_desc = pango::FontDescription::from_string(
+                            &format!("Monospace {}", widgets.terminal_font_size.get() as u32),
+                        );
                         let pango_ctx = area.pango_context();
+                        pangocairo::functions::context_set_font_options(
+                            &pango_ctx,
+                            Some(&terminal_font_options()),
+                        );
                         let layout = pango::Layout::new(&pango_ctx);
                         layout.set_font_description(Some(&font_desc));
                         layout.set_text("M");
                         let (char_w, char_h) = layout.pixel_size();
                         if char_w > 0 && char_h > 0 {
-                            let cols = ((w - pad * 2) / char_w) as u16;
-                            let rows = ((h - pad * 2) / char_h) as u16;
+                            let cols = ((w - pad * 2).max(0) / char_w) as u16;
+                            let rows = ((h - pad * 2).max(0) / char_h) as u16;
                             if cols > 0 && rows > 0 {
-                                let last = widgets.pane_sizes.get(i).copied().unwrap_or((0, 0));
-                                if (cols, rows) != last {
-                                    let _ = pane.handle.resize(cols, rows);
+                                let last = widgets.pane_sizes.get(i).copied().unwrap_or((0, 0, 0, 0));
+                                if (cols, rows, char_w as u16, char_h as u16) != last {
+                                    let _ = pane.handle.resize(cols, rows, char_w as u16, char_h as u16);
                                     if i < widgets.pane_sizes.len() {
-                                        widgets.pane_sizes[i] = (cols, rows);
+                                        widgets.pane_sizes[i] = (cols, rows, char_w as u16, char_h as u16);
                                     }
                                 }
                             }
@@ -1562,6 +1601,7 @@ fn draw_terminal(
     height: i32,
     scale: f64,
     render_state: &Rc<RefCell<PaneRenderState>>,
+    font_size: f64,
 ) {
     let blink_visible = {
         let epoch_ms = std::time::SystemTime::now()
@@ -1598,6 +1638,7 @@ fn draw_terminal(
         let current_sel = rs.normalized_selection();
         if rs.cached_dims == (width, height)
             && rs.cached_scale == scale
+            && rs.cached_font_size == font_size
             && rs.cached_selection == current_sel
             && rs.cached_frame == Some(quick_meta)
             && let Some(ref surface) = rs.cached_surface
@@ -1610,7 +1651,7 @@ fn draw_terminal(
 
     let can_reuse = {
         let rs = render_state.borrow();
-        rs.cached_dims == (width, height) && rs.cached_scale == scale && rs.cached_surface.is_some()
+        rs.cached_dims == (width, height) && rs.cached_scale == scale && rs.cached_font_size == font_size && rs.cached_surface.is_some()
     };
 
     let surface = if can_reuse {
@@ -1625,11 +1666,12 @@ fn draw_terminal(
                 s
             }
             Err(_) => {
-                let meta = draw_terminal_full(handle, cr, width, height, render_state, blink_visible);
+                let meta = draw_terminal_full(handle, cr, width, height, render_state, blink_visible, font_size);
                 let mut rs = render_state.borrow_mut();
                 rs.cached_frame = meta;
                 rs.cached_dims = (width, height);
                 rs.cached_scale = scale;
+                rs.cached_font_size = font_size;
                 rs.cached_selection = rs.normalized_selection();
                 rs.cached_surface = None;
                 return;
@@ -1638,17 +1680,18 @@ fn draw_terminal(
     };
 
     let Ok(cache_cr) = gtk::cairo::Context::new(&surface) else {
-        let meta = draw_terminal_full(handle, cr, width, height, render_state, blink_visible);
+        let meta = draw_terminal_full(handle, cr, width, height, render_state, blink_visible, font_size);
         let mut rs = render_state.borrow_mut();
         rs.cached_frame = meta;
         rs.cached_dims = (width, height);
         rs.cached_scale = scale;
+        rs.cached_font_size = font_size;
         rs.cached_selection = rs.normalized_selection();
         rs.cached_surface = None;
         return;
     };
 
-    let meta = draw_terminal_full(handle, &cache_cr, width, height, render_state, blink_visible);
+    let meta = draw_terminal_full(handle, &cache_cr, width, height, render_state, blink_visible, font_size);
     drop(cache_cr);
 
     let _ = cr.set_source_surface(&surface, 0.0, 0.0);
@@ -1659,9 +1702,19 @@ fn draw_terminal(
         rs.cached_frame = meta;
         rs.cached_dims = (width, height);
         rs.cached_scale = scale;
+        rs.cached_font_size = font_size;
         rs.cached_selection = rs.normalized_selection();
         rs.cached_surface = Some(surface);
     }
+}
+
+fn terminal_font_options() -> gtk::cairo::FontOptions {
+    let mut opts = gtk::cairo::FontOptions::new().unwrap();
+    opts.set_antialias(gtk::cairo::Antialias::Subpixel);
+    opts.set_hint_style(gtk::cairo::HintStyle::Slight);
+    opts.set_hint_metrics(gtk::cairo::HintMetrics::On);
+    opts.set_subpixel_order(gtk::cairo::SubpixelOrder::Rgb);
+    opts
 }
 
 fn draw_terminal_full(
@@ -1671,6 +1724,7 @@ fn draw_terminal_full(
     height: i32,
     render_state: &Rc<RefCell<PaneRenderState>>,
     blink_visible: bool,
+    font_size: f64,
 ) -> Option<FrameMeta> {
     let Some((seqno, rows, cols, scrollback_total, cursor_x, cursor_y, cursor_shape, cursor_vis, _palette_fg, palette_bg, cursor_bg_color, lines_data, image_cells)) =
         handle.with_terminal(|terminal| {
@@ -1781,16 +1835,10 @@ fn draw_terminal_full(
 
     let pad = 4.0_f64;
 
-    let mut font_opts = gtk::cairo::FontOptions::new().unwrap();
-    font_opts.set_antialias(gtk::cairo::Antialias::Subpixel);
-    font_opts.set_hint_style(gtk::cairo::HintStyle::Slight);
-    font_opts.set_hint_metrics(gtk::cairo::HintMetrics::On);
-    font_opts.set_subpixel_order(gtk::cairo::SubpixelOrder::Rgb);
-
-    let font_desc = pango::FontDescription::from_string("Monospace 11");
+    let font_desc = pango::FontDescription::from_string(&format!("Monospace {}", font_size as u32));
     let pango_ctx = pangocairo::functions::create_context(cr);
     pango_ctx.set_font_description(Some(&font_desc));
-    pangocairo::functions::context_set_font_options(&pango_ctx, Some(&font_opts));
+    pangocairo::functions::context_set_font_options(&pango_ctx, Some(&terminal_font_options()));
     let layout = pango::Layout::new(&pango_ctx);
     layout.set_font_description(Some(&font_desc));
     layout.set_text("M");
@@ -2143,6 +2191,7 @@ fn build_pane_view(
     index: usize,
     handle: TerminalSessionHandle,
     sender: &ComponentSender<RshellApp>,
+    font_size: Rc<Cell<f64>>,
 ) -> gtk::DrawingArea {
     let area = gtk::DrawingArea::new();
     area.set_hexpand(true);
@@ -2157,7 +2206,7 @@ fn build_pane_view(
     let rs_draw = render_state.clone();
     area.set_draw_func(move |area, cr, w, h| {
         let scale = area.scale_factor() as f64;
-        draw_terminal(&draw_handle, cr, w, h, scale, &rs_draw);
+        draw_terminal(&draw_handle, cr, w, h, scale, &rs_draw, font_size.get());
     });
 
     let s = sender.clone();
@@ -2644,6 +2693,7 @@ fn rebuild_terminal_panes(
     container: &gtk::Box,
     group: &TerminalGroup,
     sender: &ComponentSender<RshellApp>,
+    font_size: &Rc<Cell<f64>>,
 ) -> Vec<gtk::DrawingArea> {
     while let Some(child) = container.first_child() {
         container.remove(&child);
@@ -2661,7 +2711,7 @@ fn rebuild_terminal_panes(
         .panes
         .iter()
         .enumerate()
-        .map(|(i, pane)| build_pane_view(i, pane.handle.clone(), sender))
+        .map(|(i, pane)| build_pane_view(i, pane.handle.clone(), sender, font_size.clone()))
         .collect();
 
     match group.layout {
@@ -3131,7 +3181,7 @@ impl SimpleComponent for RshellApp {
             row += 1;
         }
 
-        let (term_notebook, draft_terminal) = build_terminal_settings_notebook();
+        let (term_notebook, draft_terminal) = build_terminal_settings_notebook(false);
 
         // === SSH tab ===
         let ssh_grid = gtk::Grid::builder()
@@ -3429,7 +3479,7 @@ impl SimpleComponent for RshellApp {
 
         connect_terminal_settings_signals(&draft_terminal, &sender, AppMsg::DraftTerminalChanged);
 
-        let (global_term_notebook, global_terminal) = build_terminal_settings_notebook();
+        let (global_term_notebook, global_terminal) = build_terminal_settings_notebook(true);
 
         let theme_list = gtk::StringList::new(&AppTheme::ALL.map(|t| t.label()));
         let theme_dropdown = gtk::DropDown::new(Some(theme_list), gtk::Expression::NONE);
@@ -3558,7 +3608,7 @@ impl SimpleComponent for RshellApp {
             pane_views: Vec::new(),
             pane_sizes: Vec::new(),
             status_label,
-
+            terminal_font_size: Rc::new(Cell::new(14.0)),
         };
 
         let mut parts = ComponentParts { model, widgets };

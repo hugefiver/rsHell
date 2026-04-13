@@ -449,6 +449,9 @@ pub struct TerminalSettings {
 
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub color_scheme: Option<ColorScheme>,
+
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub font_size: Option<u16>,
 }
 
 impl TerminalSettings {
@@ -486,6 +489,7 @@ impl TerminalSettings {
                 .clone()
                 .or_else(|| defaults.answerback.clone()),
             color_scheme: self.color_scheme.or(defaults.color_scheme),
+            font_size: self.font_size.or(defaults.font_size),
         }
     }
 
@@ -512,6 +516,7 @@ impl TerminalSettings {
             scroll_on_keypress: self.scroll_on_keypress.unwrap_or(false),
             answerback: self.answerback.clone().unwrap_or_else(|| "rsHell".into()),
             color_scheme: self.color_scheme.unwrap_or_default(),
+            font_size: self.font_size.unwrap_or(14).clamp(6, 72),
         }
     }
 }
@@ -534,6 +539,7 @@ pub struct ResolvedTerminalSettings {
     pub scroll_on_keypress: bool,
     pub answerback: String,
     pub color_scheme: ColorScheme,
+    pub font_size: u16,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -617,6 +623,7 @@ mod tests {
         assert!(resolved.left_alt_as_meta);
         assert!(resolved.mouse_reporting);
         assert!(!resolved.enable_csi_u);
+        assert_eq!(resolved.font_size, 14);
     }
 
     #[test]
@@ -669,6 +676,7 @@ mod tests {
         let mut config = GlobalConfig::default();
         config.terminal.scrollback_lines = Some(5_000);
         config.terminal.terminal_type = Some("linux".into());
+        config.terminal.font_size = Some(18);
 
         repo.save(&config).unwrap();
         let loaded = repo.load().unwrap();
@@ -678,7 +686,29 @@ mod tests {
             config.terminal.scrollback_lines
         );
         assert_eq!(loaded.terminal.terminal_type, config.terminal.terminal_type);
+        assert_eq!(loaded.terminal.font_size, config.terminal.font_size);
 
         let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn resolve_clamps_out_of_range_font_size() {
+        let zero = TerminalSettings {
+            font_size: Some(0),
+            ..Default::default()
+        };
+        assert_eq!(zero.resolve().font_size, 6);
+
+        let huge = TerminalSettings {
+            font_size: Some(500),
+            ..Default::default()
+        };
+        assert_eq!(huge.resolve().font_size, 72);
+
+        let normal = TerminalSettings {
+            font_size: Some(16),
+            ..Default::default()
+        };
+        assert_eq!(normal.resolve().font_size, 16);
     }
 }

@@ -81,7 +81,12 @@ impl SessionSnapshot {
 #[derive(Debug)]
 enum SessionCommand {
     InputBytes(Vec<u8>),
-    Resize { cols: u16, rows: u16 },
+    Resize {
+        cols: u16,
+        rows: u16,
+        cell_width: u16,
+        cell_height: u16,
+    },
     Shutdown,
 }
 
@@ -116,9 +121,14 @@ impl TerminalSessionHandle {
         Ok(())
     }
 
-    pub fn resize(&self, cols: u16, rows: u16) -> Result<()> {
+    pub fn resize(&self, cols: u16, rows: u16, cell_width: u16, cell_height: u16) -> Result<()> {
         self.command_tx
-            .send(SessionCommand::Resize { cols, rows })
+            .send(SessionCommand::Resize {
+                cols,
+                rows,
+                cell_width,
+                cell_height,
+            })
             .map_err(|_| anyhow!("session command channel is closed"))?;
         Ok(())
     }
@@ -231,6 +241,14 @@ pub fn find_local_shell() -> PathBuf {
     }
 }
 
+/// Approximate monospace cell dimensions from a font size in points.
+/// Used for initial PTY geometry before the actual Pango layout is available.
+fn estimated_cell_size(font_size: u16) -> (u16, u16) {
+    let w = ((font_size as u32 * 6 + 5) / 10) as u16;
+    let h = ((font_size as u32 * 12 + 5) / 10) as u16;
+    (w.max(1), h.max(1))
+}
+
 pub fn launch_local_session(settings: ResolvedTerminalSettings) -> Result<TerminalSessionHandle> {
     let shell = find_local_shell();
     let shell_name = shell
@@ -244,11 +262,12 @@ pub fn launch_local_session(settings: ResolvedTerminalSettings) -> Result<Termin
         "local",
     )));
 
+    let (cell_w, cell_h) = estimated_cell_size(settings.font_size);
     let initial_size = PtySize {
         rows: settings.initial_rows,
         cols: settings.initial_cols,
-        pixel_width: settings.initial_cols * 8,
-        pixel_height: settings.initial_rows * 16,
+        pixel_width: settings.initial_cols.saturating_mul(cell_w),
+        pixel_height: settings.initial_rows.saturating_mul(cell_h),
     };
 
     let pty_system = native_pty_system();
@@ -287,7 +306,7 @@ pub fn launch_session(
 ) -> Result<TerminalSessionHandle> {
     let snapshot = Arc::new(Mutex::new(SessionSnapshot::from_profile(profile)));
 
-    let session_parts = create_session_parts(profile, Arc::clone(&snapshot))?;
+    let session_parts = create_session_parts(profile, Arc::clone(&snapshot), settings.font_size)?;
     let SessionParts {
         master,
         child,
@@ -405,13 +424,18 @@ fn start_session_threads(
                         break;
                     }
                 }
-                Ok(SessionCommand::Resize { cols, rows }) => {
+                Ok(SessionCommand::Resize {
+                    cols,
+                    rows,
+                    cell_width,
+                    cell_height,
+                }) => {
                     if let Ok(mut term) = cmd_terminal.lock() {
                         term.resize(TerminalSize {
                             rows: rows as usize,
                             cols: cols as usize,
-                            pixel_width: (cols as usize).saturating_mul(8),
-                            pixel_height: (rows as usize).saturating_mul(16),
+                            pixel_width: (cols as usize).saturating_mul(cell_width as usize),
+                            pixel_height: (rows as usize).saturating_mul(cell_height as usize),
                             dpi: 96,
                         });
                     }
@@ -419,8 +443,8 @@ fn start_session_threads(
                         let size = PtySize {
                             cols,
                             rows,
-                            pixel_width: cols.saturating_mul(8),
-                            pixel_height: rows.saturating_mul(16),
+                            pixel_width: cols.saturating_mul(cell_width),
+                            pixel_height: rows.saturating_mul(cell_height),
                         };
                         if let Ok(master) = cmd_master.lock()
                             && let Err(error) = master.resize(size)
@@ -490,12 +514,14 @@ enum BackendGuard {
 fn create_session_parts(
     profile: &ConnectionProfile,
     state: Arc<Mutex<SessionSnapshot>>,
+    font_size: u16,
 ) -> Result<SessionParts> {
+    let (cell_w, cell_h) = estimated_cell_size(font_size);
     let initial_size = PtySize {
         rows: 36,
         cols: 120,
-        pixel_width: 960,
-        pixel_height: 640,
+        pixel_width: 120u16.saturating_mul(cell_w),
+        pixel_height: 36u16.saturating_mul(cell_h),
     };
 
     match profile.backend {
