@@ -1,13 +1,13 @@
 use crate::config::ResolvedTerminalSettings;
 use crate::connection::{ConnectionBackend, ConnectionProfile};
 use crate::ssh;
-use anyhow::{anyhow, Context, Result};
+use anyhow::{Context, Result, anyhow};
 use chrono::Local;
-use portable_pty::{native_pty_system, Child, CommandBuilder, ExitStatus, MasterPty, PtySize};
+use portable_pty::{Child, CommandBuilder, ExitStatus, MasterPty, PtySize, native_pty_system};
 use smol::channel::Receiver as SmolReceiver;
 use std::io::{Read, Write};
 use std::path::PathBuf;
-use std::sync::{mpsc, Arc, Mutex};
+use std::sync::{Arc, Mutex, mpsc};
 use std::thread;
 use std::time::Duration;
 use unicode_width::UnicodeWidthChar;
@@ -26,10 +26,11 @@ pub enum SessionPhase {
 impl SessionPhase {
     pub fn css_class(&self) -> &'static str {
         match self {
-            Self::Connecting => "status-indicator",
+            Self::Connecting => "status-indicator connecting",
             Self::Connected => "status-indicator connected",
-            Self::Attention => "status-indicator",
-            Self::Error | Self::Exited => "status-indicator error",
+            Self::Attention => "status-indicator attention",
+            Self::Error => "status-indicator error",
+            Self::Exited => "status-indicator exited",
         }
     }
 
@@ -86,6 +87,7 @@ enum SessionCommand {
         rows: u16,
         cell_width: u16,
         cell_height: u16,
+        dpi: u16,
     },
     Shutdown,
 }
@@ -121,13 +123,21 @@ impl TerminalSessionHandle {
         Ok(())
     }
 
-    pub fn resize(&self, cols: u16, rows: u16, cell_width: u16, cell_height: u16) -> Result<()> {
+    pub fn resize(
+        &self,
+        cols: u16,
+        rows: u16,
+        cell_width: u16,
+        cell_height: u16,
+        dpi: u16,
+    ) -> Result<()> {
         self.command_tx
             .send(SessionCommand::Resize {
                 cols,
                 rows,
                 cell_width,
                 cell_height,
+                dpi,
             })
             .map_err(|_| anyhow!("session command channel is closed"))?;
         Ok(())
@@ -284,8 +294,7 @@ pub fn launch_local_session(settings: ResolvedTerminalSettings) -> Result<Termin
         .spawn_command(cmd)
         .context("failed to spawn local shell")?;
 
-    {
-        let mut snap = snapshot.lock().unwrap();
+    if let Ok(mut snap) = snapshot.lock() {
         snap.phase = SessionPhase::Connected;
         snap.status_line = format!("Local shell ({shell_name}) running");
     }
@@ -306,7 +315,7 @@ pub fn launch_session(
 ) -> Result<TerminalSessionHandle> {
     let snapshot = Arc::new(Mutex::new(SessionSnapshot::from_profile(profile)));
 
-    let session_parts = create_session_parts(profile, Arc::clone(&snapshot), settings.font_size)?;
+    let session_parts = create_session_parts(profile, Arc::clone(&snapshot), &settings)?;
     let SessionParts {
         master,
         child,
@@ -314,7 +323,14 @@ pub fn launch_session(
         initial_size,
     } = session_parts;
 
-    start_session_threads(master, child, backend_guard, initial_size, snapshot, settings)
+    start_session_threads(
+        master,
+        child,
+        backend_guard,
+        initial_size,
+        snapshot,
+        settings,
+    )
 }
 
 fn start_session_threads(
@@ -332,8 +348,8 @@ fn start_session_threads(
         .context("failed to clone PTY reader")?;
     let master = Arc::new(Mutex::new(master));
 
-    let terminal_writer = SharedWriter {
-        master: Arc::clone(&master),
+    let terminal_writer = ChannelWriter {
+        command_tx: command_tx.clone(),
     };
 
     let terminal = Terminal::new(
@@ -352,7 +368,7 @@ fn start_session_threads(
         loop {
             match reader.read(&mut buffer) {
                 Ok(0) => {
-                    set_status(
+                    set_status_preserving_error(
                         &reader_state,
                         SessionPhase::Exited,
                         "Stream closed".to_string(),
@@ -377,27 +393,20 @@ fn start_session_threads(
                         };
                         if snap.phase == SessionPhase::Connecting {
                             snap.phase = SessionPhase::Connected;
-                            snap.status_line = format!(
-                                "Terminal stream active · updated {}",
-                                clock_label()
-                            );
+                            snap.status_line =
+                                format!("Terminal stream active · updated {}", clock_label());
                         } else if snap.phase != SessionPhase::Error
                             && snap.phase != SessionPhase::Exited
                         {
                             snap.phase = SessionPhase::Connected;
-                            snap.status_line =
-                                format!("Last output received at {}", clock_label());
+                            snap.status_line = format!("Last output received at {}", clock_label());
                         }
                         snap.updated_at = clock_label();
                     }
                 }
                 Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
                 Err(error) => {
-                    set_status(
-                        &reader_state,
-                        SessionPhase::Error,
-                        format!("PTY read failed: {error}"),
-                    );
+                    set_read_error_status(&reader_state, &error);
                     break;
                 }
             }
@@ -429,6 +438,7 @@ fn start_session_threads(
                     rows,
                     cell_width,
                     cell_height,
+                    dpi,
                 }) => {
                     if let Ok(mut term) = cmd_terminal.lock() {
                         term.resize(TerminalSize {
@@ -436,7 +446,7 @@ fn start_session_threads(
                             cols: cols as usize,
                             pixel_width: (cols as usize).saturating_mul(cell_width as usize),
                             pixel_height: (rows as usize).saturating_mul(cell_height as usize),
-                            dpi: 96,
+                            dpi: dpi.into(),
                         });
                     }
                     {
@@ -470,11 +480,7 @@ fn start_session_threads(
 
             match child.try_wait() {
                 Ok(Some(status)) => {
-                    set_status(
-                        &cmd_state,
-                        SessionPhase::Exited,
-                        format!("Session ended with {}", describe_exit_status(&status)),
-                    );
+                    set_exit_status(&cmd_state, &status);
                     break;
                 }
                 Ok(None) => {}
@@ -514,31 +520,37 @@ enum BackendGuard {
 fn create_session_parts(
     profile: &ConnectionProfile,
     state: Arc<Mutex<SessionSnapshot>>,
-    font_size: u16,
+    settings: &ResolvedTerminalSettings,
 ) -> Result<SessionParts> {
-    let (cell_w, cell_h) = estimated_cell_size(font_size);
+    let (cell_w, cell_h) = estimated_cell_size(settings.font_size);
     let initial_size = PtySize {
-        rows: 36,
-        cols: 120,
-        pixel_width: 120u16.saturating_mul(cell_w),
-        pixel_height: 36u16.saturating_mul(cell_h),
+        rows: settings.initial_rows,
+        cols: settings.initial_cols,
+        pixel_width: settings.initial_cols.saturating_mul(cell_w),
+        pixel_height: settings.initial_rows.saturating_mul(cell_h),
     };
 
     match profile.backend {
-        ConnectionBackend::SystemOpenSsh => create_system_session(profile, initial_size),
-        ConnectionBackend::WezTermSsh => create_wezterm_session(profile, state, initial_size),
+        ConnectionBackend::SystemOpenSsh => {
+            create_system_session(profile, &settings.terminal_type, initial_size)
+        }
+        ConnectionBackend::WezTermSsh => {
+            create_wezterm_session(profile, state, &settings.terminal_type, initial_size)
+        }
     }
 }
 
 fn create_system_session(
     profile: &ConnectionProfile,
+    terminal_type: &str,
     initial_size: PtySize,
 ) -> Result<SessionParts> {
     let pty_system = native_pty_system();
     let pair = pty_system
         .openpty(initial_size)
         .context("failed to allocate PTY for system OpenSSH")?;
-    let command = ssh::build_system_command(profile);
+    let mut command = ssh::build_system_command(profile);
+    command.env("TERM", terminal_type);
     let child = pair
         .slave
         .spawn_command(command)
@@ -555,16 +567,17 @@ fn create_system_session(
 fn create_wezterm_session(
     profile: &ConnectionProfile,
     state: Arc<Mutex<SessionSnapshot>>,
+    terminal_type: &str,
     initial_size: PtySize,
 ) -> Result<SessionParts> {
     let config = ssh::build_wezterm_config(profile);
     let (session, events) = wezterm_ssh::Session::connect(config)
         .context("failed to initialize wezterm-ssh session")?;
 
-    let password = if profile.password.trim().is_empty() {
+    let password = if profile.password.is_empty() {
         None
     } else {
-        Some(profile.password.trim().to_string())
+        Some(profile.password.clone())
     };
 
     let auto_accept = profile.accept_new_host;
@@ -575,6 +588,7 @@ fn create_wezterm_session(
 
     let command = (!profile.remote_command.trim().is_empty())
         .then(|| profile.remote_command.trim().to_string());
+    let terminal_type = terminal_type.to_string();
     let pty_session = session.clone();
     let pty_state = Arc::clone(&state);
     let (parts_tx, parts_rx) =
@@ -582,7 +596,7 @@ fn create_wezterm_session(
 
     thread::spawn(move || {
         let result = smol::block_on(pty_session.request_pty(
-            "xterm-256color",
+            &terminal_type,
             initial_size,
             command.as_deref(),
             None,
@@ -717,30 +731,25 @@ impl TerminalConfiguration for RshellTerminalConfig {
 }
 
 #[derive(Clone)]
-struct SharedWriter {
-    master: Arc<Mutex<Box<dyn MasterPty + Send>>>,
+struct ChannelWriter {
+    command_tx: mpsc::Sender<SessionCommand>,
 }
 
-impl Write for SharedWriter {
+impl Write for ChannelWriter {
     fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-        self.master
-            .lock()
-            .map_err(|_| std::io::Error::other("PTY lock poisoned"))?
-            .write(buf)
+        self.command_tx
+            .send(SessionCommand::InputBytes(buf.to_vec()))
+            .map_err(|_| std::io::Error::new(std::io::ErrorKind::BrokenPipe, "session closed"))?;
+        Ok(buf.len())
     }
 
     fn flush(&mut self) -> std::io::Result<()> {
-        self.master
-            .lock()
-            .map_err(|_| std::io::Error::other("PTY lock poisoned"))?
-            .flush()
+        Ok(())
     }
 }
 
 fn write_to_session(master: &Arc<Mutex<Box<dyn MasterPty + Send>>>, bytes: &[u8]) -> Result<()> {
-    let mut master = master
-        .lock()
-        .map_err(|_| anyhow!("PTY lock poisoned"))?;
+    let mut master = master.lock().map_err(|_| anyhow!("PTY lock poisoned"))?;
     master.write_all(bytes)?;
     master.flush()?;
     Ok(())
@@ -751,6 +760,69 @@ fn set_status(state: &Arc<Mutex<SessionSnapshot>>, phase: SessionPhase, status_l
         snapshot.phase = phase;
         snapshot.status_line = status_line;
         snapshot.updated_at = clock_label();
+    }
+}
+
+fn set_status_preserving_error(
+    state: &Arc<Mutex<SessionSnapshot>>,
+    phase: SessionPhase,
+    status_line: String,
+) {
+    if let Ok(mut snapshot) = state.lock() {
+        if snapshot.phase == SessionPhase::Error && phase != SessionPhase::Error {
+            snapshot.status_line = format!("{} · {}", snapshot.status_line, status_line);
+        } else {
+            snapshot.phase = phase;
+            snapshot.status_line = status_line;
+        }
+        snapshot.updated_at = clock_label();
+    }
+}
+
+fn set_read_error_status(state: &Arc<Mutex<SessionSnapshot>>, error: &std::io::Error) {
+    if is_terminal_stream_closed(error) {
+        set_status_preserving_error(state, SessionPhase::Exited, "Stream closed".to_string());
+    } else {
+        set_status(
+            state,
+            SessionPhase::Error,
+            format!("PTY read failed: {error}"),
+        );
+    }
+}
+
+fn is_terminal_stream_closed(error: &std::io::Error) -> bool {
+    matches!(
+        error.kind(),
+        std::io::ErrorKind::UnexpectedEof
+            | std::io::ErrorKind::BrokenPipe
+            | std::io::ErrorKind::ConnectionAborted
+            | std::io::ErrorKind::ConnectionReset
+    ) || is_platform_terminal_close_error(error)
+}
+
+#[cfg(unix)]
+fn is_platform_terminal_close_error(error: &std::io::Error) -> bool {
+    // Unix PTYs commonly report EIO when the slave side closes normally.
+    error.raw_os_error() == Some(5)
+}
+
+#[cfg(windows)]
+fn is_platform_terminal_close_error(error: &std::io::Error) -> bool {
+    matches!(error.raw_os_error(), Some(109 | 995))
+}
+
+#[cfg(not(any(unix, windows)))]
+fn is_platform_terminal_close_error(_error: &std::io::Error) -> bool {
+    false
+}
+
+fn set_exit_status(state: &Arc<Mutex<SessionSnapshot>>, status: &ExitStatus) {
+    let status_line = format!("Session ended with {}", describe_exit_status(status));
+    if status.success() {
+        set_status_preserving_error(state, SessionPhase::Exited, status_line);
+    } else {
+        set_status(state, SessionPhase::Error, status_line);
     }
 }
 
@@ -774,4 +846,90 @@ fn clock_label() -> String {
 
 fn char_display_width(c: char) -> usize {
     UnicodeWidthChar::width(c).unwrap_or(0)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn test_snapshot() -> Arc<Mutex<SessionSnapshot>> {
+        Arc::new(Mutex::new(SessionSnapshot::new("test", "local", "test")))
+    }
+
+    #[test]
+    fn preserving_error_keeps_original_phase() {
+        let state = test_snapshot();
+        set_status(&state, SessionPhase::Error, "authentication failed".into());
+
+        set_status_preserving_error(&state, SessionPhase::Exited, "Stream closed".into());
+
+        let snapshot = state.lock().unwrap();
+        assert_eq!(snapshot.phase, SessionPhase::Error);
+        assert!(snapshot.status_line.contains("authentication failed"));
+        assert!(snapshot.status_line.contains("Stream closed"));
+    }
+
+    #[test]
+    fn nonzero_exit_status_is_error() {
+        let state = test_snapshot();
+
+        set_exit_status(&state, &ExitStatus::with_exit_code(255));
+
+        let snapshot = state.lock().unwrap();
+        assert_eq!(snapshot.phase, SessionPhase::Error);
+        assert!(snapshot.status_line.contains("Session ended"));
+    }
+
+    #[test]
+    fn successful_exit_preserves_existing_error() {
+        let state = test_snapshot();
+        set_status(&state, SessionPhase::Error, "read failed".into());
+
+        set_exit_status(&state, &ExitStatus::with_exit_code(0));
+
+        let snapshot = state.lock().unwrap();
+        assert_eq!(snapshot.phase, SessionPhase::Error);
+        assert!(snapshot.status_line.contains("read failed"));
+        assert!(snapshot.status_line.contains("Session ended"));
+    }
+
+    #[test]
+    fn read_error_marks_session_error_for_unexpected_failures() {
+        let state = test_snapshot();
+        let error = std::io::Error::other("device exploded");
+
+        set_read_error_status(&state, &error);
+
+        let snapshot = state.lock().unwrap();
+        assert_eq!(snapshot.phase, SessionPhase::Error);
+        assert!(snapshot.status_line.contains("PTY read failed"));
+    }
+
+    #[test]
+    fn read_error_treats_closed_stream_as_exit() {
+        let state = test_snapshot();
+        let error = std::io::Error::from(std::io::ErrorKind::BrokenPipe);
+
+        set_read_error_status(&state, &error);
+
+        let snapshot = state.lock().unwrap();
+        assert_eq!(snapshot.phase, SessionPhase::Exited);
+        assert!(snapshot.status_line.contains("Stream closed"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn unix_pty_eio_is_closed_stream() {
+        let error = std::io::Error::from_raw_os_error(5);
+
+        assert!(is_terminal_stream_closed(&error));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_broken_pipe_is_closed_stream() {
+        let error = std::io::Error::from_raw_os_error(109);
+
+        assert!(is_terminal_stream_closed(&error));
+    }
 }

@@ -496,14 +496,19 @@ impl TerminalSettings {
     /// Resolve all `Option` fields to concrete values, using hardcoded defaults
     /// for anything still unset.
     pub fn resolve(&self) -> ResolvedTerminalSettings {
+        let terminal_type = self
+            .terminal_type
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| TERMINAL_TYPES.contains(value))
+            .unwrap_or("xterm-256color")
+            .to_string();
+
         ResolvedTerminalSettings {
-            terminal_type: self
-                .terminal_type
-                .clone()
-                .unwrap_or_else(|| "xterm-256color".into()),
-            initial_cols: self.initial_cols.unwrap_or(120),
-            initial_rows: self.initial_rows.unwrap_or(36),
-            scrollback_lines: self.scrollback_lines.unwrap_or(6_000),
+            terminal_type,
+            initial_cols: self.initial_cols.unwrap_or(120).clamp(1, 999),
+            initial_rows: self.initial_rows.unwrap_or(36).clamp(1, 999),
+            scrollback_lines: self.scrollback_lines.unwrap_or(6_000).clamp(100, 1_000_000),
             delete_key: self.delete_key.unwrap_or_default(),
             backspace_key: self.backspace_key.unwrap_or_default(),
             left_alt_as_meta: self.left_alt_as_meta.unwrap_or(true),
@@ -516,7 +521,7 @@ impl TerminalSettings {
             scroll_on_keypress: self.scroll_on_keypress.unwrap_or(false),
             answerback: self.answerback.clone().unwrap_or_else(|| "rsHell".into()),
             color_scheme: self.color_scheme.unwrap_or_default(),
-            font_size: self.font_size.unwrap_or(14).clamp(6, 72),
+            font_size: self.font_size.unwrap_or(15).clamp(6, 72),
         }
     }
 }
@@ -573,15 +578,33 @@ impl SettingsRepository {
 
     pub fn load(&self) -> Result<GlobalConfig> {
         if !self.path.exists() {
+            crate::storage::recover_backup_if_missing(&self.path)?;
+        }
+
+        if !self.path.exists() {
             let config = GlobalConfig::default();
             self.save(&config)?;
             return Ok(config);
         }
 
-        let data = std::fs::read_to_string(&self.path)
+        let mut data = std::fs::read_to_string(&self.path)
             .with_context(|| format!("failed to read {}", self.path.display()))?;
-        let config: GlobalConfig = serde_json::from_str(&data)
-            .with_context(|| format!("failed to parse {}", self.path.display()))?;
+        let config: GlobalConfig = match serde_json::from_str(&data) {
+            Ok(config) => config,
+            Err(error) => {
+                if crate::storage::recover_backup(&self.path)? {
+                    data = std::fs::read_to_string(&self.path).with_context(|| {
+                        format!("failed to read recovered {}", self.path.display())
+                    })?;
+                    serde_json::from_str(&data).with_context(|| {
+                        format!("failed to parse recovered {}", self.path.display())
+                    })?
+                } else {
+                    return Err(error)
+                        .with_context(|| format!("failed to parse {}", self.path.display()));
+                }
+            }
+        };
         Ok(config)
     }
 
@@ -593,7 +616,7 @@ impl SettingsRepository {
         }
 
         let data = serde_json::to_string_pretty(config).context("failed to encode JSON")?;
-        std::fs::write(&self.path, &data)
+        crate::storage::write_file_durable(&self.path, &data)
             .with_context(|| format!("failed to write {}", self.path.display()))?;
         Ok(())
     }
@@ -623,7 +646,7 @@ mod tests {
         assert!(resolved.left_alt_as_meta);
         assert!(resolved.mouse_reporting);
         assert!(!resolved.enable_csi_u);
-        assert_eq!(resolved.font_size, 14);
+        assert_eq!(resolved.font_size, 15);
     }
 
     #[test]
@@ -692,6 +715,82 @@ mod tests {
     }
 
     #[test]
+    fn repository_load_recovers_backup_file() {
+        let path = std::env::temp_dir().join(format!(
+            "rshell-settings-recover-{}.json",
+            uuid::Uuid::new_v4()
+        ));
+        let backup_path = backup_path(&path);
+        let repo = SettingsRepository::new(&path);
+
+        let config = GlobalConfig {
+            theme: AppTheme::Dark,
+            terminal: TerminalSettings {
+                terminal_type: Some("linux".into()),
+                ..Default::default()
+            },
+        };
+        repo.save(&config).unwrap();
+        std::fs::rename(&path, &backup_path).unwrap();
+
+        let loaded = repo.load().unwrap();
+
+        assert_eq!(loaded.theme, AppTheme::Dark);
+        assert_eq!(loaded.terminal.terminal_type.as_deref(), Some("linux"));
+        assert!(path.exists());
+        assert!(!backup_path.exists());
+
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn repository_load_recovers_backup_when_target_is_corrupt() {
+        let path = std::env::temp_dir().join(format!(
+            "rshell-settings-recover-corrupt-{}.json",
+            uuid::Uuid::new_v4()
+        ));
+        let backup_path = backup_path(&path);
+        let repo = SettingsRepository::new(&path);
+
+        let previous = GlobalConfig {
+            theme: AppTheme::Dark,
+            terminal: TerminalSettings {
+                terminal_type: Some("linux".into()),
+                ..Default::default()
+            },
+        };
+        repo.save(&previous).unwrap();
+
+        let current = GlobalConfig {
+            theme: AppTheme::Light,
+            terminal: TerminalSettings {
+                terminal_type: Some("xterm-256color".into()),
+                ..Default::default()
+            },
+        };
+        repo.save(&current).unwrap();
+        std::fs::write(&path, "{not-json").unwrap();
+
+        let loaded = repo.load().unwrap();
+
+        assert_eq!(loaded.theme, AppTheme::Dark);
+        assert_eq!(loaded.terminal.terminal_type.as_deref(), Some("linux"));
+        assert!(path.exists());
+        assert!(!backup_path.exists());
+
+        let _ = std::fs::remove_file(path);
+    }
+
+    fn backup_path(path: &Path) -> PathBuf {
+        let parent = path.parent().unwrap_or_else(|| Path::new("."));
+        let file_name = path
+            .file_name()
+            .map(|name| name.to_string_lossy())
+            .unwrap_or_else(|| "rshell-config".into());
+        parent.join(format!("{file_name}.bak"))
+    }
+
+    #[test]
     fn resolve_clamps_out_of_range_font_size() {
         let zero = TerminalSettings {
             font_size: Some(0),
@@ -710,5 +809,23 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(normal.resolve().font_size, 16);
+    }
+
+    #[test]
+    fn resolve_sanitizes_terminal_geometry_and_type() {
+        let settings = TerminalSettings {
+            terminal_type: Some("".into()),
+            initial_cols: Some(0),
+            initial_rows: Some(0),
+            scrollback_lines: Some(0),
+            ..Default::default()
+        };
+
+        let resolved = settings.resolve();
+
+        assert_eq!(resolved.terminal_type, "xterm-256color");
+        assert_eq!(resolved.initial_cols, 1);
+        assert_eq!(resolved.initial_rows, 1);
+        assert_eq!(resolved.scrollback_lines, 100);
     }
 }

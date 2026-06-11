@@ -20,6 +20,8 @@ fn system_command_args(profile: &ConnectionProfile) -> Vec<String> {
     if !profile.identity_file.trim().is_empty() {
         args.push("-i".to_string());
         args.push(profile.identity_file.trim().to_string());
+        args.push("-o".to_string());
+        args.push("IdentitiesOnly=yes".to_string());
     }
 
     if profile.accept_new_host {
@@ -27,6 +29,7 @@ fn system_command_args(profile: &ConnectionProfile) -> Vec<String> {
         args.push("StrictHostKeyChecking=accept-new".to_string());
     }
 
+    args.push("--".to_string());
     args.push(profile.destination());
 
     if !profile.remote_command.trim().is_empty() {
@@ -56,8 +59,8 @@ pub fn build_wezterm_config(profile: &ConnectionProfile) -> ConfigMap {
     }
 
     let mut resolved = config.for_host(profile.host.trim());
-    if !profile.password.trim().is_empty() {
-        resolved.insert("password".into(), profile.password.trim().to_string());
+    if !profile.password.is_empty() {
+        resolved.insert("password".into(), profile.password.clone());
     }
 
     resolved
@@ -84,6 +87,32 @@ mod tests {
     }
 
     #[test]
+    fn system_command_limits_auth_to_configured_identity() {
+        let mut profile = ConnectionProfile::new("Staging", "staging.internal");
+        profile.identity_file = "/tmp/id_ed25519".into();
+
+        let args = system_command_args(&profile);
+
+        assert!(
+            args.windows(2)
+                .any(|pair| pair == ["-i", "/tmp/id_ed25519"])
+        );
+        assert!(
+            args.windows(2)
+                .any(|pair| pair == ["-o", "IdentitiesOnly=yes"])
+        );
+    }
+
+    #[test]
+    fn system_command_terminates_options_before_destination() {
+        let profile = ConnectionProfile::new("Odd Host", "-not-an-option");
+
+        let args = system_command_args(&profile);
+
+        assert!(args.windows(2).any(|pair| pair == ["--", "-not-an-option"]));
+    }
+
+    #[test]
     fn wezterm_config_contains_basic_target_information() {
         let mut profile = ConnectionProfile::new("Prod", "prod.example.com");
         profile.user = "deploy".into();
@@ -95,5 +124,18 @@ mod tests {
         );
         assert_eq!(config.get("user").map(String::as_str), Some("deploy"));
         assert_eq!(config.get("port").map(String::as_str), Some("22"));
+    }
+
+    #[test]
+    fn wezterm_config_preserves_password_whitespace() {
+        let mut profile = ConnectionProfile::new("Prod", "prod.example.com");
+        profile.password = "  padded secret  ".into();
+
+        let config = build_wezterm_config(&profile);
+
+        assert_eq!(
+            config.get("password").map(String::as_str),
+            Some("  padded secret  ")
+        );
     }
 }

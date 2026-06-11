@@ -1,11 +1,11 @@
 use crate::config::{
     AppTheme, BackspaceKeyMode, ColorScheme, DeleteKeyMode, GlobalConfig, ResolvedTerminalSettings,
-    SettingsRepository, TerminalSettings, TERMINAL_TYPES,
+    SettingsRepository, TERMINAL_TYPES, TerminalSettings,
 };
 use crate::connection::{
-    ConnectionBackend, ConnectionProfile, ConnectionRepository, ConnectionStore,
+    ConnectionBackend, ConnectionProfile, ConnectionRepository, ConnectionStore, DEFAULT_SSH_PORT,
 };
-use crate::terminal::{launch_local_session, launch_session, SessionPhase, TerminalSessionHandle};
+use crate::terminal::{SessionPhase, TerminalSessionHandle, launch_local_session, launch_session};
 use gtk::gdk;
 use gtk::gio;
 use gtk::glib;
@@ -13,16 +13,18 @@ use gtk::pango;
 use gtk::prelude::*;
 use relm4::prelude::*;
 use std::cell::{Cell, RefCell};
-use std::rc::Rc;
 use std::collections::BTreeMap;
+use std::collections::HashMap;
+use std::rc::Rc;
+use std::sync::Arc;
 use std::thread;
 use uuid::Uuid;
-use std::collections::HashMap;
-use std::sync::Arc;
 use wezterm_surface::{CursorShape, CursorVisibility};
 use wezterm_term::color::SrgbaTuple;
 use wezterm_term::image::{ImageData, ImageDataType};
-use wezterm_term::{Intensity, KeyCode, KeyModifiers, MouseButton, MouseEvent as WezMouseEvent, MouseEventKind};
+use wezterm_term::{
+    Intensity, KeyCode, KeyModifiers, MouseButton, MouseEvent as WezMouseEvent, MouseEventKind,
+};
 
 #[derive(Clone, Copy, PartialEq)]
 enum SplitLayout {
@@ -33,21 +35,71 @@ enum SplitLayout {
     Grid,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SessionSource {
+    Local,
+    Connection(Uuid),
+}
+
+#[derive(Debug, Clone)]
+enum QuickConnectTarget {
+    Local,
+    Ssh(Box<ConnectionProfile>),
+}
+
 struct TerminalPane {
     name: String,
     handle: TerminalSessionHandle,
     remote_host: Option<String>,
+    settings: ResolvedTerminalSettings,
+    source: SessionSource,
+    render_state: Rc<RefCell<PaneRenderState>>,
+}
+
+impl TerminalPane {
+    fn new(
+        name: impl Into<String>,
+        handle: TerminalSessionHandle,
+        remote_host: Option<String>,
+        settings: ResolvedTerminalSettings,
+        source: SessionSource,
+    ) -> Self {
+        Self {
+            name: name.into(),
+            handle,
+            remote_host,
+            settings,
+            source,
+            render_state: Rc::new(RefCell::new(PaneRenderState::default())),
+        }
+    }
+}
+
+#[derive(Clone)]
+struct PendingConnection {
+    id: Uuid,
+    profile_id: Uuid,
+    name: String,
+    host: String,
+    status: PendingStatus,
+}
+
+#[derive(Clone)]
+enum PendingStatus {
+    Connecting,
+    Failed(String),
 }
 
 struct TerminalGroup {
     layout: SplitLayout,
     panes: Vec<TerminalPane>,
     active_pane: usize,
+    pending: Option<PendingConnection>,
 }
 
 impl TerminalGroup {
     fn can_split(&self) -> bool {
-        self.panes.len() < 4
+        self.pending.is_none() && self.panes.len() < 4
     }
 
     fn add_pane(&mut self, pane: TerminalPane, horizontal: bool) {
@@ -86,6 +138,51 @@ impl TerminalGroup {
             self.active_pane = self.panes.len().saturating_sub(1);
         }
     }
+
+    fn from_pane(pane: TerminalPane) -> Self {
+        Self {
+            layout: SplitLayout::Single,
+            panes: vec![pane],
+            active_pane: 0,
+            pending: None,
+        }
+    }
+
+    fn pending(pending: PendingConnection) -> Self {
+        Self {
+            layout: SplitLayout::Single,
+            panes: Vec::new(),
+            active_pane: 0,
+            pending: Some(pending),
+        }
+    }
+
+    fn title(&self, index: usize) -> String {
+        self.panes
+            .first()
+            .map(|pane| pane.name.clone())
+            .or_else(|| self.pending.as_ref().map(|pending| pending.name.clone()))
+            .unwrap_or_else(|| format!("Tab {}", index + 1))
+    }
+
+    fn phase(&self) -> SessionPhase {
+        if let Some(first) = self.panes.first() {
+            first.handle.snapshot().phase
+        } else if let Some(pending) = &self.pending {
+            match pending.status {
+                PendingStatus::Connecting => SessionPhase::Connecting,
+                PendingStatus::Failed(_) => SessionPhase::Error,
+            }
+        } else {
+            SessionPhase::Exited
+        }
+    }
+}
+
+#[derive(Clone, PartialEq, Eq)]
+struct GroupStatus {
+    title: String,
+    phase: SessionPhase,
 }
 
 #[derive(Clone, Copy, Default, PartialEq, Eq)]
@@ -112,6 +209,7 @@ struct FrameMeta {
 struct PaneRenderState {
     cell_width: f64,
     cell_height: f64,
+    scroll_offset: usize,
     selection: Option<(CellCoord, CellCoord)>,
     image_cache: HashMap<[u8; 32], gtk::cairo::ImageSurface>,
     image_cache_order: Vec<[u8; 32]>,
@@ -119,8 +217,18 @@ struct PaneRenderState {
     cached_surface: Option<gtk::cairo::ImageSurface>,
     cached_dims: (i32, i32),
     cached_scale: f64,
+    cached_scroll_offset: usize,
     cached_selection: Option<(CellCoord, CellCoord)>,
     cached_font_size: f64,
+    observed_seqno: Option<usize>,
+    observed_scrollback_rows: Option<usize>,
+}
+
+#[derive(Clone, Copy)]
+struct TerminalDrawOptions {
+    scale: f64,
+    scroll_on_output: bool,
+    font_size: f64,
 }
 
 impl Default for PaneRenderState {
@@ -128,6 +236,7 @@ impl Default for PaneRenderState {
         Self {
             cell_width: 0.0,
             cell_height: 0.0,
+            scroll_offset: 0,
             selection: None,
             image_cache: HashMap::new(),
             image_cache_order: Vec::new(),
@@ -135,8 +244,11 @@ impl Default for PaneRenderState {
             cached_surface: None,
             cached_dims: (0, 0),
             cached_scale: 1.0,
+            cached_scroll_offset: 0,
             cached_selection: None,
             cached_font_size: 0.0,
+            observed_seqno: None,
+            observed_scrollback_rows: None,
         }
     }
 }
@@ -166,6 +278,34 @@ impl PaneRenderState {
             },
         }
     }
+
+    fn clamp_scroll_offset(&mut self, scrollback_rows: usize, visible_rows: usize) {
+        let max_offset = max_scroll_offset(scrollback_rows, visible_rows);
+        if self.scroll_offset > max_offset {
+            self.scroll_offset = max_offset;
+        }
+    }
+
+    fn set_scroll_offset(&mut self, scrollback_rows: usize, visible_rows: usize, offset: usize) {
+        self.scroll_offset = offset.min(max_scroll_offset(scrollback_rows, visible_rows));
+        self.selection = None;
+        self.cached_frame = None;
+        self.observed_scrollback_rows = Some(scrollback_rows);
+    }
+}
+
+fn max_scroll_offset(scrollback_rows: usize, visible_rows: usize) -> usize {
+    scrollback_rows.saturating_sub(visible_rows)
+}
+
+fn viewport_range(
+    scrollback_rows: usize,
+    visible_rows: usize,
+    scroll_offset: usize,
+) -> std::ops::Range<usize> {
+    let clamped = scroll_offset.min(max_scroll_offset(scrollback_rows, visible_rows));
+    let end = scrollback_rows.saturating_sub(clamped);
+    end.saturating_sub(visible_rows)..end
 }
 
 struct TerminalSettingsWidgets {
@@ -188,7 +328,9 @@ struct TerminalSettingsWidgets {
     font_size: gtk::SpinButton,
 }
 
-fn build_terminal_settings_notebook(show_font_size: bool) -> (gtk::Notebook, TerminalSettingsWidgets) {
+fn build_terminal_settings_notebook(
+    show_font_size: bool,
+) -> (gtk::Notebook, TerminalSettingsWidgets) {
     let general = gtk::Grid::builder()
         .row_spacing(8)
         .column_spacing(12)
@@ -328,10 +470,10 @@ fn build_terminal_settings_notebook(show_font_size: bool) -> (gtk::Notebook, Ter
         .orientation(gtk::Orientation::Vertical)
         .spacing(2)
         .build();
-    let left_alt_meta = gtk::CheckButton::with_label("Left Alt as Meta");
-    let right_alt_meta = gtk::CheckButton::with_label("Right Alt as Meta");
+    let left_alt_meta = gtk::CheckButton::with_label("Alt as Meta");
+    let right_alt_meta = gtk::CheckButton::new();
+    right_alt_meta.set_visible(false);
     meta_box.append(&left_alt_meta);
-    meta_box.append(&right_alt_meta);
     keyboard.attach(&meta_box, 1, row, 3, 1);
 
     let advanced = gtk::Grid::builder()
@@ -453,7 +595,9 @@ fn connect_terminal_settings_signals<F>(
         let s = sender.clone();
         let f = wrap.clone();
         w.scrollback.connect_value_changed(move |e| {
-            s.input(f(TerminalSettingChange::ScrollbackLines(e.value() as usize)));
+            s.input(f(
+                TerminalSettingChange::ScrollbackLines(e.value() as usize),
+            ));
         });
     }
     for (i, btn) in w.delete_key.iter().enumerate() {
@@ -476,13 +620,20 @@ fn connect_terminal_settings_signals<F>(
             }
         });
     }
+    {
+        let s = sender.clone();
+        let f = wrap.clone();
+        w.left_alt_meta.connect_toggled(move |b| {
+            let active = b.is_active();
+            s.input(f(TerminalSettingChange::LeftAltMeta(active)));
+            s.input(f(TerminalSettingChange::RightAltMeta(active)));
+        });
+    }
     for (cb, change_fn) in [
         (
-            &w.left_alt_meta,
-            TerminalSettingChange::LeftAltMeta as fn(bool) -> TerminalSettingChange,
+            &w.csi_u,
+            TerminalSettingChange::CsiU as fn(bool) -> TerminalSettingChange,
         ),
-        (&w.right_alt_meta, TerminalSettingChange::RightAltMeta),
-        (&w.csi_u, TerminalSettingChange::CsiU),
         (&w.kitty_keyboard, TerminalSettingChange::KittyKeyboard),
         (&w.kitty_graphics, TerminalSettingChange::KittyGraphics),
         (&w.mouse_reporting, TerminalSettingChange::MouseReporting),
@@ -531,8 +682,9 @@ fn populate_terminal_settings(w: &TerminalSettingsWidgets, resolved: &ResolvedTe
     for (i, mode) in BackspaceKeyMode::ALL.iter().enumerate() {
         w.backspace_key[i].set_active(*mode == resolved.backspace_key);
     }
-    w.left_alt_meta.set_active(resolved.left_alt_as_meta);
-    w.right_alt_meta.set_active(resolved.right_alt_as_meta);
+    let alt_as_meta = resolved.left_alt_as_meta || resolved.right_alt_as_meta;
+    w.left_alt_meta.set_active(alt_as_meta);
+    w.right_alt_meta.set_active(alt_as_meta);
     w.csi_u.set_active(resolved.enable_csi_u);
     w.kitty_keyboard.set_active(resolved.enable_kitty_keyboard);
     w.kitty_graphics.set_active(resolved.enable_kitty_graphics);
@@ -543,9 +695,301 @@ fn populate_terminal_settings(w: &TerminalSettingsWidgets, resolved: &ResolvedTe
     w.font_size.set_value(resolved.font_size as f64);
 }
 
+fn icon_theme_has(icon_name: &str) -> bool {
+    gdk::Display::default()
+        .map(|display| gtk::IconTheme::for_display(&display).has_icon(icon_name))
+        .unwrap_or(false)
+}
+
+fn symbolic_icon(icon_name: &str, fallback: &str, pixel_size: i32) -> gtk::Widget {
+    if icon_theme_has(icon_name) {
+        let image = gtk::Image::from_icon_name(icon_name);
+        image.set_pixel_size(pixel_size);
+        image.upcast()
+    } else {
+        let label = gtk::Label::new(Some(fallback));
+        label.add_css_class("symbol-fallback");
+        if pixel_size >= 30 {
+            label.add_css_class("symbol-fallback-xl");
+        } else if pixel_size >= 24 {
+            label.add_css_class("symbol-fallback-lg");
+        }
+        label.upcast()
+    }
+}
+
+fn set_symbolic_button_child(button: &gtk::Button, icon_name: &str, fallback: &str) {
+    let child = symbolic_icon(icon_name, fallback, 18);
+    button.set_child(Some(&child));
+}
+
+fn icon_button(icon_name: &str, fallback: &str, tooltip: &str) -> gtk::Button {
+    let button = gtk::Button::new();
+    set_symbolic_button_child(&button, icon_name, fallback);
+    button.set_tooltip_text(Some(tooltip));
+    button
+}
+
+fn set_menu_button_icon(menu_button: &gtk::MenuButton, icon_name: &str, fallback: &str) {
+    if icon_theme_has(icon_name) {
+        menu_button.set_icon_name(icon_name);
+    } else {
+        let child = symbolic_icon(icon_name, fallback, 18);
+        menu_button.set_child(Some(&child));
+    }
+}
+
+fn toolbar_separator() -> gtk::Separator {
+    let separator = gtk::Separator::new(gtk::Orientation::Vertical);
+    separator.add_css_class("toolbar-separator");
+    separator
+}
+
+fn configured_key_bytes(
+    settings: &ResolvedTerminalSettings,
+    key: gdk::Key,
+    modifiers: gdk::ModifierType,
+) -> Option<Vec<u8>> {
+    let passthrough_mods = gdk::ModifierType::CONTROL_MASK
+        | gdk::ModifierType::ALT_MASK
+        | gdk::ModifierType::SUPER_MASK
+        | gdk::ModifierType::META_MASK;
+    if modifiers.intersects(passthrough_mods) {
+        return None;
+    }
+
+    match key {
+        gdk::Key::BackSpace => Some(
+            match settings.backspace_key {
+                BackspaceKeyMode::Vt220Del => b"\x1b[3~".as_slice(),
+                BackspaceKeyMode::Ascii127 => b"\x7f".as_slice(),
+                BackspaceKeyMode::CtrlH => b"\x08".as_slice(),
+            }
+            .to_vec(),
+        ),
+        gdk::Key::Delete | gdk::Key::KP_Delete => Some(
+            match settings.delete_key {
+                DeleteKeyMode::Vt220Del => b"\x1b[3~".as_slice(),
+                DeleteKeyMode::Ascii127 => b"\x7f".as_slice(),
+                DeleteKeyMode::Backspace => b"\x08".as_slice(),
+            }
+            .to_vec(),
+        ),
+        _ => None,
+    }
+}
+
+fn send_configured_key(pane: &TerminalPane, key: gdk::Key, modifiers: gdk::ModifierType) {
+    if let Some(bytes) = configured_key_bytes(&pane.settings, key, modifiers) {
+        let _ = pane.handle.send_bytes(bytes);
+        return;
+    }
+
+    if let Some((keycode, keymods)) = gdk_key_to_wezterm(&pane.settings, key, modifiers) {
+        let _ = pane
+            .handle
+            .with_terminal_mut(|terminal| terminal.key_down(keycode, keymods));
+    }
+}
+
+enum ScrollbackMove {
+    LinesUp(usize),
+    LinesDown(usize),
+    PageUp,
+    PageDown,
+    Bottom,
+}
+
+fn adjust_scrollback_view(
+    handle: &TerminalSessionHandle,
+    render_state: &Rc<RefCell<PaneRenderState>>,
+    movement: ScrollbackMove,
+) {
+    let Some((scrollback_rows, visible_rows)) = handle.with_terminal(|terminal| {
+        let screen = terminal.screen();
+        (screen.scrollback_rows(), screen.physical_rows)
+    }) else {
+        return;
+    };
+
+    let current = render_state.borrow().scroll_offset;
+    let page = visible_rows.saturating_sub(1).max(1);
+    let next = match movement {
+        ScrollbackMove::LinesUp(lines) => current.saturating_add(lines.max(1)),
+        ScrollbackMove::LinesDown(lines) => current.saturating_sub(lines.max(1)),
+        ScrollbackMove::PageUp => current.saturating_add(page),
+        ScrollbackMove::PageDown => current.saturating_sub(page),
+        ScrollbackMove::Bottom => 0,
+    };
+
+    render_state
+        .borrow_mut()
+        .set_scroll_offset(scrollback_rows, visible_rows, next);
+}
+
+fn reset_scrollback_view(
+    handle: &TerminalSessionHandle,
+    render_state: &Rc<RefCell<PaneRenderState>>,
+) {
+    if render_state.borrow().scroll_offset > 0 {
+        adjust_scrollback_view(handle, render_state, ScrollbackMove::Bottom);
+    }
+}
+
+fn terminal_wants_scroll_events(handle: &TerminalSessionHandle) -> bool {
+    handle
+        .with_terminal(|terminal| terminal.is_mouse_grabbed() || terminal.is_alt_screen_active())
+        .unwrap_or(false)
+}
+
+fn phase_bar_class(phase: &SessionPhase) -> &'static str {
+    match phase {
+        SessionPhase::Connecting => "phase-connecting",
+        SessionPhase::Connected => "phase-connected",
+        SessionPhase::Attention => "phase-attention",
+        SessionPhase::Error => "phase-error",
+        SessionPhase::Exited => "phase-exited",
+    }
+}
+
+fn update_status_bar_phase(status_bar: &gtk::Box, phase: Option<SessionPhase>) {
+    for class in [
+        "phase-connecting",
+        "phase-connected",
+        "phase-attention",
+        "phase-error",
+        "phase-exited",
+    ] {
+        status_bar.remove_css_class(class);
+    }
+
+    if let Some(phase) = phase {
+        status_bar.add_css_class(phase_bar_class(&phase));
+    }
+}
+
+fn group_statuses(groups: &[TerminalGroup]) -> Vec<GroupStatus> {
+    groups
+        .iter()
+        .enumerate()
+        .map(|(index, group)| GroupStatus {
+            title: group.title(index),
+            phase: group.phase(),
+        })
+        .collect()
+}
+
+fn parse_quick_connect(input: &str) -> Result<QuickConnectTarget, String> {
+    let value = input.trim();
+    if value.is_empty() {
+        return Err("Enter a host, ssh:// URI, or local://shell".into());
+    }
+
+    let lower = value.to_ascii_lowercase();
+    if lower == "local" || lower.starts_with("local://") {
+        return Ok(QuickConnectTarget::Local);
+    }
+
+    let target = if lower.starts_with("ssh://") {
+        value[6..].trim()
+    } else if lower.starts_with("ssh ") {
+        value[4..].trim()
+    } else if value.contains("://") {
+        return Err("Only ssh:// and local:// quick-connect URIs are supported".into());
+    } else {
+        value
+    };
+
+    let (authority, command_path) = target
+        .split_once('/')
+        .map_or((target, ""), |(authority, path)| (authority, path));
+    let authority = authority.trim();
+    if authority.is_empty() {
+        return Err("Host is required".into());
+    }
+
+    let (user, host_port) = authority
+        .rsplit_once('@')
+        .map_or(("", authority), |(user, host)| (user.trim(), host.trim()));
+    let (host, port) = parse_host_port(host_port)?;
+    if host.starts_with('-') {
+        return Err("Host cannot start with '-'".into());
+    }
+
+    let destination = if user.is_empty() {
+        host.clone()
+    } else {
+        format!("{user}@{host}")
+    };
+    let mut profile = ConnectionProfile::new(destination, host);
+    profile.user = user.to_string();
+    profile.port = port;
+    profile.remote_command = command_path.trim().replace("%20", " ");
+    profile.accept_new_host = true;
+    Ok(QuickConnectTarget::Ssh(Box::new(profile)))
+}
+
+fn parse_host_port(input: &str) -> Result<(String, u16), String> {
+    let value = input.trim();
+    if value.is_empty() {
+        return Err("Host is required".into());
+    }
+
+    if let Some(rest) = value.strip_prefix('[') {
+        let Some((host, after_host)) = rest.split_once(']') else {
+            return Err("IPv6 hosts must be written as [address]".into());
+        };
+        if host.trim().is_empty() {
+            return Err("Host is required".into());
+        }
+        let port = if let Some(port_text) = after_host.strip_prefix(':') {
+            parse_quick_connect_port(port_text)?
+        } else if after_host.trim().is_empty() {
+            DEFAULT_SSH_PORT
+        } else {
+            return Err("Invalid host/port syntax".into());
+        };
+        return Ok((host.trim().to_string(), port));
+    }
+
+    if let Some((host, port_text)) = value.rsplit_once(':')
+        && !host.contains(':')
+    {
+        if port_text.is_empty() || !port_text.chars().all(|ch| ch.is_ascii_digit()) {
+            return Err("Port must be between 1 and 65535".into());
+        }
+        let port = parse_quick_connect_port(port_text)?;
+        if host.trim().is_empty() {
+            return Err("Host is required".into());
+        }
+        return Ok((host.trim().to_string(), port));
+    }
+
+    Ok((value.to_string(), DEFAULT_SSH_PORT))
+}
+
+fn parse_quick_connect_port(input: &str) -> Result<u16, String> {
+    let port = input
+        .parse::<u16>()
+        .map_err(|_| "Port must be between 1 and 65535".to_string())?;
+    if port == 0 {
+        return Err("Port must be between 1 and 65535".into());
+    }
+    Ok(port)
+}
+
+fn parse_draft_port(input: &str) -> Result<u16, String> {
+    let port = input.trim();
+    if port.is_empty() {
+        return Err("Port is required".into());
+    }
+    parse_quick_connect_port(port)
+}
+
 pub struct RshellApp {
     repository: ConnectionRepository,
     store: ConnectionStore,
+    quick_profiles: HashMap<Uuid, ConnectionProfile>,
     settings_repo: SettingsRepository,
     global_config: GlobalConfig,
     selected_connection_id: Option<Uuid>,
@@ -557,13 +1001,16 @@ pub struct RshellApp {
     editor_visible: bool,
     settings_visible: bool,
     broadcast_mode: bool,
+    fullscreened: bool,
     connections_dirty: Cell<bool>,
     groups_dirty: Cell<bool>,
     terminal_dirty: Cell<bool>,
     draft_dirty: Cell<bool>,
     updating_draft: Cell<bool>,
     settings_dirty: Cell<bool>,
+    settings_persist_dirty: Cell<bool>,
     updating_settings: Cell<bool>,
+    group_status_cache: RefCell<Vec<GroupStatus>>,
 }
 
 #[derive(Debug)]
@@ -578,7 +1025,7 @@ pub enum AppMsg {
     DraftNameChanged(String),
     DraftFolderChanged(String),
     DraftHostChanged(String),
-    DraftPortChanged(u16),
+    DraftPortChanged(String),
     DraftUserChanged(String),
     DraftPasswordChanged(String),
     DraftIdentityChanged(String),
@@ -587,7 +1034,9 @@ pub enum AppMsg {
     DraftBackendChanged(ConnectionBackend),
     DraftAcceptNewHostChanged(bool),
     LaunchSelected,
+    QuickConnect(String),
     NewLocalTab,
+    ReconnectCurrent,
     SelectGroup(usize),
     CloseGroup(usize),
     SplitHorizontal,
@@ -595,14 +1044,35 @@ pub enum AppMsg {
     ClosePane,
     FocusPane(usize),
     PaneKeyPress(usize, gdk::Key, gdk::ModifierType),
-    SessionLaunched(String, TerminalSessionHandle, Option<String>),
-    SessionFailed(String),
+    SessionLaunched(
+        Uuid,
+        String,
+        TerminalSessionHandle,
+        Option<String>,
+        ResolvedTerminalSettings,
+    ),
+    SessionFailed(Uuid, String),
+    SplitSessionLaunched {
+        group_index: usize,
+        horizontal: bool,
+        name: String,
+        handle: TerminalSessionHandle,
+        remote_host: Option<String>,
+        settings: ResolvedTerminalSettings,
+        source: SessionSource,
+    },
+    SplitSessionFailed(String),
     RefreshSessions,
     ShutdownAll,
     ToggleFullscreen,
     ToggleBroadcast,
     PasteRemoteIp(usize),
     OpenInEditor(usize),
+    CopyActiveSelection,
+    PasteIntoActivePane,
+    SelectActiveScreen,
+    OpenActiveScreenInEditor,
+    OpenActiveSelectionInEditor,
     DraftTerminalChanged(TerminalSettingChange),
     GlobalTerminalChanged(TerminalSettingChange),
     ThemeChanged(AppTheme),
@@ -638,8 +1108,10 @@ struct ConnectionDraft {
     folder: String,
     host: String,
     port: u16,
+    port_text: String,
     user: String,
     password: String,
+    password_changed: bool,
     identity_file: String,
     remote_command: String,
     note: String,
@@ -659,8 +1131,10 @@ impl ConnectionDraft {
                 .to_string(),
             host: profile.host.clone(),
             port: profile.port,
+            port_text: profile.port.to_string(),
             user: profile.user.clone(),
             password: profile.password.clone(),
+            password_changed: false,
             identity_file: profile.identity_file.clone(),
             remote_command: profile.remote_command.clone(),
             note: profile.note.clone(),
@@ -673,10 +1147,26 @@ impl ConnectionDraft {
     fn empty() -> Self {
         Self {
             port: 22,
+            port_text: "22".into(),
             backend: ConnectionBackend::SystemOpenSsh,
             accept_new_host: true,
+            password_changed: false,
             ..Default::default()
         }
+    }
+
+    fn validation_error(&self) -> Option<String> {
+        let host = self.host.trim();
+        if host.is_empty() {
+            return Some("Host is required".into());
+        }
+        if host.starts_with('-') {
+            return Some("Host cannot start with '-'".into());
+        }
+        if let Err(error) = parse_draft_port(&self.port_text) {
+            return Some(error);
+        }
+        None
     }
 
     fn into_profile(self, store: &mut ConnectionStore) -> ConnectionProfile {
@@ -691,9 +1181,17 @@ impl ConnectionDraft {
         );
         profile.id = self.id.unwrap_or_else(Uuid::new_v4);
         profile.folder_id = folder_id;
-        profile.port = self.port;
+        profile.port = parse_draft_port(&self.port_text).unwrap_or(self.port);
         profile.user = self.user;
-        profile.password = self.password;
+        profile.password = if self.password_changed {
+            self.password
+        } else {
+            self.id
+                .and_then(|id| store.connection(id))
+                .map(|existing| existing.password.clone())
+                .unwrap_or(self.password)
+        };
+        profile.password_dirty = self.password_changed;
         profile.identity_file = self.identity_file;
         profile.remote_command = self.remote_command;
         profile.note = self.note;
@@ -705,6 +1203,7 @@ impl ConnectionDraft {
 }
 
 pub struct AppWidgets {
+    window: gtk::Window,
     sidebar_revealer: gtk::Revealer,
     connection_list: gtk::ListBox,
     editor_dialog: gtk::Window,
@@ -722,8 +1221,13 @@ pub struct AppWidgets {
     backend_wezterm: gtk::CheckButton,
     draft_terminal: TerminalSettingsWidgets,
     settings_dialog: gtk::Window,
+    theme_dropdown: gtk::DropDown,
+    updating_theme_dropdown: Rc<Cell<bool>>,
     global_terminal: TerminalSettingsWidgets,
     connect_btn: gtk::Button,
+    edit_connection_btn: gtk::Button,
+    delete_connection_btn: gtk::Button,
+    reconnect_btn: gtk::Button,
     split_h_btn: gtk::Button,
     split_v_btn: gtk::Button,
     close_pane_btn: gtk::Button,
@@ -731,6 +1235,8 @@ pub struct AppWidgets {
     terminal_container: gtk::Box,
     pane_views: Vec<gtk::DrawingArea>,
     pane_sizes: Vec<(u16, u16, u16, u16)>,
+    quick_connect_entry: gtk::Entry,
+    status_bar: gtk::Box,
     status_label: gtk::Label,
     terminal_font_size: Rc<Cell<f64>>,
 }
@@ -749,20 +1255,36 @@ impl RshellApp {
             .and_then(|id| self.store.connection(id))
     }
 
+    fn session_profile(&self, id: Uuid) -> Option<&ConnectionProfile> {
+        self.store
+            .connection(id)
+            .or_else(|| self.quick_profiles.get(&id))
+    }
+
     fn load_draft_from_selection(&mut self) {
         if let Some(profile) = self.selected_profile() {
             self.draft = ConnectionDraft::from_profile(&self.store, profile);
         }
     }
 
-    fn save_store(&mut self) {
-        match self.repository.save(&self.store) {
-            Ok(()) => {
-                self.toast = format!("Saved {} connections", self.store.connections.len());
-            }
-            Err(e) => {
-                self.toast = format!("Save failed: {e:#}");
-            }
+    fn save_store(&self) -> std::result::Result<(), String> {
+        self.repository
+            .save(&self.store)
+            .map_err(|e| format!("Save failed: {e:#}"))
+    }
+
+    fn save_global_settings(&mut self, success_message: &str) {
+        if let Err(e) = self.settings_repo.save(&self.global_config) {
+            self.toast = format!("Failed to save settings: {e}");
+        } else {
+            self.settings_persist_dirty.set(false);
+            self.toast = success_message.into();
+        }
+    }
+
+    fn save_global_settings_if_needed(&mut self, success_message: &str) {
+        if self.settings_persist_dirty.get() {
+            self.save_global_settings(success_message);
         }
     }
 
@@ -774,8 +1296,14 @@ impl RshellApp {
         self.selected_group.and_then(|i| self.groups.get_mut(i))
     }
 
+    fn active_pane(&self) -> Option<&TerminalPane> {
+        let group = self.selected_group()?;
+        group.panes.get(group.active_pane)
+    }
+
     fn live_count(&self) -> usize {
-        self.groups
+        let live_sessions = self
+            .groups
             .iter()
             .flat_map(|g| &g.panes)
             .filter(|p| {
@@ -784,27 +1312,426 @@ impl RshellApp {
                     SessionPhase::Connecting | SessionPhase::Connected | SessionPhase::Attention
                 )
             })
-            .count()
+            .count();
+        let pending_sessions = self
+            .groups
+            .iter()
+            .filter(|group| {
+                group
+                    .pending
+                    .as_ref()
+                    .is_some_and(|pending| matches!(pending.status, PendingStatus::Connecting))
+            })
+            .count();
+        live_sessions + pending_sessions
     }
 
     fn status_text(&self) -> String {
-        if let Some(group) = self.selected_group()
+        let base = if let Some(group) = self.selected_group()
             && let Some(pane) = group.panes.get(group.active_pane)
         {
             let snap = pane.handle.snapshot();
-            return format!(
+            format!(
                 "{}  ·  {}  ·  {}  ·  Panes: {}",
                 snap.phase.label(),
                 pane.name,
                 snap.status_line,
                 group.panes.len()
-            );
+            )
+        } else if let Some(group) = self.selected_group()
+            && let Some(pending) = &group.pending
+        {
+            match &pending.status {
+                PendingStatus::Connecting => {
+                    format!("Connecting  ·  {}  ·  {}", pending.name, pending.host)
+                }
+                PendingStatus::Failed(message) => {
+                    format!("Error  ·  {}  ·  {message}", pending.name)
+                }
+            }
+        } else {
+            format!(
+                "Sessions: {}  ·  Live: {}",
+                self.groups.len(),
+                self.live_count()
+            )
+        };
+
+        let toast = self.toast.trim();
+        if toast.is_empty() || toast == "Ready" || base.contains(toast) {
+            base
+        } else {
+            format!("{toast}  ·  {base}")
         }
-        format!(
-            "Sessions: {}  ·  Live: {}",
-            self.groups.len(),
-            self.live_count()
-        )
+    }
+
+    fn session_uri_text(&self) -> String {
+        if let Some(group) = self.selected_group()
+            && let Some(pane) = group.panes.get(group.active_pane)
+        {
+            return match pane.source {
+                SessionSource::Local => "local://shell".into(),
+                SessionSource::Connection(id) => self
+                    .session_profile(id)
+                    .map(|profile| {
+                        let destination = profile.destination();
+                        format!("ssh://{}:{}", destination, profile.port)
+                    })
+                    .or_else(|| {
+                        pane.remote_host
+                            .as_deref()
+                            .map(|host| format!("ssh://{}", host.trim()))
+                    })
+                    .unwrap_or_else(|| "ssh://unknown".into()),
+            };
+        }
+
+        if let Some(group) = self.selected_group()
+            && let Some(pending) = &group.pending
+        {
+            return self
+                .session_profile(pending.profile_id)
+                .map(|profile| {
+                    let destination = profile.destination();
+                    format!("ssh://{}:{}", destination, profile.port)
+                })
+                .unwrap_or_else(|| format!("ssh://{}", pending.host.trim()));
+        }
+
+        "No active session".into()
+    }
+
+    fn active_phase(&self) -> Option<SessionPhase> {
+        self.selected_group().map(TerminalGroup::phase)
+    }
+
+    fn pending_group_index(&self, pending_id: Uuid) -> Option<usize> {
+        self.groups.iter().position(|group| {
+            group
+                .pending
+                .as_ref()
+                .is_some_and(|pending| pending.id == pending_id)
+        })
+    }
+
+    fn current_reconnect_source(&self) -> Option<SessionSource> {
+        let group = self.selected_group()?;
+        if let Some(pending) = &group.pending
+            && matches!(pending.status, PendingStatus::Failed(_))
+        {
+            return Some(SessionSource::Connection(pending.profile_id));
+        }
+        group.panes.get(group.active_pane).map(|pane| pane.source)
+    }
+
+    fn prepare_profile_launch(
+        &self,
+        profile: &ConnectionProfile,
+    ) -> Result<(String, String, ResolvedTerminalSettings), String> {
+        if profile.host.trim().is_empty() {
+            return Err("Host is required".into());
+        }
+        if profile.host.trim().starts_with('-') {
+            return Err("Host cannot start with '-'".into());
+        }
+
+        let mut settings = self.resolve_settings(&profile.terminal);
+        // Font size is global-only (no per-session UI); override so the
+        // initial PTY geometry matches the rendering pipeline.
+        settings.font_size = self.default_resolved_settings().font_size;
+        Ok((profile.name.clone(), profile.host.clone(), settings))
+    }
+
+    fn launch_profile_pending(
+        &mut self,
+        profile: ConnectionProfile,
+        sender: &ComponentSender<Self>,
+        replace_index: Option<usize>,
+    ) {
+        let (name, host, settings) = match self.prepare_profile_launch(&profile) {
+            Ok(parts) => parts,
+            Err(error) => {
+                self.toast = error;
+                return;
+            }
+        };
+
+        self.toast = if profile.backend == ConnectionBackend::SystemOpenSsh
+            && !profile.password.is_empty()
+        {
+            "Saved passwords are used by WezTerm SSH; OpenSSH will prompt in the terminal".into()
+        } else {
+            format!("Connecting to {name}...")
+        };
+
+        let pending_id = Uuid::new_v4();
+        let pending_group = TerminalGroup::pending(PendingConnection {
+            id: pending_id,
+            profile_id: profile.id,
+            name: name.clone(),
+            host: host.clone(),
+            status: PendingStatus::Connecting,
+        });
+
+        let target_index =
+            if let Some(index) = replace_index.filter(|index| *index < self.groups.len()) {
+                for pane in &self.groups[index].panes {
+                    pane.handle.shutdown();
+                }
+                self.groups[index] = pending_group;
+                index
+            } else {
+                self.groups.push(pending_group);
+                self.groups.len() - 1
+            };
+
+        self.selected_group = Some(target_index);
+        self.groups_dirty.set(true);
+        self.terminal_dirty.set(true);
+
+        let input_tx = sender.input_sender().clone();
+        let pane_settings = settings.clone();
+        thread::spawn(move || match launch_session(&profile, settings) {
+            Ok(handle) => {
+                let _ = input_tx.send(AppMsg::SessionLaunched(
+                    pending_id,
+                    name,
+                    handle,
+                    Some(host),
+                    pane_settings,
+                ));
+            }
+            Err(e) => {
+                let _ = input_tx.send(AppMsg::SessionFailed(pending_id, format!("{e:#}")));
+            }
+        });
+    }
+
+    fn replace_with_local_session(&mut self, replace_index: Option<usize>) {
+        let settings = self.default_resolved_settings();
+        match launch_local_session(settings.clone()) {
+            Ok(handle) => {
+                let group = TerminalGroup::from_pane(TerminalPane::new(
+                    "Local Shell",
+                    handle,
+                    None,
+                    settings,
+                    SessionSource::Local,
+                ));
+                let target_index =
+                    if let Some(index) = replace_index.filter(|index| *index < self.groups.len()) {
+                        for pane in &self.groups[index].panes {
+                            pane.handle.shutdown();
+                        }
+                        self.groups[index] = group;
+                        index
+                    } else {
+                        self.groups.push(group);
+                        self.groups.len() - 1
+                    };
+                self.selected_group = Some(target_index);
+                self.toast = "Local shell launched".into();
+                self.groups_dirty.set(true);
+                self.terminal_dirty.set(true);
+            }
+            Err(e) => {
+                self.toast = format!("Local shell failed: {e:#}");
+            }
+        }
+    }
+
+    fn reconnect_current(&mut self, sender: &ComponentSender<Self>) {
+        let Some(index) = self.selected_group else {
+            self.toast = "No active session to reconnect".into();
+            return;
+        };
+        let Some(source) = self.current_reconnect_source() else {
+            self.toast = "No reconnect source for this tab".into();
+            return;
+        };
+
+        match source {
+            SessionSource::Local => self.replace_with_local_session(Some(index)),
+            SessionSource::Connection(profile_id) => {
+                if let Some(profile) = self.session_profile(profile_id).cloned() {
+                    self.launch_profile_pending(profile, sender, Some(index));
+                } else {
+                    self.toast = "Saved connection was removed".into();
+                }
+            }
+        }
+    }
+
+    fn add_local_split(&mut self, group_index: usize, horizontal: bool) {
+        let settings = self.default_resolved_settings();
+        let Some(group) = self.groups.get_mut(group_index) else {
+            self.toast = "No active tab to split".into();
+            return;
+        };
+        if !group.can_split() {
+            self.toast = "Max 4 panes per tab".into();
+            return;
+        }
+
+        match launch_local_session(settings.clone()) {
+            Ok(handle) => {
+                group.add_pane(
+                    TerminalPane::new("Local Shell", handle, None, settings, SessionSource::Local),
+                    horizontal,
+                );
+                self.toast = "Local split opened".into();
+                self.terminal_dirty.set(true);
+            }
+            Err(e) => {
+                self.toast = format!("Split failed: {e:#}");
+            }
+        }
+    }
+
+    fn split_current_session(&mut self, horizontal: bool, sender: &ComponentSender<Self>) {
+        let Some(group_index) = self.selected_group else {
+            self.toast = "No active tab to split".into();
+            return;
+        };
+        let Some(group) = self.groups.get(group_index) else {
+            self.toast = "No active tab to split".into();
+            return;
+        };
+        if !group.can_split() {
+            self.toast = "Max 4 panes per tab".into();
+            return;
+        }
+
+        let Some(source) = group.panes.get(group.active_pane).map(|pane| pane.source) else {
+            self.toast = "No active session to split".into();
+            return;
+        };
+
+        match source {
+            SessionSource::Local => self.add_local_split(group_index, horizontal),
+            SessionSource::Connection(profile_id) => {
+                let Some(profile) = self.session_profile(profile_id).cloned() else {
+                    self.toast = "Saved connection was removed".into();
+                    return;
+                };
+                let (name, host, settings) = match self.prepare_profile_launch(&profile) {
+                    Ok(parts) => parts,
+                    Err(error) => {
+                        self.toast = error;
+                        return;
+                    }
+                };
+
+                self.toast = format!("Opening split for {name}...");
+                let input_tx = sender.input_sender().clone();
+                let pane_settings = settings.clone();
+                thread::spawn(move || match launch_session(&profile, settings) {
+                    Ok(handle) => {
+                        let _ = input_tx.send(AppMsg::SplitSessionLaunched {
+                            group_index,
+                            horizontal,
+                            name,
+                            handle,
+                            remote_host: Some(host),
+                            settings: pane_settings,
+                            source: SessionSource::Connection(profile_id),
+                        });
+                    }
+                    Err(e) => {
+                        let _ = input_tx.send(AppMsg::SplitSessionFailed(format!("{e:#}")));
+                    }
+                });
+            }
+        }
+    }
+
+    fn quick_connect(&mut self, input: String, sender: &ComponentSender<Self>) {
+        match parse_quick_connect(&input) {
+            Ok(QuickConnectTarget::Local) => self.replace_with_local_session(None),
+            Ok(QuickConnectTarget::Ssh(profile)) => {
+                let profile = *profile;
+                self.quick_profiles.insert(profile.id, profile.clone());
+                self.launch_profile_pending(profile, sender, None);
+            }
+            Err(error) => {
+                self.toast = error;
+            }
+        }
+    }
+
+    fn copy_active_selection(&mut self) {
+        let text = self
+            .active_pane()
+            .and_then(|pane| extract_selection_text(&pane.handle, &pane.render_state));
+        if let Some(text) = text
+            && let Some(display) = gdk::Display::default()
+        {
+            display.clipboard().set_text(&text);
+            self.toast = "Selection copied".into();
+        } else {
+            self.toast = "No selection to copy".into();
+        }
+    }
+
+    fn paste_into_active_pane(&mut self) {
+        let Some(handle) = self.active_pane().map(|pane| pane.handle.clone()) else {
+            self.toast = "No active session to paste into".into();
+            return;
+        };
+        if let Some(display) = gdk::Display::default() {
+            let cb = display.clipboard();
+            cb.read_text_async(None::<&gio::Cancellable>, move |result| {
+                if let Ok(Some(text)) = result {
+                    let _ = handle.send_bytes(text.as_bytes().to_vec());
+                }
+            });
+            self.toast = "Clipboard pasted".into();
+        } else {
+            self.toast = "Clipboard is unavailable".into();
+        }
+    }
+
+    fn select_active_screen(&mut self) {
+        let Some(pane) = self.active_pane() else {
+            self.toast = "No active session to select".into();
+            return;
+        };
+        if let Some(phys_rows) = pane.handle.with_terminal(|t| t.screen().physical_rows) {
+            pane.render_state.borrow_mut().selection = Some((
+                CellCoord { col: 0, row: 0 },
+                CellCoord {
+                    col: usize::MAX,
+                    row: phys_rows.saturating_sub(1),
+                },
+            ));
+            self.toast = "Screen selected".into();
+            self.terminal_dirty.set(true);
+        } else {
+            self.toast = "No active screen to select".into();
+        }
+    }
+
+    fn open_active_screen_in_editor(&mut self) {
+        let Some(pane) = self.active_pane() else {
+            self.toast = "No active session to open".into();
+            return;
+        };
+        let scroll_offset = pane.render_state.borrow().scroll_offset;
+        let text = extract_screen_text(&pane.handle, scroll_offset);
+        open_text_in_editor(&text);
+        self.toast = "Screen opened in editor".into();
+    }
+
+    fn open_active_selection_in_editor(&mut self) {
+        let text = self
+            .active_pane()
+            .and_then(|pane| extract_selection_text(&pane.handle, &pane.render_state));
+        if let Some(text) = text {
+            open_text_in_editor(&text);
+            self.toast = "Selection opened in editor".into();
+        } else {
+            self.toast = "No selection to open".into();
+        }
     }
 }
 
@@ -829,28 +1756,67 @@ impl RshellApp {
                 self.draft_dirty.set(true);
             }
             AppMsg::SaveDraft => {
-                let draft = std::mem::take(&mut self.draft);
-                let profile = draft.into_profile(&mut self.store);
+                if let Some(error) = self.draft.validation_error() {
+                    self.toast = error;
+                    return;
+                }
+                let previous_store = self.store.clone();
+                let previous_selection = self.selected_connection_id;
+                let draft = self.draft.clone();
+                let profile = draft.clone().into_profile(&mut self.store);
                 self.selected_connection_id = Some(profile.id);
                 self.store.upsert(profile.clone());
-                self.draft = ConnectionDraft::from_profile(&self.store, &profile);
-                self.save_store();
-                self.editor_visible = false;
+                match self.save_store() {
+                    Ok(()) => {
+                        self.draft = ConnectionDraft::from_profile(&self.store, &profile);
+                        self.editor_visible = false;
+                        self.toast = format!("Saved {}", profile.name);
+                    }
+                    Err(error) => {
+                        self.store = previous_store;
+                        self.selected_connection_id = previous_selection;
+                        self.draft = draft;
+                        self.editor_visible = true;
+                        self.toast = error;
+                    }
+                }
                 self.connections_dirty.set(true);
                 self.draft_dirty.set(true);
             }
             AppMsg::DeleteSelected => {
                 if let Some(id) = self.selected_connection_id
-                    && let Some(removed) = self.store.remove(id)
+                    && self.store.connection(id).is_some()
                 {
+                    let previous_store = self.store.clone();
+                    let previous_selection = self.selected_connection_id;
+                    let removed = self.store.remove(id).expect("connection existed above");
                     self.toast = format!("Deleted {}", removed.name);
                     self.selected_connection_id = self.store.connections.first().map(|p| p.id);
-                    if self.selected_connection_id.is_some() {
-                        self.load_draft_from_selection();
-                    } else {
-                        self.draft = ConnectionDraft::empty();
+                    match self.save_store() {
+                        Ok(()) => {
+                            if let Err(error) = self.repository.delete_password(removed.id) {
+                                self.toast = format!(
+                                    "Deleted {} · credential cleanup failed: {error:#}",
+                                    removed.name
+                                );
+                            }
+                            if self.selected_connection_id.is_some() {
+                                self.load_draft_from_selection();
+                            } else {
+                                self.draft = ConnectionDraft::empty();
+                            }
+                        }
+                        Err(error) => {
+                            self.store = previous_store;
+                            self.selected_connection_id = previous_selection;
+                            if self.selected_connection_id.is_some() {
+                                self.load_draft_from_selection();
+                            } else {
+                                self.draft = ConnectionDraft::empty();
+                            }
+                            self.toast = error;
+                        }
                     }
-                    self.save_store();
                     self.connections_dirty.set(true);
                     self.draft_dirty.set(true);
                 }
@@ -885,7 +1851,10 @@ impl RshellApp {
             }
             AppMsg::DraftPortChanged(v) => {
                 if !self.updating_draft.get() {
-                    self.draft.port = v;
+                    self.draft.port_text = v;
+                    if let Ok(port) = parse_draft_port(&self.draft.port_text) {
+                        self.draft.port = port;
+                    }
                 }
             }
             AppMsg::DraftUserChanged(v) => {
@@ -896,6 +1865,7 @@ impl RshellApp {
             AppMsg::DraftPasswordChanged(v) => {
                 if !self.updating_draft.get() {
                     self.draft.password = v;
+                    self.draft.password_changed = true;
                 }
             }
             AppMsg::DraftIdentityChanged(v) => {
@@ -928,49 +1898,21 @@ impl RshellApp {
                     self.toast = "Select a connection first".into();
                     return;
                 };
-                self.toast = format!("Connecting to {}...", profile.name);
-                let name = profile.name.clone();
-                let host = profile.host.clone();
-                let input_tx = sender.input_sender().clone();
-                let mut settings = self.resolve_settings(&profile.terminal);
-                // Font size is global-only (no per-session UI); override so
-                // the initial PTY geometry matches the rendering pipeline
-                // which always reads the global value.
-                settings.font_size = self.default_resolved_settings().font_size;
-                thread::spawn(move || match launch_session(&profile, settings) {
-                    Ok(handle) => {
-                        let _ =
-                            input_tx.send(AppMsg::SessionLaunched(name, handle, Some(host)));
-                    }
-                    Err(e) => {
-                        let _ = input_tx.send(AppMsg::SessionFailed(format!("{name}: {e:#}")));
-                    }
-                });
+                self.launch_profile_pending(profile, sender, None);
             }
-            AppMsg::NewLocalTab => match launch_local_session(self.default_resolved_settings()) {
-                Ok(handle) => {
-                    let mut group = TerminalGroup {
-                        layout: SplitLayout::Single,
-                        panes: Vec::new(),
-                        active_pane: 0,
-                    };
-                    group.panes.push(TerminalPane {
-                        name: "Local Shell".into(),
-                        handle,
-                        remote_host: None,
-                    });
-                    self.groups.push(group);
-                    self.selected_group = Some(self.groups.len() - 1);
-                    self.groups_dirty.set(true);
-                    self.terminal_dirty.set(true);
-                }
-                Err(e) => {
-                    self.toast = format!("Local shell failed: {e:#}");
-                }
-            },
+            AppMsg::QuickConnect(input) => {
+                self.quick_connect(input, sender);
+            }
+            AppMsg::NewLocalTab => {
+                self.replace_with_local_session(None);
+            }
+            AppMsg::ReconnectCurrent => {
+                self.reconnect_current(sender);
+            }
             AppMsg::SelectGroup(index) => {
                 if index < self.groups.len() {
                     self.selected_group = Some(index);
+                    self.groups_dirty.set(true);
                     self.terminal_dirty.set(true);
                 }
             }
@@ -999,54 +1941,10 @@ impl RshellApp {
                 }
             }
             AppMsg::SplitHorizontal => {
-                let settings = self.default_resolved_settings();
-                if let Some(group) = self.selected_group_mut() {
-                    if group.can_split() {
-                        match launch_local_session(settings) {
-                            Ok(handle) => {
-                                group.add_pane(
-                                    TerminalPane {
-                                        name: "Local Shell".into(),
-                                        handle,
-                                        remote_host: None,
-                                    },
-                                    true,
-                                );
-                                self.terminal_dirty.set(true);
-                            }
-                            Err(e) => {
-                                self.toast = format!("Split failed: {e:#}");
-                            }
-                        }
-                    } else {
-                        self.toast = "Max 4 panes per tab".into();
-                    }
-                }
+                self.split_current_session(true, sender);
             }
             AppMsg::SplitVertical => {
-                let settings = self.default_resolved_settings();
-                if let Some(group) = self.selected_group_mut() {
-                    if group.can_split() {
-                        match launch_local_session(settings) {
-                            Ok(handle) => {
-                                group.add_pane(
-                                    TerminalPane {
-                                        name: "Local Shell".into(),
-                                        handle,
-                                        remote_host: None,
-                                    },
-                                    false,
-                                );
-                                self.terminal_dirty.set(true);
-                            }
-                            Err(e) => {
-                                self.toast = format!("Split failed: {e:#}");
-                            }
-                        }
-                    } else {
-                        self.toast = "Max 4 panes per tab".into();
-                    }
-                }
+                self.split_current_session(false, sender);
             }
             AppMsg::ClosePane => {
                 let should_remove_group = if let Some(group) = self.selected_group_mut() {
@@ -1061,9 +1959,7 @@ impl RshellApp {
                 } else {
                     false
                 };
-                if should_remove_group
-                    && let Some(gi) = self.selected_group
-                {
+                if should_remove_group && let Some(gi) = self.selected_group {
                     self.update_impl(AppMsg::CloseGroup(gi), sender);
                 }
             }
@@ -1075,48 +1971,107 @@ impl RshellApp {
                 }
             }
             AppMsg::PaneKeyPress(pane_index, key, modifiers) => {
-                if let Some((keycode, keymods)) = gdk_key_to_wezterm(key, modifiers) {
-                    if self.broadcast_mode {
-                        for group in &self.groups {
-                            for pane in &group.panes {
-                        let _ = pane
-                            .handle
-                            .with_terminal_mut(|t| t.key_down(keycode, keymods));
-                            }
+                if self.broadcast_mode {
+                    for group in &self.groups {
+                        for pane in &group.panes {
+                            send_configured_key(pane, key, modifiers);
                         }
-                    } else if let Some(group) = self.selected_group()
-                        && let Some(pane) = group.panes.get(pane_index)
-                    {
-                        let _ = pane.handle.with_terminal_mut(|t| t.key_down(keycode, keymods));
                     }
+                } else if let Some(group) = self.selected_group()
+                    && let Some(pane) = group.panes.get(pane_index)
+                {
+                    send_configured_key(pane, key, modifiers);
                 }
             }
             AppMsg::RefreshSessions => {
-                // No-op: exists solely to trigger view refresh via the 250ms timer.
-                // Relm4 calls update_view() after each update(), so receiving this
-                // message causes terminal content, status bar, etc. to refresh.
+                let current = group_statuses(&self.groups);
+                if *self.group_status_cache.borrow() != current {
+                    *self.group_status_cache.borrow_mut() = current;
+                    self.groups_dirty.set(true);
+                }
             }
-            AppMsg::SessionLaunched(name, handle, remote_host) => {
-                let mut group = TerminalGroup {
-                    layout: SplitLayout::Single,
-                    panes: Vec::new(),
-                    active_pane: 0,
-                };
-                group.panes.push(TerminalPane {
-                    name: name.clone(),
-                    handle,
-                    remote_host,
-                });
-                self.groups.push(group);
-                self.selected_group = Some(self.groups.len() - 1);
-                self.toast = format!("Connected to {name}");
-                self.groups_dirty.set(true);
-                self.terminal_dirty.set(true);
+            AppMsg::SessionLaunched(pending_id, name, handle, remote_host, settings) => {
+                if let Some(index) = self.pending_group_index(pending_id) {
+                    let was_selected = self.selected_group == Some(index);
+                    let Some(profile_id) = self.groups[index]
+                        .pending
+                        .as_ref()
+                        .map(|pending| pending.profile_id)
+                    else {
+                        handle.shutdown();
+                        return;
+                    };
+                    let group = TerminalGroup::from_pane(TerminalPane::new(
+                        name.clone(),
+                        handle,
+                        remote_host,
+                        settings,
+                        SessionSource::Connection(profile_id),
+                    ));
+                    self.groups[index] = group;
+                    if was_selected {
+                        self.selected_group = Some(index);
+                    }
+                    self.toast = if self
+                        .session_profile(profile_id)
+                        .is_some_and(|profile| profile.backend == ConnectionBackend::SystemOpenSsh)
+                    {
+                        format!("Started OpenSSH session for {name}")
+                    } else {
+                        format!("Connected to {name}")
+                    };
+                    self.groups_dirty.set(true);
+                    if was_selected {
+                        self.terminal_dirty.set(true);
+                    }
+                } else {
+                    handle.shutdown();
+                }
             }
-            AppMsg::SessionFailed(msg) => {
-                self.toast = format!("Failed: {msg}");
+            AppMsg::SessionFailed(pending_id, msg) => {
+                if let Some(index) = self.pending_group_index(pending_id)
+                    && let Some(pending) = &mut self.groups[index].pending
+                {
+                    let was_selected = self.selected_group == Some(index);
+                    pending.status = PendingStatus::Failed(msg.clone());
+                    self.toast = format!("Failed: {}: {msg}", pending.name);
+                    self.groups_dirty.set(true);
+                    if was_selected {
+                        self.selected_group = Some(index);
+                        self.terminal_dirty.set(true);
+                    }
+                }
+            }
+            AppMsg::SplitSessionLaunched {
+                group_index,
+                horizontal,
+                name,
+                handle,
+                remote_host,
+                settings,
+                source,
+            } => {
+                if let Some(group) = self.groups.get_mut(group_index)
+                    && group.can_split()
+                {
+                    group.add_pane(
+                        TerminalPane::new(name.clone(), handle, remote_host, settings, source),
+                        horizontal,
+                    );
+                    self.selected_group = Some(group_index);
+                    self.toast = format!("Split opened for {name}");
+                    self.groups_dirty.set(true);
+                    self.terminal_dirty.set(true);
+                } else {
+                    handle.shutdown();
+                    self.toast = "Split target is no longer available".into();
+                }
+            }
+            AppMsg::SplitSessionFailed(msg) => {
+                self.toast = format!("Split failed: {msg}");
             }
             AppMsg::ShutdownAll => {
+                self.save_global_settings_if_needed("Settings saved");
                 for group in &self.groups {
                     for pane in &group.panes {
                         pane.handle.shutdown();
@@ -1127,7 +2082,14 @@ impl RshellApp {
                 self.groups_dirty.set(true);
                 self.terminal_dirty.set(true);
             }
-            AppMsg::ToggleFullscreen => {}
+            AppMsg::ToggleFullscreen => {
+                self.fullscreened = !self.fullscreened;
+                self.toast = if self.fullscreened {
+                    "Fullscreen ON".into()
+                } else {
+                    "Fullscreen OFF".into()
+                };
+            }
             AppMsg::ToggleBroadcast => {
                 self.broadcast_mode = !self.broadcast_mode;
                 self.toast = if self.broadcast_mode {
@@ -1151,9 +2113,25 @@ impl RshellApp {
                 if let Some(group) = self.selected_group()
                     && let Some(pane) = group.panes.get(pane_index)
                 {
-                    let text = extract_screen_text(&pane.handle);
+                    let scroll_offset = pane.render_state.borrow().scroll_offset;
+                    let text = extract_screen_text(&pane.handle, scroll_offset);
                     open_text_in_editor(&text);
                 }
+            }
+            AppMsg::CopyActiveSelection => {
+                self.copy_active_selection();
+            }
+            AppMsg::PasteIntoActivePane => {
+                self.paste_into_active_pane();
+            }
+            AppMsg::SelectActiveScreen => {
+                self.select_active_screen();
+            }
+            AppMsg::OpenActiveScreenInEditor => {
+                self.open_active_screen_in_editor();
+            }
+            AppMsg::OpenActiveSelectionInEditor => {
+                self.open_active_selection_in_editor();
             }
             AppMsg::DraftTerminalChanged(change) => {
                 if !self.updating_draft.get() {
@@ -1169,11 +2147,17 @@ impl RshellApp {
                         TerminalSettingChange::LeftAltMeta(v) => t.left_alt_as_meta = Some(v),
                         TerminalSettingChange::RightAltMeta(v) => t.right_alt_as_meta = Some(v),
                         TerminalSettingChange::CsiU(v) => t.enable_csi_u = Some(v),
-                        TerminalSettingChange::KittyKeyboard(v) => t.enable_kitty_keyboard = Some(v),
-                        TerminalSettingChange::KittyGraphics(v) => t.enable_kitty_graphics = Some(v),
+                        TerminalSettingChange::KittyKeyboard(v) => {
+                            t.enable_kitty_keyboard = Some(v)
+                        }
+                        TerminalSettingChange::KittyGraphics(v) => {
+                            t.enable_kitty_graphics = Some(v)
+                        }
                         TerminalSettingChange::MouseReporting(v) => t.mouse_reporting = Some(v),
                         TerminalSettingChange::ScrollOnOutput(v) => t.scroll_on_output = Some(v),
-                        TerminalSettingChange::ScrollOnKeypress(v) => t.scroll_on_keypress = Some(v),
+                        TerminalSettingChange::ScrollOnKeypress(v) => {
+                            t.scroll_on_keypress = Some(v)
+                        }
                         TerminalSettingChange::Answerback(v) => t.answerback = Some(v),
                         TerminalSettingChange::FontSize(v) => t.font_size = Some(v),
                     }
@@ -1193,41 +2177,57 @@ impl RshellApp {
                         TerminalSettingChange::LeftAltMeta(v) => t.left_alt_as_meta = Some(v),
                         TerminalSettingChange::RightAltMeta(v) => t.right_alt_as_meta = Some(v),
                         TerminalSettingChange::CsiU(v) => t.enable_csi_u = Some(v),
-                        TerminalSettingChange::KittyKeyboard(v) => t.enable_kitty_keyboard = Some(v),
-                        TerminalSettingChange::KittyGraphics(v) => t.enable_kitty_graphics = Some(v),
+                        TerminalSettingChange::KittyKeyboard(v) => {
+                            t.enable_kitty_keyboard = Some(v)
+                        }
+                        TerminalSettingChange::KittyGraphics(v) => {
+                            t.enable_kitty_graphics = Some(v)
+                        }
                         TerminalSettingChange::MouseReporting(v) => t.mouse_reporting = Some(v),
                         TerminalSettingChange::ScrollOnOutput(v) => t.scroll_on_output = Some(v),
-                        TerminalSettingChange::ScrollOnKeypress(v) => t.scroll_on_keypress = Some(v),
+                        TerminalSettingChange::ScrollOnKeypress(v) => {
+                            t.scroll_on_keypress = Some(v)
+                        }
                         TerminalSettingChange::Answerback(v) => t.answerback = Some(v),
                         TerminalSettingChange::FontSize(v) => t.font_size = Some(v),
                     }
                     self.settings_dirty.set(true);
+                    self.settings_persist_dirty.set(true);
                 }
             }
             AppMsg::ThemeChanged(theme) => {
                 self.global_config.theme = theme;
                 crate::theme::apply_theme(theme);
+                self.settings_persist_dirty.set(true);
+                if !self.settings_visible {
+                    self.save_global_settings(&format!("Theme: {}", theme.label()));
+                } else {
+                    self.toast = format!("Theme: {}", theme.label());
+                }
                 self.settings_dirty.set(true);
             }
             AppMsg::OpenGlobalSettings => {
                 self.editor_visible = false;
-                self.settings_visible = !self.settings_visible;
+                if self.settings_visible {
+                    self.save_global_settings_if_needed("Settings saved");
+                    self.settings_visible = false;
+                } else {
+                    self.settings_visible = true;
+                }
                 self.settings_dirty.set(true);
             }
             AppMsg::SaveGlobalSettings => {
-                if let Err(e) = self.settings_repo.save(&self.global_config) {
-                    self.toast = format!("Failed to save settings: {e}");
-                } else {
-                    self.toast = "Settings saved".into();
-                }
+                self.save_global_settings("Settings saved");
             }
         }
     }
 
     fn view_impl(&self, widgets: &mut AppWidgets, sender: ComponentSender<Self>) {
-        widgets
-            .sidebar_revealer
-            .set_visible(self.sidebar_visible);
+        if self.fullscreened != widgets.window.is_fullscreen() {
+            widgets.window.set_fullscreened(self.fullscreened);
+        }
+
+        widgets.sidebar_revealer.set_visible(self.sidebar_visible);
         if self.editor_visible {
             widgets.editor_dialog.present();
         } else {
@@ -1237,20 +2237,36 @@ impl RshellApp {
         widgets
             .connect_btn
             .set_sensitive(self.selected_connection_id.is_some());
+        widgets
+            .edit_connection_btn
+            .set_sensitive(self.selected_connection_id.is_some());
+        widgets
+            .delete_connection_btn
+            .set_sensitive(self.selected_connection_id.is_some());
+        widgets
+            .reconnect_btn
+            .set_sensitive(self.current_reconnect_source().is_some());
         let has_group = self.selected_group.is_some();
         let can_split = self.selected_group().is_some_and(|g| g.can_split());
         widgets.split_h_btn.set_sensitive(has_group && can_split);
         widgets.split_v_btn.set_sensitive(has_group && can_split);
         widgets.close_pane_btn.set_sensitive(has_group);
 
+        if !widgets.quick_connect_entry.has_focus() {
+            let session_uri = self.session_uri_text();
+            if widgets.quick_connect_entry.text().as_str() != session_uri {
+                widgets.quick_connect_entry.set_text(&session_uri);
+            }
+        }
         widgets.status_label.set_label(&self.status_text());
+        update_status_bar_phase(&widgets.status_bar, self.active_phase());
 
         if self.draft_dirty.get() {
             self.updating_draft.set(true);
             widgets.draft_name.set_text(&self.draft.name);
             widgets.draft_folder.set_text(&self.draft.folder);
             widgets.draft_host.set_text(&self.draft.host);
-            widgets.draft_port.set_text(&self.draft.port.to_string());
+            widgets.draft_port.set_text(&self.draft.port_text);
             widgets.draft_user.set_text(&self.draft.user);
             widgets.draft_password.set_text(&self.draft.password);
             widgets.draft_identity.set_text(&self.draft.identity_file);
@@ -1277,6 +2293,15 @@ impl RshellApp {
         if self.settings_dirty.get() {
             if self.settings_visible {
                 self.updating_settings.set(true);
+                let theme_index = AppTheme::ALL
+                    .iter()
+                    .position(|theme| *theme == self.global_config.theme)
+                    .unwrap_or(0) as u32;
+                if widgets.theme_dropdown.selected() != theme_index {
+                    widgets.updating_theme_dropdown.set(true);
+                    widgets.theme_dropdown.set_selected(theme_index);
+                    widgets.updating_theme_dropdown.set(false);
+                }
                 let resolved = self.default_resolved_settings();
                 populate_terminal_settings(&widgets.global_terminal, &resolved);
                 self.updating_settings.set(false);
@@ -1306,6 +2331,38 @@ impl RshellApp {
                     acc
                 },
             );
+
+            if grouped.is_empty() {
+                let row = gtk::ListBoxRow::new();
+                row.set_selectable(false);
+                row.set_activatable(false);
+
+                let empty = gtk::Box::builder()
+                    .orientation(gtk::Orientation::Vertical)
+                    .spacing(4)
+                    .halign(gtk::Align::Center)
+                    .valign(gtk::Align::Center)
+                    .margin_top(36)
+                    .margin_start(12)
+                    .margin_end(12)
+                    .build();
+                empty.add_css_class("connection-empty");
+
+                let icon = symbolic_icon("network-server-symbolic", "▣", 28);
+                icon.add_css_class("connection-empty-icon");
+                empty.append(&icon);
+
+                let title = gtk::Label::new(Some("No saved sessions"));
+                title.add_css_class("connection-empty-title");
+                empty.append(&title);
+
+                let subtitle = gtk::Label::new(Some("Use + to add a profile"));
+                subtitle.add_css_class("connection-empty-subtitle");
+                empty.append(&subtitle);
+
+                row.set_child(Some(&empty));
+                widgets.connection_list.append(&row);
+            }
 
             for (folder, connections) in grouped {
                 let header_label = gtk::Label::new(Some(&folder));
@@ -1353,16 +2410,20 @@ impl RshellApp {
             }
 
             for (i, group) in self.groups.iter().enumerate() {
-                let label_text = if let Some(first) = group.panes.first() {
-                    first.name.clone()
-                } else {
-                    format!("Tab {}", i + 1)
-                };
+                let label_text = group.title(i);
 
                 let tab_box = gtk::Box::builder()
                     .orientation(gtk::Orientation::Horizontal)
                     .spacing(4)
                     .build();
+
+                let phase = group.phase();
+                let dot = gtk::Label::new(Some("●"));
+                for class in phase.css_class().split_whitespace() {
+                    dot.add_css_class(class);
+                }
+                dot.add_css_class("tab-status-dot");
+                tab_box.append(&dot);
 
                 let label = gtk::Label::new(Some(&label_text));
                 tab_box.append(&label);
@@ -1388,7 +2449,7 @@ impl RshellApp {
                 widgets.tab_bar.append(&btn);
             }
 
-            let add_btn = gtk::Button::with_label("+");
+            let add_btn = icon_button("list-add-symbolic", "+", "New Local Tab");
             add_btn.add_css_class("tab-add");
             let s = sender.clone();
             add_btn.connect_clicked(move |_| {
@@ -1397,31 +2458,51 @@ impl RshellApp {
             widgets.tab_bar.append(&add_btn);
 
             self.groups_dirty.set(false);
+            *self.group_status_cache.borrow_mut() = group_statuses(&self.groups);
         }
 
         if self.terminal_dirty.get() {
             if let Some(group) = self.selected_group() {
-                widgets.pane_views =
-                    rebuild_terminal_panes(&widgets.terminal_container, group, &sender, &widgets.terminal_font_size);
+                widgets.pane_views = rebuild_terminal_panes(
+                    &widgets.terminal_container,
+                    group,
+                    &sender,
+                    &widgets.terminal_font_size,
+                );
                 widgets.pane_sizes = vec![(0, 0, 0, 0); widgets.pane_views.len()];
             } else {
                 while let Some(child) = widgets.terminal_container.first_child() {
                     widgets.terminal_container.remove(&child);
                 }
-                let placeholder =
-                    gtk::Label::new(Some("Press \"+ Terminal\" or \"Connect\" to start"));
-                placeholder.set_vexpand(true);
-                placeholder.set_hexpand(true);
-                widgets.terminal_container.append(&placeholder);
+                let empty = gtk::Box::builder()
+                    .orientation(gtk::Orientation::Vertical)
+                    .spacing(10)
+                    .halign(gtk::Align::Center)
+                    .valign(gtk::Align::Center)
+                    .hexpand(true)
+                    .vexpand(true)
+                    .build();
+                empty.add_css_class("empty-state");
+                let placeholder = gtk::Label::new(Some("No active session"));
+                placeholder.add_css_class("dim-label");
+                let start_btn = gtk::Button::with_label("New Local Tab");
+                start_btn.add_css_class("connect-button");
+                let s = sender.clone();
+                start_btn.connect_clicked(move |_| {
+                    s.input(AppMsg::NewLocalTab);
+                });
+                empty.append(&placeholder);
+                empty.append(&start_btn);
+                widgets.terminal_container.append(&empty);
                 widgets.pane_views.clear();
                 widgets.pane_sizes.clear();
             }
             self.terminal_dirty.set(false);
         }
 
-        widgets.terminal_font_size.set(
-            self.default_resolved_settings().font_size as f64,
-        );
+        widgets
+            .terminal_font_size
+            .set(self.default_resolved_settings().font_size as f64);
 
         if let Some(group) = self.selected_group() {
             for (i, pane) in group.panes.iter().enumerate() {
@@ -1432,9 +2513,10 @@ impl RshellApp {
                     let h = area.height();
                     if w > 0 && h > 0 {
                         let pad = 4;
-                        let font_desc = pango::FontDescription::from_string(
-                            &format!("Monospace {}", widgets.terminal_font_size.get() as u32),
-                        );
+                        let font_desc = pango::FontDescription::from_string(&format!(
+                            "Monospace {}",
+                            widgets.terminal_font_size.get() as u32
+                        ));
                         let pango_ctx = area.pango_context();
                         pangocairo::functions::context_set_font_options(
                             &pango_ctx,
@@ -1448,11 +2530,21 @@ impl RshellApp {
                             let cols = ((w - pad * 2).max(0) / char_w) as u16;
                             let rows = ((h - pad * 2).max(0) / char_h) as u16;
                             if cols > 0 && rows > 0 {
-                                let last = widgets.pane_sizes.get(i).copied().unwrap_or((0, 0, 0, 0));
+                                let last =
+                                    widgets.pane_sizes.get(i).copied().unwrap_or((0, 0, 0, 0));
                                 if (cols, rows, char_w as u16, char_h as u16) != last {
-                                    let _ = pane.handle.resize(cols, rows, char_w as u16, char_h as u16);
+                                    let dpi =
+                                        96_u16.saturating_mul(area.scale_factor().max(1) as u16);
+                                    let _ = pane.handle.resize(
+                                        cols,
+                                        rows,
+                                        char_w as u16,
+                                        char_h as u16,
+                                        dpi,
+                                    );
                                     if i < widgets.pane_sizes.len() {
-                                        widgets.pane_sizes[i] = (cols, rows, char_w as u16, char_h as u16);
+                                        widgets.pane_sizes[i] =
+                                            (cols, rows, char_w as u16, char_h as u16);
                                     }
                                 }
                             }
@@ -1464,7 +2556,10 @@ impl RshellApp {
     }
 }
 
-fn gdk_mods_to_wezterm(modifiers: gdk::ModifierType) -> KeyModifiers {
+fn gdk_mods_to_wezterm(
+    modifiers: gdk::ModifierType,
+    settings: &ResolvedTerminalSettings,
+) -> KeyModifiers {
     let mut mods = KeyModifiers::NONE;
     if modifiers.contains(gdk::ModifierType::SHIFT_MASK) {
         mods |= KeyModifiers::SHIFT;
@@ -1472,7 +2567,9 @@ fn gdk_mods_to_wezterm(modifiers: gdk::ModifierType) -> KeyModifiers {
     if modifiers.contains(gdk::ModifierType::CONTROL_MASK) {
         mods |= KeyModifiers::CTRL;
     }
-    if modifiers.contains(gdk::ModifierType::ALT_MASK) {
+    if modifiers.contains(gdk::ModifierType::ALT_MASK)
+        && (settings.left_alt_as_meta || settings.right_alt_as_meta)
+    {
         mods |= KeyModifiers::ALT;
     }
     if modifiers.contains(gdk::ModifierType::SUPER_MASK) {
@@ -1482,10 +2579,11 @@ fn gdk_mods_to_wezterm(modifiers: gdk::ModifierType) -> KeyModifiers {
 }
 
 fn gdk_key_to_wezterm(
+    settings: &ResolvedTerminalSettings,
     key: gdk::Key,
     modifiers: gdk::ModifierType,
 ) -> Option<(KeyCode, KeyModifiers)> {
-    let mods = gdk_mods_to_wezterm(modifiers);
+    let mods = gdk_mods_to_wezterm(modifiers, settings);
 
     let keycode = match key {
         gdk::Key::Return | gdk::Key::KP_Enter => KeyCode::Enter,
@@ -1541,12 +2639,18 @@ fn gdk_key_to_wezterm(
         gdk::Key::KP_Subtract => KeyCode::Subtract,
         gdk::Key::KP_Decimal => KeyCode::Decimal,
         gdk::Key::KP_Divide => KeyCode::Divide,
-        gdk::Key::Shift_L | gdk::Key::Shift_R
-        | gdk::Key::Control_L | gdk::Key::Control_R
-        | gdk::Key::Alt_L | gdk::Key::Alt_R
-        | gdk::Key::Super_L | gdk::Key::Super_R
-        | gdk::Key::Meta_L | gdk::Key::Meta_R
-        | gdk::Key::Caps_Lock | gdk::Key::Num_Lock => {
+        gdk::Key::Shift_L
+        | gdk::Key::Shift_R
+        | gdk::Key::Control_L
+        | gdk::Key::Control_R
+        | gdk::Key::Alt_L
+        | gdk::Key::Alt_R
+        | gdk::Key::Super_L
+        | gdk::Key::Super_R
+        | gdk::Key::Meta_L
+        | gdk::Key::Meta_R
+        | gdk::Key::Caps_Lock
+        | gdk::Key::Num_Lock => {
             return None;
         }
         _ => {
@@ -1599,9 +2703,8 @@ fn draw_terminal(
     cr: &gtk::cairo::Context,
     width: i32,
     height: i32,
-    scale: f64,
     render_state: &Rc<RefCell<PaneRenderState>>,
-    font_size: f64,
+    options: TerminalDrawOptions,
 ) {
     let blink_visible = {
         let epoch_ms = std::time::SystemTime::now()
@@ -1634,11 +2737,52 @@ fn draw_terminal(
     };
 
     {
+        let mut rs = render_state.borrow_mut();
+        if rs.scroll_offset > 0 {
+            let previous_seqno = rs
+                .observed_seqno
+                .or_else(|| rs.cached_frame.map(|cached| cached.seqno));
+            let previous_scrollback_rows = rs
+                .observed_scrollback_rows
+                .or_else(|| rs.cached_frame.map(|cached| cached.scrollback_rows));
+
+            if previous_seqno.is_some() || previous_scrollback_rows.is_some() {
+                let output_changed = previous_seqno.is_some_and(|seqno| seqno != quick_meta.seqno)
+                    || previous_scrollback_rows
+                        .is_some_and(|rows| rows != quick_meta.scrollback_rows);
+                if options.scroll_on_output && output_changed {
+                    rs.set_scroll_offset(quick_meta.scrollback_rows, quick_meta.rows, 0);
+                } else if !options.scroll_on_output {
+                    let delta = previous_scrollback_rows
+                        .map(|rows| quick_meta.scrollback_rows.saturating_sub(rows))
+                        .unwrap_or(0);
+                    let max_offset = max_scroll_offset(quick_meta.scrollback_rows, quick_meta.rows);
+                    if delta > 0 {
+                        rs.scroll_offset = rs.scroll_offset.saturating_add(delta).min(max_offset);
+                        rs.cached_frame = None;
+                    } else {
+                        rs.clamp_scroll_offset(quick_meta.scrollback_rows, quick_meta.rows);
+                    }
+                } else {
+                    rs.clamp_scroll_offset(quick_meta.scrollback_rows, quick_meta.rows);
+                }
+            } else {
+                rs.clamp_scroll_offset(quick_meta.scrollback_rows, quick_meta.rows);
+            }
+        } else {
+            rs.clamp_scroll_offset(quick_meta.scrollback_rows, quick_meta.rows);
+        }
+        rs.observed_seqno = Some(quick_meta.seqno);
+        rs.observed_scrollback_rows = Some(quick_meta.scrollback_rows);
+    }
+
+    {
         let rs = render_state.borrow();
         let current_sel = rs.normalized_selection();
         if rs.cached_dims == (width, height)
-            && rs.cached_scale == scale
-            && rs.cached_font_size == font_size
+            && rs.cached_scale == options.scale
+            && rs.cached_font_size == options.font_size
+            && rs.cached_scroll_offset == rs.scroll_offset
             && rs.cached_selection == current_sel
             && rs.cached_frame == Some(quick_meta)
             && let Some(ref surface) = rs.cached_surface
@@ -1651,27 +2795,39 @@ fn draw_terminal(
 
     let can_reuse = {
         let rs = render_state.borrow();
-        rs.cached_dims == (width, height) && rs.cached_scale == scale && rs.cached_font_size == font_size && rs.cached_surface.is_some()
+        rs.cached_dims == (width, height)
+            && rs.cached_scale == options.scale
+            && rs.cached_font_size == options.font_size
+            && rs.cached_surface.is_some()
     };
 
     let surface = if can_reuse {
         let mut rs = render_state.borrow_mut();
         rs.cached_surface.take().unwrap()
     } else {
-        let phys_w = (width as f64 * scale).ceil() as i32;
-        let phys_h = (height as f64 * scale).ceil() as i32;
+        let phys_w = (width as f64 * options.scale).ceil() as i32;
+        let phys_h = (height as f64 * options.scale).ceil() as i32;
         match gtk::cairo::ImageSurface::create(gtk::cairo::Format::ARgb32, phys_w, phys_h) {
             Ok(s) => {
-                s.set_device_scale(scale, scale);
+                s.set_device_scale(options.scale, options.scale);
                 s
             }
             Err(_) => {
-                let meta = draw_terminal_full(handle, cr, width, height, render_state, blink_visible, font_size);
+                let meta = draw_terminal_full(
+                    handle,
+                    cr,
+                    width,
+                    height,
+                    render_state,
+                    blink_visible,
+                    options.font_size,
+                );
                 let mut rs = render_state.borrow_mut();
                 rs.cached_frame = meta;
                 rs.cached_dims = (width, height);
-                rs.cached_scale = scale;
-                rs.cached_font_size = font_size;
+                rs.cached_scale = options.scale;
+                rs.cached_font_size = options.font_size;
+                rs.cached_scroll_offset = rs.scroll_offset;
                 rs.cached_selection = rs.normalized_selection();
                 rs.cached_surface = None;
                 return;
@@ -1680,18 +2836,35 @@ fn draw_terminal(
     };
 
     let Ok(cache_cr) = gtk::cairo::Context::new(&surface) else {
-        let meta = draw_terminal_full(handle, cr, width, height, render_state, blink_visible, font_size);
+        let meta = draw_terminal_full(
+            handle,
+            cr,
+            width,
+            height,
+            render_state,
+            blink_visible,
+            options.font_size,
+        );
         let mut rs = render_state.borrow_mut();
         rs.cached_frame = meta;
         rs.cached_dims = (width, height);
-        rs.cached_scale = scale;
-        rs.cached_font_size = font_size;
+        rs.cached_scale = options.scale;
+        rs.cached_font_size = options.font_size;
+        rs.cached_scroll_offset = rs.scroll_offset;
         rs.cached_selection = rs.normalized_selection();
         rs.cached_surface = None;
         return;
     };
 
-    let meta = draw_terminal_full(handle, &cache_cr, width, height, render_state, blink_visible, font_size);
+    let meta = draw_terminal_full(
+        handle,
+        &cache_cr,
+        width,
+        height,
+        render_state,
+        blink_visible,
+        options.font_size,
+    );
     drop(cache_cr);
 
     let _ = cr.set_source_surface(&surface, 0.0, 0.0);
@@ -1701,8 +2874,9 @@ fn draw_terminal(
         let mut rs = render_state.borrow_mut();
         rs.cached_frame = meta;
         rs.cached_dims = (width, height);
-        rs.cached_scale = scale;
-        rs.cached_font_size = font_size;
+        rs.cached_scale = options.scale;
+        rs.cached_font_size = options.font_size;
+        rs.cached_scroll_offset = rs.scroll_offset;
         rs.cached_selection = rs.normalized_selection();
         rs.cached_surface = Some(surface);
     }
@@ -1726,107 +2900,154 @@ fn draw_terminal_full(
     blink_visible: bool,
     font_size: f64,
 ) -> Option<FrameMeta> {
-    let Some((seqno, rows, cols, scrollback_total, cursor_x, cursor_y, cursor_shape, cursor_vis, _palette_fg, palette_bg, cursor_bg_color, lines_data, image_cells)) =
-        handle.with_terminal(|terminal| {
-            let screen = terminal.screen();
-            let palette = terminal.palette();
-            let cursor = terminal.cursor_pos();
-            let phys_rows = screen.physical_rows;
-            let phys_cols = screen.physical_cols;
-            let seqno = terminal.current_seqno();
+    let Some((
+        seqno,
+        rows,
+        cols,
+        scrollback_total,
+        cursor_x,
+        cursor_y,
+        cursor_shape,
+        cursor_vis,
+        _palette_fg,
+        palette_bg,
+        cursor_bg_color,
+        lines_data,
+        image_cells,
+        scroll_offset,
+    )) = handle.with_terminal(|terminal| {
+        let screen = terminal.screen();
+        let palette = terminal.palette();
+        let cursor = terminal.cursor_pos();
+        let phys_rows = screen.physical_rows;
+        let phys_cols = screen.physical_cols;
+        let seqno = terminal.current_seqno();
 
-            let palette_fg = palette.foreground;
-            let palette_bg = palette.background;
-            let cursor_bg = palette.cursor_bg;
+        let palette_fg = palette.foreground;
+        let palette_bg = palette.background;
+        let cursor_bg = palette.cursor_bg;
 
-            let total = screen.scrollback_rows();
-            let start = total.saturating_sub(phys_rows);
-            let range = start..total;
+        let total = screen.scrollback_rows();
+        let requested_offset = render_state.borrow().scroll_offset;
+        let scroll_offset = requested_offset.min(max_scroll_offset(total, phys_rows));
+        let range = viewport_range(total, phys_rows, scroll_offset);
 
-            #[allow(clippy::type_complexity)]
-            let mut lines_data: Vec<Vec<(usize, String, usize, SrgbaTuple, SrgbaTuple, bool, bool, bool, bool, bool, bool)>> = Vec::new();
-            #[allow(clippy::type_complexity)]
-            let mut image_cells: Vec<(usize, usize, usize, f32, f32, f32, f32, i32, u16, u16, u16, u16, Arc<ImageData>)> = Vec::new();
+        #[allow(clippy::type_complexity)]
+        let mut lines_data: Vec<
+            Vec<(
+                usize,
+                String,
+                usize,
+                SrgbaTuple,
+                SrgbaTuple,
+                bool,
+                bool,
+                bool,
+                bool,
+                bool,
+                bool,
+            )>,
+        > = Vec::new();
+        #[allow(clippy::type_complexity)]
+        let mut image_cells: Vec<(
+            usize,
+            usize,
+            usize,
+            f32,
+            f32,
+            f32,
+            f32,
+            i32,
+            u16,
+            u16,
+            u16,
+            u16,
+            Arc<ImageData>,
+        )> = Vec::new();
 
-            screen.with_phys_lines(range, |phys_lines| {
-                for (row_idx, line) in phys_lines.iter().enumerate() {
-                    let mut cells = Vec::new();
-                    for cell in line.visible_cells() {
-                        let attrs = cell.attrs();
-                        let intensity = attrs.intensity();
-                        let italic = attrs.italic();
-                        let underline = attrs.underline() != wezterm_term::Underline::None;
-                        let strikethrough = attrs.strikethrough();
-                        let hyperlink = attrs.hyperlink().is_some();
-                        let reverse = attrs.reverse();
+        screen.with_phys_lines(range, |phys_lines| {
+            for (row_idx, line) in phys_lines.iter().enumerate() {
+                let mut cells = Vec::new();
+                for cell in line.visible_cells() {
+                    let attrs = cell.attrs();
+                    let intensity = attrs.intensity();
+                    let italic = attrs.italic();
+                    let underline = attrs.underline() != wezterm_term::Underline::None;
+                    let strikethrough = attrs.strikethrough();
+                    let hyperlink = attrs.hyperlink().is_some();
+                    let reverse = attrs.reverse();
 
-                        let mut fg = palette.resolve_fg(attrs.foreground());
-                        let mut bg = palette.resolve_bg(attrs.background());
+                    let mut fg = palette.resolve_fg(attrs.foreground());
+                    let mut bg = palette.resolve_bg(attrs.background());
 
-                        if reverse {
-                            std::mem::swap(&mut fg, &mut bg);
-                        }
-
-                        let bold = intensity == Intensity::Bold;
-                        let half = intensity == Intensity::Half;
-                        if half {
-                            fg = SrgbaTuple(fg.0 * 0.5, fg.1 * 0.5, fg.2 * 0.5, fg.3);
-                        }
-
-                        if let Some(images) = attrs.images() {
-                            for img in &images {
-                                let tl = img.top_left();
-                                let br = img.bottom_right();
-                                let (pl, pt, pr, pb) = img.padding();
-                                image_cells.push((
-                                    row_idx,
-                                    cell.cell_index(),
-                                    cell.width(),
-                                    tl.x.into_inner(),
-                                    tl.y.into_inner(),
-                                    br.x.into_inner(),
-                                    br.y.into_inner(),
-                                    img.z_index(),
-                                    pl, pt, pr, pb,
-                                    img.image_data().clone(),
-                                ));
-                            }
-                        }
-
-                        cells.push((
-                            cell.cell_index(),
-                            cell.str().to_string(),
-                            cell.width(),
-                            fg,
-                            bg,
-                            bold,
-                            italic,
-                            underline,
-                            strikethrough,
-                            cell.attrs().invisible(),
-                            hyperlink,
-                        ));
+                    if reverse {
+                        std::mem::swap(&mut fg, &mut bg);
                     }
-                    lines_data.push(cells);
-                }
-            });
 
-            (
-                seqno,
-                phys_rows,
-                phys_cols,
-                total,
-                cursor.x,
-                cursor.y as usize,
-                cursor.shape,
-                cursor.visibility,
-                palette_fg,
-                palette_bg,
-                cursor_bg,
-                lines_data,
-                image_cells,
-            )
-        })
+                    let bold = intensity == Intensity::Bold;
+                    let half = intensity == Intensity::Half;
+                    if half {
+                        fg = SrgbaTuple(fg.0 * 0.5, fg.1 * 0.5, fg.2 * 0.5, fg.3);
+                    }
+
+                    if let Some(images) = attrs.images() {
+                        for img in &images {
+                            let tl = img.top_left();
+                            let br = img.bottom_right();
+                            let (pl, pt, pr, pb) = img.padding();
+                            image_cells.push((
+                                row_idx,
+                                cell.cell_index(),
+                                cell.width(),
+                                tl.x.into_inner(),
+                                tl.y.into_inner(),
+                                br.x.into_inner(),
+                                br.y.into_inner(),
+                                img.z_index(),
+                                pl,
+                                pt,
+                                pr,
+                                pb,
+                                img.image_data().clone(),
+                            ));
+                        }
+                    }
+
+                    cells.push((
+                        cell.cell_index(),
+                        cell.str().to_string(),
+                        cell.width(),
+                        fg,
+                        bg,
+                        bold,
+                        italic,
+                        underline,
+                        strikethrough,
+                        cell.attrs().invisible(),
+                        hyperlink,
+                    ));
+                }
+                lines_data.push(cells);
+            }
+        });
+
+        (
+            seqno,
+            phys_rows,
+            phys_cols,
+            total,
+            cursor.x,
+            cursor.y as usize,
+            cursor.shape,
+            cursor.visibility,
+            palette_fg,
+            palette_bg,
+            cursor_bg,
+            lines_data,
+            image_cells,
+            scroll_offset,
+        )
+    })
     else {
         cr.set_source_rgb(0.11, 0.11, 0.14);
         let _ = cr.paint();
@@ -1850,9 +3071,14 @@ fn draw_terminal_full(
         let mut rs = render_state.borrow_mut();
         rs.cell_width = cell_w;
         rs.cell_height = cell_h;
+        rs.scroll_offset = scroll_offset;
     }
 
-    cr.set_source_rgb(palette_bg.0 as f64, palette_bg.1 as f64, palette_bg.2 as f64);
+    cr.set_source_rgb(
+        palette_bg.0 as f64,
+        palette_bg.1 as f64,
+        palette_bg.2 as f64,
+    );
     let _ = cr.paint();
 
     let _ = cr.save();
@@ -1868,7 +3094,20 @@ fn draw_terminal_full(
             break;
         }
 
-        for &(col, ref text, cell_width, fg, bg, bold, italic, underline, strikethrough, invisible, hyperlink) in line_cells {
+        for &(
+            col,
+            ref text,
+            cell_width,
+            fg,
+            bg,
+            bold,
+            italic,
+            underline,
+            strikethrough,
+            invisible,
+            hyperlink,
+        ) in line_cells
+        {
             let x = col as f64 * cell_w;
             let w = cell_width as f64 * cell_w;
 
@@ -1932,15 +3171,25 @@ fn draw_terminal_full(
     if !image_cells.is_empty() {
         let mut rs = render_state.borrow_mut();
         const IMAGE_CACHE_MAX: usize = 64;
-        for &(row, col, cw, tl_x, tl_y, br_x, br_y, _z_index, pl, pt, pr, pb, ref img_data) in &image_cells {
+        for &(row, col, cw, tl_x, tl_y, br_x, br_y, _z_index, pl, pt, pr, pb, ref img_data) in
+            &image_cells
+        {
             let hash = img_data.hash();
             if let std::collections::hash_map::Entry::Vacant(e) = rs.image_cache.entry(hash) {
                 let data_guard = img_data.data();
                 let (rgba, iw, ih) = match &*data_guard {
-                    ImageDataType::Rgba8 { data, width, height, .. } => {
-                        (data.as_slice(), *width, *height)
-                    }
-                    ImageDataType::AnimRgba8 { frames, width, height, .. } => {
+                    ImageDataType::Rgba8 {
+                        data,
+                        width,
+                        height,
+                        ..
+                    } => (data.as_slice(), *width, *height),
+                    ImageDataType::AnimRgba8 {
+                        frames,
+                        width,
+                        height,
+                        ..
+                    } => {
                         if let Some(frame) = frames.first() {
                             (frame.as_slice(), *width, *height)
                         } else {
@@ -2025,7 +3274,7 @@ fn draw_terminal_full(
         }
     }
 
-    if cursor_vis == CursorVisibility::Visible && cursor_y < rows {
+    if scroll_offset == 0 && cursor_vis == CursorVisibility::Visible && cursor_y < rows {
         let is_blinking = matches!(
             cursor_shape,
             CursorShape::Default
@@ -2095,7 +3344,11 @@ fn extract_selection_text(
     handle: &TerminalSessionHandle,
     render_state: &Rc<RefCell<PaneRenderState>>,
 ) -> Option<String> {
-    let (start, end) = render_state.borrow().normalized_selection()?;
+    let (selection, scroll_offset) = {
+        let rs = render_state.borrow();
+        (rs.normalized_selection(), rs.scroll_offset)
+    };
+    let (start, end) = selection?;
     if start.col == end.col && start.row == end.row {
         return None;
     }
@@ -2103,7 +3356,7 @@ fn extract_selection_text(
         let screen = terminal.screen();
         let total = screen.scrollback_rows();
         let phys_rows = screen.physical_rows;
-        let view_start = total.saturating_sub(phys_rows);
+        let view_start = viewport_range(total, phys_rows, scroll_offset).start;
         let phys_start = view_start + start.row;
         let phys_end = view_start + end.row + 1;
         let mut result = String::new();
@@ -2133,15 +3386,15 @@ fn extract_selection_text(
     })
 }
 
-fn extract_screen_text(handle: &TerminalSessionHandle) -> String {
+fn extract_screen_text(handle: &TerminalSessionHandle, scroll_offset: usize) -> String {
     handle
         .with_terminal(|terminal| {
             let screen = terminal.screen();
             let total = screen.scrollback_rows();
             let phys_rows = screen.physical_rows;
-            let view_start = total.saturating_sub(phys_rows);
+            let range = viewport_range(total, phys_rows, scroll_offset);
             let mut result = String::new();
-            screen.with_phys_lines(view_start..total, |lines| {
+            screen.with_phys_lines(range, |lines| {
                 for line in lines {
                     for cell in line.visible_cells() {
                         result.push_str(cell.str());
@@ -2190,23 +3443,37 @@ fn open_text_in_editor(text: &str) {
 fn build_pane_view(
     index: usize,
     handle: TerminalSessionHandle,
+    settings: ResolvedTerminalSettings,
+    render_state: Rc<RefCell<PaneRenderState>>,
     sender: &ComponentSender<RshellApp>,
     font_size: Rc<Cell<f64>>,
 ) -> gtk::DrawingArea {
     let area = gtk::DrawingArea::new();
     area.set_hexpand(true);
     area.set_vexpand(true);
+    area.set_content_width(320);
+    area.set_content_height(200);
     area.add_css_class("terminal-view");
     area.set_can_focus(true);
     area.set_focusable(true);
 
-    let render_state = Rc::new(RefCell::new(PaneRenderState::default()));
-
     let draw_handle = handle.clone();
+    let draw_settings = settings.clone();
     let rs_draw = render_state.clone();
     area.set_draw_func(move |area, cr, w, h| {
         let scale = area.scale_factor() as f64;
-        draw_terminal(&draw_handle, cr, w, h, scale, &rs_draw, font_size.get());
+        draw_terminal(
+            &draw_handle,
+            cr,
+            w,
+            h,
+            &rs_draw,
+            TerminalDrawOptions {
+                scale,
+                scroll_on_output: draw_settings.scroll_on_output,
+                font_size: font_size.get(),
+            },
+        );
     });
 
     let s = sender.clone();
@@ -2214,6 +3481,10 @@ fn build_pane_view(
     let paste_handle = handle.clone();
     let kb_handle = handle.clone();
     let rs_copy = render_state.clone();
+    let rs_key = render_state.clone();
+    let key_settings = settings.clone();
+    let key_handle = handle.clone();
+    let key_area = area.clone();
     let kc = gtk::EventControllerKey::new();
     kc.connect_key_pressed(move |_, key, _, mods| {
         let ctrl = mods.contains(gdk::ModifierType::CONTROL_MASK);
@@ -2254,6 +3525,19 @@ fn build_pane_view(
             let _ = kb_handle.send_bytes(b"\x0c".to_vec());
             kb_handle.with_terminal_mut(|t| t.advance_bytes(b"\x1b[3J"));
             return glib::Propagation::Stop;
+        }
+        if shift && !ctrl && !alt && key == gdk::Key::Page_Up {
+            adjust_scrollback_view(&key_handle, &rs_key, ScrollbackMove::PageUp);
+            key_area.queue_draw();
+            return glib::Propagation::Stop;
+        }
+        if shift && !ctrl && !alt && key == gdk::Key::Page_Down {
+            adjust_scrollback_view(&key_handle, &rs_key, ScrollbackMove::PageDown);
+            key_area.queue_draw();
+            return glib::Propagation::Stop;
+        }
+        if key_settings.scroll_on_keypress {
+            reset_scrollback_view(&key_handle, &rs_key);
         }
         s.input(AppMsg::PaneKeyPress(index, key, mods));
         glib::Propagation::Stop
@@ -2298,9 +3582,9 @@ fn build_pane_view(
         drag.connect_drag_update(move |_, ox, oy| {
             let (sx, sy) = start.get();
             let start_coord = rs.borrow().pixel_to_cell(sx, sy);
-            let end_coord =
-                rs.borrow()
-                    .pixel_to_cell((sx + ox).max(0.0), (sy + oy).max(0.0));
+            let end_coord = rs
+                .borrow()
+                .pixel_to_cell((sx + ox).max(0.0), (sy + oy).max(0.0));
             if start_coord.col != end_coord.col || start_coord.row != end_coord.row {
                 rs.borrow_mut().selection = Some((start_coord, end_coord));
             }
@@ -2326,9 +3610,9 @@ fn build_pane_view(
         drag.connect_drag_end(move |_, ox, oy| {
             let (sx, sy) = start.get();
             let start_coord = rs.borrow().pixel_to_cell(sx, sy);
-            let end_coord =
-                rs.borrow()
-                    .pixel_to_cell((sx + ox).max(0.0), (sy + oy).max(0.0));
+            let end_coord = rs
+                .borrow()
+                .pixel_to_cell((sx + ox).max(0.0), (sy + oy).max(0.0));
             if start_coord.col == end_coord.col && start_coord.row == end_coord.row {
                 rs.borrow_mut().selection = None;
             } else if let Some(ref mut sel) = rs.borrow_mut().selection {
@@ -2351,24 +3635,36 @@ fn build_pane_view(
 
     let scroll_handle = handle.clone();
     let rs_scroll = render_state.clone();
+    let scroll_settings = settings;
+    let scroll_area = area.clone();
     let scroll = gtk::EventControllerScroll::new(gtk::EventControllerScrollFlags::VERTICAL);
     scroll.connect_scroll(move |_, _dx, dy| {
-        let button = if dy < 0.0 {
-            MouseButton::WheelUp((-dy).ceil() as usize)
+        let lines = (dy.abs().ceil() as usize).max(1).saturating_mul(3);
+        if scroll_settings.mouse_reporting && terminal_wants_scroll_events(&scroll_handle) {
+            let button = if dy < 0.0 {
+                MouseButton::WheelUp(lines)
+            } else {
+                MouseButton::WheelDown(lines)
+            };
+            let event = WezMouseEvent {
+                kind: MouseEventKind::Press,
+                x: 0,
+                y: 0,
+                x_pixel_offset: 0,
+                y_pixel_offset: 0,
+                button,
+                modifiers: KeyModifiers::NONE,
+            };
+            let _ = scroll_handle.with_terminal_mut(|t| t.mouse_event(event));
         } else {
-            MouseButton::WheelDown(dy.ceil() as usize)
-        };
-        let event = WezMouseEvent {
-            kind: MouseEventKind::Press,
-            x: 0,
-            y: 0,
-            x_pixel_offset: 0,
-            y_pixel_offset: 0,
-            button,
-            modifiers: KeyModifiers::NONE,
-        };
-        let _ = scroll_handle.with_terminal_mut(|t| t.mouse_event(event));
-        rs_scroll.borrow_mut().cached_frame = None;
+            let movement = if dy < 0.0 {
+                ScrollbackMove::LinesUp(lines)
+            } else {
+                ScrollbackMove::LinesDown(lines)
+            };
+            adjust_scrollback_view(&scroll_handle, &rs_scroll, movement);
+        }
+        scroll_area.queue_draw();
         glib::Propagation::Stop
     });
     area.add_controller(scroll);
@@ -2469,8 +3765,10 @@ fn build_pane_view(
     let editor_screen_action = gio::SimpleAction::new("editor-screen", None);
     {
         let esh = handle.clone();
+        let esrs = render_state.clone();
         editor_screen_action.connect_activate(move |_, _| {
-            let text = extract_screen_text(&esh);
+            let scroll_offset = esrs.borrow().scroll_offset;
+            let text = extract_screen_text(&esh, scroll_offset);
             open_text_in_editor(&text);
         });
     }
@@ -2529,7 +3827,9 @@ fn build_pane_view(
     let reset_term_action = gio::SimpleAction::new("reset-terminal", None);
     {
         let rth = handle.clone();
+        let rtrs = render_state.clone();
         reset_term_action.connect_activate(move |_, _| {
+            reset_scrollback_view(&rth, &rtrs);
             rth.with_terminal_mut(|t| t.advance_bytes(b"\x1bc"));
         });
     }
@@ -2538,7 +3838,9 @@ fn build_pane_view(
     let clear_action = gio::SimpleAction::new("clear-screen", None);
     {
         let clh = handle.clone();
+        let clrs = render_state.clone();
         clear_action.connect_activate(move |_, _| {
+            reset_scrollback_view(&clh, &clrs);
             let _ = clh.send_bytes(b"\x0c".to_vec());
         });
     }
@@ -2547,7 +3849,9 @@ fn build_pane_view(
     let clrsb_action = gio::SimpleAction::new("clear-scrollback", None);
     {
         let csh = handle.clone();
+        let csrs = render_state.clone();
         clrsb_action.connect_activate(move |_, _| {
+            reset_scrollback_view(&csh, &csrs);
             csh.with_terminal_mut(|t| t.advance_bytes(b"\x1b[3J"));
         });
     }
@@ -2556,7 +3860,9 @@ fn build_pane_view(
     let clear_both_action = gio::SimpleAction::new("clear-both", None);
     {
         let cbh = handle.clone();
+        let cbrs = render_state.clone();
         clear_both_action.connect_activate(move |_, _| {
+            reset_scrollback_view(&cbh, &cbrs);
             let _ = cbh.send_bytes(b"\x0c".to_vec());
             cbh.with_terminal_mut(|t| t.advance_bytes(b"\x1b[3J"));
         });
@@ -2565,17 +3871,9 @@ fn build_pane_view(
 
     let fullscreen_action = gio::SimpleAction::new("fullscreen", None);
     {
-        let fa = area.clone();
+        let fs = sender.clone();
         fullscreen_action.connect_activate(move |_, _| {
-            if let Some(root) = fa.root()
-                && let Some(window) = root.downcast_ref::<gtk::Window>()
-            {
-                if window.is_fullscreen() {
-                    window.unfullscreen();
-                } else {
-                    window.fullscreen();
-                }
-            }
+            fs.input(AppMsg::ToggleFullscreen);
         });
     }
     actions.add_action(&fullscreen_action);
@@ -2588,6 +3886,15 @@ fn build_pane_view(
         });
     }
     actions.add_action(&broadcast_action);
+
+    let reconnect_action = gio::SimpleAction::new("reconnect", None);
+    {
+        let rs = sender.clone();
+        reconnect_action.connect_activate(move |_, _| {
+            rs.input(AppMsg::ReconnectCurrent);
+        });
+    }
+    actions.add_action(&reconnect_action);
 
     area.insert_action_group("term", Some(&actions));
 
@@ -2635,8 +3942,7 @@ fn build_pane_view(
     let clear_item = gio::MenuItem::new(Some("清屏(_L)"), Some("term.clear-screen"));
     clear_item.set_attribute_value("accel", Some(&"<Control><Shift>l".to_variant()));
     clear_section.append_item(&clear_item);
-    let clrsb_item =
-        gio::MenuItem::new(Some("滚动缓冲区清除(_O)"), Some("term.clear-scrollback"));
+    let clrsb_item = gio::MenuItem::new(Some("滚动缓冲区清除(_O)"), Some("term.clear-scrollback"));
     clrsb_item.set_attribute_value("accel", Some(&"<Control><Shift>b".to_variant()));
     clear_section.append_item(&clrsb_item);
     let clear_both_item =
@@ -2646,6 +3952,7 @@ fn build_pane_view(
     menu.append_section(None, &clear_section);
 
     let window_section = gio::Menu::new();
+    window_section.append(Some("重连当前会话(_R)"), Some("term.reconnect"));
     window_section.append(Some("全屏(_U)"), Some("term.fullscreen"));
     window_section.append(Some("发送键输入到所有会话(_K)"), Some("term.broadcast"));
     menu.append_section(None, &window_section);
@@ -2661,7 +3968,11 @@ fn build_pane_view(
 
     let rclick = gtk::GestureClick::new();
     rclick.set_button(3);
+    let rc_area = area.clone();
+    let rc_sender = sender.clone();
     rclick.connect_pressed(move |_, _, x, y| {
+        rc_area.grab_focus();
+        rc_sender.input(AppMsg::FocusPane(index));
         popover.set_pointing_to(Some(&gdk::Rectangle::new(x as i32, y as i32, 1, 1)));
         popover.popup();
     });
@@ -2689,6 +4000,73 @@ fn build_pane_view(
     area
 }
 
+fn balance_paned(paned: &gtk::Paned, fraction: f64) {
+    paned.set_wide_handle(false);
+    paned.connect_map(move |paned| {
+        let max = paned.max_position();
+        if max > 0 {
+            paned.set_position(((max as f64) * fraction).round() as i32);
+        }
+    });
+}
+
+fn build_pending_view(
+    pending: &PendingConnection,
+    sender: &ComponentSender<RshellApp>,
+) -> gtk::Box {
+    let view = gtk::Box::builder()
+        .orientation(gtk::Orientation::Vertical)
+        .spacing(12)
+        .halign(gtk::Align::Center)
+        .valign(gtk::Align::Center)
+        .hexpand(true)
+        .vexpand(true)
+        .build();
+    view.add_css_class("pending-session");
+
+    match &pending.status {
+        PendingStatus::Connecting => {
+            let spinner = gtk::Spinner::new();
+            spinner.start();
+            spinner.add_css_class("pending-spinner");
+            view.append(&spinner);
+
+            let title = gtk::Label::new(Some(&format!("Connecting to {}", pending.name)));
+            title.add_css_class("pending-title");
+            view.append(&title);
+
+            let host = gtk::Label::new(Some(&pending.host));
+            host.add_css_class("pending-subtitle");
+            view.append(&host);
+        }
+        PendingStatus::Failed(message) => {
+            let icon = symbolic_icon("dialog-error-symbolic", "!", 32);
+            icon.add_css_class("pending-error-icon");
+            view.append(&icon);
+
+            let title = gtk::Label::new(Some(&format!("{} failed", pending.name)));
+            title.add_css_class("pending-title");
+            view.append(&title);
+
+            let detail = gtk::Label::new(Some(message));
+            detail.set_wrap(true);
+            detail.set_max_width_chars(80);
+            detail.add_css_class("pending-subtitle");
+            view.append(&detail);
+
+            let retry = icon_button("view-refresh-symbolic", "↻", "Retry");
+            retry.add_css_class("pending-retry");
+            let s = sender.clone();
+            retry.connect_clicked(move |_| {
+                s.input(AppMsg::ReconnectCurrent);
+            });
+            view.append(&retry);
+        }
+    }
+
+    view
+}
+
 fn rebuild_terminal_panes(
     container: &gtk::Box,
     group: &TerminalGroup,
@@ -2700,10 +4078,14 @@ fn rebuild_terminal_panes(
     }
 
     if group.panes.is_empty() {
-        let label = gtk::Label::new(Some("No terminal panes"));
-        label.set_vexpand(true);
-        label.set_hexpand(true);
-        container.append(&label);
+        if let Some(pending) = &group.pending {
+            container.append(&build_pending_view(pending, sender));
+        } else {
+            let label = gtk::Label::new(Some("No terminal panes"));
+            label.set_vexpand(true);
+            label.set_hexpand(true);
+            container.append(&label);
+        }
         return vec![];
     }
 
@@ -2711,7 +4093,16 @@ fn rebuild_terminal_panes(
         .panes
         .iter()
         .enumerate()
-        .map(|(i, pane)| build_pane_view(i, pane.handle.clone(), sender, font_size.clone()))
+        .map(|(i, pane)| {
+            build_pane_view(
+                i,
+                pane.handle.clone(),
+                pane.settings.clone(),
+                pane.render_state.clone(),
+                sender,
+                font_size.clone(),
+            )
+        })
         .collect();
 
     match group.layout {
@@ -2724,6 +4115,7 @@ fn rebuild_terminal_panes(
             paned.set_end_child(Some(&views[1]));
             paned.set_hexpand(true);
             paned.set_vexpand(true);
+            balance_paned(&paned, 0.5);
             container.append(&paned);
         }
         SplitLayout::VSplit => {
@@ -2732,6 +4124,7 @@ fn rebuild_terminal_panes(
             paned.set_end_child(Some(&views[1]));
             paned.set_hexpand(true);
             paned.set_vexpand(true);
+            balance_paned(&paned, 0.5);
             container.append(&paned);
         }
         SplitLayout::TopBottom3 => {
@@ -2743,6 +4136,8 @@ fn rebuild_terminal_panes(
             outer.set_end_child(Some(&inner));
             outer.set_hexpand(true);
             outer.set_vexpand(true);
+            balance_paned(&outer, 0.5);
+            balance_paned(&inner, 0.5);
             container.append(&outer);
         }
         SplitLayout::Grid => {
@@ -2757,6 +4152,9 @@ fn rebuild_terminal_panes(
             outer.set_end_child(Some(&bottom));
             outer.set_hexpand(true);
             outer.set_vexpand(true);
+            balance_paned(&outer, 0.5);
+            balance_paned(&top, 0.5);
+            balance_paned(&bottom, 0.5);
             container.append(&outer);
         }
     }
@@ -2778,8 +4176,8 @@ impl SimpleComponent for RshellApp {
     fn init_root() -> Self::Root {
         gtk::Window::builder()
             .title("rsHell")
-            .default_width(1280)
-            .default_height(800)
+            .default_width(1360)
+            .default_height(860)
             .build()
     }
 
@@ -2788,12 +4186,26 @@ impl SimpleComponent for RshellApp {
         window: Self::Root,
         sender: ComponentSender<Self>,
     ) -> ComponentParts<Self> {
+        let mut startup_notices = Vec::new();
+
         let settings_repo = SettingsRepository::default();
-        let global_config = settings_repo.load().unwrap_or_default();
+        let global_config = match settings_repo.load() {
+            Ok(config) => config,
+            Err(error) => {
+                startup_notices.push(format!("Settings load failed: {error:#}"));
+                GlobalConfig::default()
+            }
+        };
         crate::theme::apply_theme(global_config.theme);
 
         let repository = ConnectionRepository::default();
-        let mut store = repository.load().unwrap_or_default();
+        let mut store = match repository.load() {
+            Ok(store) => store,
+            Err(error) => {
+                startup_notices.push(format!("Connections load failed: {error:#}"));
+                ConnectionStore::default()
+            }
+        };
         let had_sample = store.connections.len();
         store.connections.retain(|p| {
             !(p.name == "Demo host" && p.host == "127.0.0.1" && p.note == "Sample profile")
@@ -2811,16 +4223,22 @@ impl SimpleComponent for RshellApp {
         let mut model = RshellApp {
             repository,
             store,
+            quick_profiles: HashMap::new(),
             settings_repo,
             global_config,
             selected_connection_id,
             draft,
             groups: Vec::new(),
             selected_group: None,
-            toast: "Ready".into(),
+            toast: if startup_notices.is_empty() {
+                "Ready".into()
+            } else {
+                startup_notices.join(" · ")
+            },
             sidebar_visible: true,
             editor_visible: false,
             broadcast_mode: false,
+            fullscreened: false,
             connections_dirty: Cell::new(true),
             groups_dirty: Cell::new(true),
             terminal_dirty: Cell::new(true),
@@ -2828,24 +4246,28 @@ impl SimpleComponent for RshellApp {
             updating_draft: Cell::new(false),
             settings_visible: false,
             settings_dirty: Cell::new(true),
+            settings_persist_dirty: Cell::new(false),
             updating_settings: Cell::new(false),
+            group_status_cache: RefCell::new(Vec::new()),
         };
 
-        match launch_local_session(model.default_resolved_settings()) {
+        let initial_settings = model.default_resolved_settings();
+        match launch_local_session(initial_settings.clone()) {
             Ok(handle) => {
-                let mut group = TerminalGroup {
-                    layout: SplitLayout::Single,
-                    panes: Vec::new(),
-                    active_pane: 0,
-                };
-                group.panes.push(TerminalPane {
-                    name: "Local Shell".into(),
+                let group = TerminalGroup::from_pane(TerminalPane::new(
+                    "Local Shell",
                     handle,
-                    remote_host: None,
-                });
+                    None,
+                    initial_settings,
+                    SessionSource::Local,
+                ));
                 model.groups.push(group);
                 model.selected_group = Some(0);
-                model.toast = "Local shell launched".into();
+                model.toast = if model.toast == "Ready" {
+                    "Local shell launched".into()
+                } else {
+                    format!("{} · Local shell launched", model.toast)
+                };
             }
             Err(e) => {
                 model.toast = format!("Local shell failed: {e:#}");
@@ -2864,35 +4286,56 @@ impl SimpleComponent for RshellApp {
 
         let menu = gio::Menu::new();
 
-        let session_submenu = gio::Menu::new();
-        session_submenu.append(Some("New Session"), Some("win.new-session"));
-        session_submenu.append(Some("New Local Tab"), Some("win.new-local-tab"));
-        menu.append_submenu(Some("Session"), &session_submenu);
+        let file_submenu = gio::Menu::new();
+        file_submenu.append(Some("New Session"), Some("win.new-session"));
+        file_submenu.append(Some("New Local Tab"), Some("win.new-local-tab"));
+        file_submenu.append(Some("Reconnect Current"), Some("win.reconnect-current"));
+        menu.append_submenu(Some("File"), &file_submenu);
+
+        let edit_submenu = gio::Menu::new();
+        let copy_item = gio::MenuItem::new(Some("Copy"), Some("win.copy"));
+        copy_item.set_attribute_value("accel", Some(&"<Ctrl><Shift>C".to_variant()));
+        edit_submenu.append_item(&copy_item);
+        let paste_item = gio::MenuItem::new(Some("Paste"), Some("win.paste"));
+        paste_item.set_attribute_value("accel", Some(&"<Ctrl><Shift>V".to_variant()));
+        edit_submenu.append_item(&paste_item);
+        let select_all_item = gio::MenuItem::new(Some("Select All"), Some("win.select-all"));
+        select_all_item.set_attribute_value("accel", Some(&"<Ctrl><Shift>A".to_variant()));
+        edit_submenu.append_item(&select_all_item);
+        let editor_submenu = gio::Menu::new();
+        editor_submenu.append(Some("Screen"), Some("win.open-screen-editor"));
+        editor_submenu.append(Some("Selection"), Some("win.open-selection-editor"));
+        edit_submenu.append_submenu(Some("Open in Editor"), &editor_submenu);
+        edit_submenu.append(Some("Global Settings"), Some("win.open-settings"));
+        menu.append_submenu(Some("Edit"), &edit_submenu);
 
         let view_submenu = gio::Menu::new();
-        view_submenu.append(Some("Toggle Sidebar"), Some("win.toggle-sidebar"));
+        view_submenu.append(Some("Session Manager"), Some("win.toggle-sidebar"));
         view_submenu.append(Some("Fullscreen"), Some("win.toggle-fullscreen"));
         menu.append_submenu(Some("View"), &view_submenu);
 
-        let theme_submenu = gio::Menu::new();
-        theme_submenu.append(Some("Light"), Some("win.theme-light"));
-        theme_submenu.append(Some("Dark"), Some("win.theme-dark"));
-        theme_submenu.append(Some("System"), Some("win.theme-system"));
-        menu.append_submenu(Some("Theme"), &theme_submenu);
+        let tools_submenu = gio::Menu::new();
+        tools_submenu.append(Some("Light Theme"), Some("win.theme-light"));
+        tools_submenu.append(Some("Dark Theme"), Some("win.theme-dark"));
+        tools_submenu.append(Some("System Theme"), Some("win.theme-system"));
+        menu.append_submenu(Some("Tools"), &tools_submenu);
 
-        let settings_section = gio::Menu::new();
-        settings_section.append(Some("Settings"), Some("win.open-settings"));
-        menu.append_section(None, &settings_section);
+        let tab_submenu = gio::Menu::new();
+        tab_submenu.append(Some("New Local Tab"), Some("win.new-local-tab"));
+        tab_submenu.append(Some("Reconnect Current"), Some("win.reconnect-current"));
+        menu.append_submenu(Some("Tabs"), &tab_submenu);
 
-        let about_section = gio::Menu::new();
-        about_section.append(Some("About rsHell"), Some("win.about"));
-        menu.append_section(None, &about_section);
+        let window_submenu = gio::Menu::new();
+        window_submenu.append(Some("Fullscreen"), Some("win.toggle-fullscreen"));
+        window_submenu.append(Some("Session Manager"), Some("win.toggle-sidebar"));
+        menu.append_submenu(Some("Window"), &window_submenu);
 
-        let menu_btn = gtk::MenuButton::new();
-        menu_btn.set_icon_name("open-menu-symbolic");
-        menu_btn.set_tooltip_text(Some("Menu"));
-        let popover_menu = gtk::PopoverMenu::from_model(Some(&menu));
-        menu_btn.set_popover(Some(&popover_menu));
+        let help_submenu = gio::Menu::new();
+        help_submenu.append(Some("About rsHell"), Some("win.about"));
+        menu.append_submenu(Some("Help"), &help_submenu);
+
+        let menu_bar = gtk::PopoverMenuBar::from_model(Some(&menu));
+        menu_bar.add_css_class("menu-strip");
 
         let action_toggle_sidebar = gio::SimpleAction::new("toggle-sidebar", None);
         {
@@ -2918,6 +4361,14 @@ impl SimpleComponent for RshellApp {
             });
         }
 
+        let action_reconnect = gio::SimpleAction::new("reconnect-current", None);
+        {
+            let s = sender.clone();
+            action_reconnect.connect_activate(move |_, _| {
+                s.input(AppMsg::ReconnectCurrent);
+            });
+        }
+
         let action_about = gio::SimpleAction::new("about", None);
         {
             let win_ref = window.clone();
@@ -2935,9 +4386,9 @@ impl SimpleComponent for RshellApp {
 
         let action_toggle_fullscreen = gio::SimpleAction::new("toggle-fullscreen", None);
         {
-            let win_ref = window.clone();
+            let s = sender.clone();
             action_toggle_fullscreen.connect_activate(move |_, _| {
-                win_ref.set_fullscreened(!win_ref.is_fullscreen());
+                s.input(AppMsg::ToggleFullscreen);
             });
         }
 
@@ -2972,35 +4423,89 @@ impl SimpleComponent for RshellApp {
                 s.input(AppMsg::OpenGlobalSettings);
             });
         }
+        let action_copy = gio::SimpleAction::new("copy", None);
+        {
+            let s = sender.clone();
+            action_copy.connect_activate(move |_, _| {
+                s.input(AppMsg::CopyActiveSelection);
+            });
+        }
+        let action_paste = gio::SimpleAction::new("paste", None);
+        {
+            let s = sender.clone();
+            action_paste.connect_activate(move |_, _| {
+                s.input(AppMsg::PasteIntoActivePane);
+            });
+        }
+        let action_select_all = gio::SimpleAction::new("select-all", None);
+        {
+            let s = sender.clone();
+            action_select_all.connect_activate(move |_, _| {
+                s.input(AppMsg::SelectActiveScreen);
+            });
+        }
+        let action_open_screen_editor = gio::SimpleAction::new("open-screen-editor", None);
+        {
+            let s = sender.clone();
+            action_open_screen_editor.connect_activate(move |_, _| {
+                s.input(AppMsg::OpenActiveScreenInEditor);
+            });
+        }
+        let action_open_selection_editor = gio::SimpleAction::new("open-selection-editor", None);
+        {
+            let s = sender.clone();
+            action_open_selection_editor.connect_activate(move |_, _| {
+                s.input(AppMsg::OpenActiveSelectionInEditor);
+            });
+        }
 
         let actions = gio::SimpleActionGroup::new();
         actions.add_action(&action_toggle_sidebar);
         actions.add_action(&action_new_session);
         actions.add_action(&action_new_local);
+        actions.add_action(&action_reconnect);
         actions.add_action(&action_about);
         actions.add_action(&action_toggle_fullscreen);
         actions.add_action(&action_theme_light);
         actions.add_action(&action_theme_dark);
         actions.add_action(&action_theme_system);
         actions.add_action(&action_open_settings);
+        actions.add_action(&action_copy);
+        actions.add_action(&action_paste);
+        actions.add_action(&action_select_all);
+        actions.add_action(&action_open_screen_editor);
+        actions.add_action(&action_open_selection_editor);
         window.insert_action_group("win", Some(&actions));
 
         let connect_btn = gtk::Button::with_label("Connect");
         connect_btn.add_css_class("connect-button");
-
-        let sep1 = gtk::Separator::new(gtk::Orientation::Vertical);
-        sep1.set_margin_start(4);
-        sep1.set_margin_end(4);
+        let new_session_btn = icon_button("document-new-symbolic", "+", "New Session");
+        new_session_btn.add_css_class("toolbar-icon-button");
+        let new_local_btn = icon_button("utilities-terminal-symbolic", ">", "New Local Tab");
+        new_local_btn.add_css_class("toolbar-icon-button");
+        let sidebar_toggle_btn =
+            icon_button("sidebar-show-symbolic", "▤", "Toggle Session Manager");
+        sidebar_toggle_btn.add_css_class("toolbar-icon-button");
+        let reconnect_btn = icon_button("view-refresh-symbolic", "↻", "Reconnect Current Session");
+        reconnect_btn.add_css_class("toolbar-icon-button");
 
         let split_h_btn = gtk::Button::with_label("│");
         split_h_btn.set_tooltip_text(Some("Horizontal Split"));
-        split_h_btn.add_css_class("pane-action-btn");
+        split_h_btn.add_css_class("toolbar-icon-button");
         let split_v_btn = gtk::Button::with_label("─");
         split_v_btn.set_tooltip_text(Some("Vertical Split"));
-        split_v_btn.add_css_class("pane-action-btn");
-        let close_pane_btn = gtk::Button::from_icon_name("window-close-symbolic");
-        close_pane_btn.set_tooltip_text(Some("Close Pane"));
-        close_pane_btn.add_css_class("pane-action-btn");
+        split_v_btn.add_css_class("toolbar-icon-button");
+        let close_pane_btn = icon_button("window-close-symbolic", "×", "Close Pane");
+        close_pane_btn.add_css_class("toolbar-icon-button");
+        let toolbar_settings_btn = icon_button("emblem-system-symbolic", "⚙", "Settings");
+        toolbar_settings_btn.add_css_class("toolbar-icon-button");
+
+        let overflow_menu_btn = gtk::MenuButton::new();
+        set_menu_button_icon(&overflow_menu_btn, "open-menu-symbolic", "☰");
+        overflow_menu_btn.set_tooltip_text(Some("More"));
+        overflow_menu_btn.add_css_class("toolbar-icon-button");
+        let overflow_menu = gtk::PopoverMenu::from_model(Some(&menu));
+        overflow_menu_btn.set_popover(Some(&overflow_menu));
 
         let title_label = gtk::Label::new(Some("rsHell"));
         title_label.add_css_class("title");
@@ -3008,21 +4513,54 @@ impl SimpleComponent for RshellApp {
         title_box.set_hexpand(true);
         title_box.set_center_widget(Some(&title_label));
 
-        header_bar.pack_start(&menu_btn);
-        header_bar.pack_start(&connect_btn);
-        header_bar.pack_start(&sep1);
-        header_bar.pack_start(&split_h_btn);
-        header_bar.pack_start(&split_v_btn);
-        header_bar.pack_start(&close_pane_btn);
         header_bar.set_title_widget(Some(&title_box));
 
         window.set_titlebar(Some(&header_bar));
+
+        let command_toolbar = gtk::Box::builder()
+            .orientation(gtk::Orientation::Horizontal)
+            .spacing(4)
+            .build();
+        command_toolbar.add_css_class("command-toolbar");
+        command_toolbar.append(&new_session_btn);
+        command_toolbar.append(&new_local_btn);
+        command_toolbar.append(&sidebar_toggle_btn);
+        command_toolbar.append(&toolbar_separator());
+        command_toolbar.append(&connect_btn);
+        command_toolbar.append(&reconnect_btn);
+        command_toolbar.append(&toolbar_separator());
+        command_toolbar.append(&split_h_btn);
+        command_toolbar.append(&split_v_btn);
+        command_toolbar.append(&close_pane_btn);
+        command_toolbar.append(&toolbar_separator());
+        command_toolbar.append(&toolbar_settings_btn);
+        command_toolbar.append(&overflow_menu_btn);
+
+        let quick_connect_bar = gtk::Box::builder()
+            .orientation(gtk::Orientation::Horizontal)
+            .spacing(8)
+            .build();
+        quick_connect_bar.add_css_class("quick-connect-bar");
+        let lock_icon = symbolic_icon("channel-secure-symbolic", "▣", 16);
+        lock_icon.add_css_class("quick-connect-icon");
+        let quick_connect_entry = gtk::Entry::new();
+        quick_connect_entry.set_text("local://shell");
+        quick_connect_entry.set_placeholder_text(Some("ssh://user@host:22 or local://shell"));
+        quick_connect_entry.set_halign(gtk::Align::Fill);
+        quick_connect_entry.set_hexpand(true);
+        quick_connect_entry.add_css_class("session-uri-label");
+        quick_connect_entry.add_css_class("session-uri-entry");
+        let quick_connect_btn = icon_button("go-next-symbolic", ">", "Quick Connect");
+        quick_connect_btn.add_css_class("quick-connect-go");
+        quick_connect_bar.append(&lock_icon);
+        quick_connect_bar.append(&quick_connect_entry);
+        quick_connect_bar.append(&quick_connect_btn);
 
         let main_paned = gtk::Paned::builder()
             .orientation(gtk::Orientation::Horizontal)
             .hexpand(true)
             .vexpand(true)
-            .position(160)
+            .position(248)
             .wide_handle(false)
             .shrink_start_child(false)
             .resize_start_child(false)
@@ -3037,11 +4575,11 @@ impl SimpleComponent for RshellApp {
 
         let sidebar = gtk::Box::builder()
             .orientation(gtk::Orientation::Vertical)
-            .width_request(140)
+            .width_request(232)
             .build();
         sidebar.add_css_class("sidebar");
 
-        let sidebar_header = gtk::Label::new(Some("SESSIONS"));
+        let sidebar_header = gtk::Label::new(Some("Session Manager"));
         sidebar_header.set_halign(gtk::Align::Start);
         sidebar_header.add_css_class("sidebar-header");
 
@@ -3050,10 +4588,10 @@ impl SimpleComponent for RshellApp {
             .spacing(2)
             .build();
         sidebar_toolbar.add_css_class("sidebar-toolbar");
-        let btn_new = gtk::Button::with_label("New");
-        let btn_edit = gtk::Button::with_label("Edit");
-        let btn_del = gtk::Button::with_label("Del");
-        let btn_settings = gtk::Button::with_label("Set");
+        let btn_new = icon_button("list-add-symbolic", "+", "New Connection");
+        let btn_edit = icon_button("document-edit-symbolic", "✎", "Edit Selected Connection");
+        let btn_del = icon_button("edit-delete-symbolic", "×", "Delete Selected Connection");
+        let btn_settings = icon_button("emblem-system-symbolic", "⚙", "Settings");
         sidebar_toolbar.append(&btn_new);
         sidebar_toolbar.append(&btn_edit);
         sidebar_toolbar.append(&btn_del);
@@ -3073,8 +4611,8 @@ impl SimpleComponent for RshellApp {
             .title("Session Editor")
             .modal(true)
             .transient_for(&window)
-            .default_width(480)
-            .default_height(520)
+            .default_width(560)
+            .default_height(620)
             .resizable(false)
             .build();
         editor_dialog.add_css_class("editor-dialog");
@@ -3288,6 +4826,9 @@ impl SimpleComponent for RshellApp {
         main_paned.set_start_child(Some(&sidebar_revealer));
         main_paned.set_end_child(Some(&right_vbox));
 
+        root_vbox.append(&menu_bar);
+        root_vbox.append(&command_toolbar);
+        root_vbox.append(&quick_connect_bar);
         root_vbox.append(&main_paned);
         window.set_child(Some(&root_vbox));
 
@@ -3295,6 +4836,43 @@ impl SimpleComponent for RshellApp {
             let s = sender.clone();
             connect_btn.connect_clicked(move |_| {
                 s.input(AppMsg::LaunchSelected);
+            });
+        }
+        {
+            let s = sender.clone();
+            quick_connect_entry.connect_activate(move |entry| {
+                s.input(AppMsg::QuickConnect(entry.text().to_string()));
+            });
+        }
+        {
+            let s = sender.clone();
+            let entry = quick_connect_entry.clone();
+            quick_connect_btn.connect_clicked(move |_| {
+                s.input(AppMsg::QuickConnect(entry.text().to_string()));
+            });
+        }
+        {
+            let s = sender.clone();
+            new_session_btn.connect_clicked(move |_| {
+                s.input(AppMsg::NewConnection);
+            });
+        }
+        {
+            let s = sender.clone();
+            new_local_btn.connect_clicked(move |_| {
+                s.input(AppMsg::NewLocalTab);
+            });
+        }
+        {
+            let s = sender.clone();
+            sidebar_toggle_btn.connect_clicked(move |_| {
+                s.input(AppMsg::ToggleSidebar);
+            });
+        }
+        {
+            let s = sender.clone();
+            reconnect_btn.connect_clicked(move |_| {
+                s.input(AppMsg::ReconnectCurrent);
             });
         }
         {
@@ -3341,6 +4919,12 @@ impl SimpleComponent for RshellApp {
         }
         {
             let s = sender.clone();
+            toolbar_settings_btn.connect_clicked(move |_| {
+                s.input(AppMsg::OpenGlobalSettings);
+            });
+        }
+        {
+            let s = sender.clone();
             save_draft_btn.connect_clicked(move |_| {
                 s.input(AppMsg::SaveDraft);
             });
@@ -3361,24 +4945,14 @@ impl SimpleComponent for RshellApp {
         {
             let s = sender.clone();
             connection_list.connect_row_selected(move |_, row| {
-                match row {
-                    Some(row)
-                        if row.tooltip_text().is_some()
-                            && Uuid::parse_str(
-                                row.tooltip_text().unwrap().as_str(),
-                            )
-                            .is_ok() =>
-                    {
-                        let id = Uuid::parse_str(
-                            row.tooltip_text().unwrap().as_str(),
-                        )
-                        .unwrap();
-                        s.input(AppMsg::SelectConnection(id));
-                    }
-                    _ => {
-                        // Clicked blank area or non-connection row — clear selection
-                        s.input(AppMsg::DeselectConnection);
-                    }
+                if let Some(row) = row
+                    && let Some(id) = row.tooltip_text()
+                    && let Ok(id) = Uuid::parse_str(id.as_str())
+                {
+                    s.input(AppMsg::SelectConnection(id));
+                } else {
+                    // Clicked blank area or non-connection row — clear selection
+                    s.input(AppMsg::DeselectConnection);
                 }
             });
         }
@@ -3415,9 +4989,7 @@ impl SimpleComponent for RshellApp {
         {
             let s = sender.clone();
             draft_port.connect_changed(move |e| {
-                if let Ok(port) = e.text().parse::<u16>() {
-                    s.input(AppMsg::DraftPortChanged(port));
-                }
+                s.input(AppMsg::DraftPortChanged(e.text().to_string()));
             });
         }
         {
@@ -3489,9 +5061,14 @@ impl SimpleComponent for RshellApp {
                 .position(|t| *t == model.global_config.theme)
                 .unwrap_or(0) as u32,
         );
+        let updating_theme_dropdown = Rc::new(Cell::new(false));
         {
             let s = sender.clone();
+            let updating = updating_theme_dropdown.clone();
             theme_dropdown.connect_selected_notify(move |dd| {
+                if updating.get() {
+                    return;
+                }
                 let idx = dd.selected() as usize;
                 if idx < AppTheme::ALL.len() {
                     s.input(AppMsg::ThemeChanged(AppTheme::ALL[idx]));
@@ -3549,8 +5126,8 @@ impl SimpleComponent for RshellApp {
             .title("Global Settings")
             .modal(true)
             .transient_for(&window)
-            .default_width(480)
-            .default_height(400)
+            .default_width(560)
+            .default_height(460)
             .resizable(false)
             .build();
         settings_dialog.add_css_class("editor-dialog");
@@ -3572,7 +5149,7 @@ impl SimpleComponent for RshellApp {
             });
         }
 
-        glib::timeout_add_local(std::time::Duration::from_millis(50), {
+        glib::timeout_add_local(std::time::Duration::from_millis(250), {
             let s = sender.clone();
             move || {
                 s.input(AppMsg::RefreshSessions);
@@ -3581,6 +5158,7 @@ impl SimpleComponent for RshellApp {
         });
 
         let widgets = AppWidgets {
+            window: window.clone(),
             sidebar_revealer,
             connection_list,
             editor_dialog,
@@ -3599,7 +5177,12 @@ impl SimpleComponent for RshellApp {
             draft_terminal,
             global_terminal,
             settings_dialog,
+            theme_dropdown,
+            updating_theme_dropdown,
             connect_btn,
+            edit_connection_btn: btn_edit,
+            delete_connection_btn: btn_del,
+            reconnect_btn,
             split_h_btn,
             split_v_btn,
             close_pane_btn,
@@ -3607,8 +5190,10 @@ impl SimpleComponent for RshellApp {
             terminal_container,
             pane_views: Vec::new(),
             pane_sizes: Vec::new(),
+            quick_connect_entry,
+            status_bar,
             status_label,
-            terminal_font_size: Rc::new(Cell::new(14.0)),
+            terminal_font_size: Rc::new(Cell::new(15.0)),
         };
 
         let mut parts = ComponentParts { model, widgets };
@@ -3622,5 +5207,159 @@ impl SimpleComponent for RshellApp {
 
     fn update_view(&self, widgets: &mut Self::Widgets, sender: ComponentSender<Self>) {
         self.view_impl(widgets, sender);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn viewport_range_tracks_bottom_relative_offsets() {
+        assert_eq!(viewport_range(100, 10, 0), 90..100);
+        assert_eq!(viewport_range(100, 10, 5), 85..95);
+        assert_eq!(viewport_range(100, 10, 500), 0..10);
+        assert_eq!(viewport_range(5, 10, 0), 0..5);
+    }
+
+    #[test]
+    fn scroll_offset_clamps_and_clears_selection() {
+        let mut state = PaneRenderState {
+            selection: Some((CellCoord { col: 1, row: 1 }, CellCoord { col: 2, row: 2 })),
+            ..Default::default()
+        };
+
+        state.set_scroll_offset(100, 10, 500);
+
+        assert_eq!(state.scroll_offset, 90);
+        assert!(state.selection.is_none());
+        assert_eq!(state.observed_scrollback_rows, Some(100));
+        assert!(state.cached_frame.is_none());
+    }
+
+    #[test]
+    fn alt_meta_settings_control_whether_alt_reaches_encoder() {
+        let mut settings = TerminalSettings::default().resolve();
+        settings.left_alt_as_meta = false;
+        settings.right_alt_as_meta = false;
+
+        let (_, mods) =
+            gdk_key_to_wezterm(&settings, gdk::Key::A, gdk::ModifierType::ALT_MASK).unwrap();
+        assert!(!mods.contains(KeyModifiers::ALT));
+
+        settings.left_alt_as_meta = true;
+        let (_, mods) =
+            gdk_key_to_wezterm(&settings, gdk::Key::A, gdk::ModifierType::ALT_MASK).unwrap();
+        assert!(mods.contains(KeyModifiers::ALT));
+    }
+
+    #[test]
+    fn group_statuses_reflect_pending_phase_changes() {
+        let pending = PendingConnection {
+            id: Uuid::nil(),
+            profile_id: Uuid::nil(),
+            name: "demo".into(),
+            host: "127.0.0.1".into(),
+            status: PendingStatus::Connecting,
+        };
+        let mut group = TerminalGroup::pending(pending);
+
+        let statuses = group_statuses(std::slice::from_ref(&group));
+        assert_eq!(statuses[0].title, "demo");
+        assert_eq!(statuses[0].phase, SessionPhase::Connecting);
+
+        let mut pending = group.pending.take().unwrap();
+        pending.status = PendingStatus::Failed("no route".into());
+        group = TerminalGroup::pending(pending);
+
+        let statuses = group_statuses(std::slice::from_ref(&group));
+        assert_eq!(statuses[0].phase, SessionPhase::Error);
+    }
+
+    #[test]
+    fn quick_connect_parses_common_ssh_forms() {
+        let profile = match parse_quick_connect("ssh://deploy@example.com:2200").unwrap() {
+            QuickConnectTarget::Ssh(profile) => profile,
+            QuickConnectTarget::Local => panic!("expected ssh target"),
+        };
+        assert_eq!(profile.name, "deploy@example.com");
+        assert_eq!(profile.user, "deploy");
+        assert_eq!(profile.host, "example.com");
+        assert_eq!(profile.port, 2200);
+
+        let profile = match parse_quick_connect("ssh ops@db.internal").unwrap() {
+            QuickConnectTarget::Ssh(profile) => profile,
+            QuickConnectTarget::Local => panic!("expected ssh target"),
+        };
+        assert_eq!(profile.user, "ops");
+        assert_eq!(profile.host, "db.internal");
+        assert_eq!(profile.port, DEFAULT_SSH_PORT);
+    }
+
+    #[test]
+    fn quick_connect_parses_local_and_ipv6_targets() {
+        assert!(matches!(
+            parse_quick_connect("local://shell").unwrap(),
+            QuickConnectTarget::Local
+        ));
+
+        let profile = match parse_quick_connect("ssh://admin@[2001:db8::10]:2022").unwrap() {
+            QuickConnectTarget::Ssh(profile) => profile,
+            QuickConnectTarget::Local => panic!("expected ssh target"),
+        };
+        assert_eq!(profile.user, "admin");
+        assert_eq!(profile.host, "2001:db8::10");
+        assert_eq!(profile.port, 2022);
+    }
+
+    #[test]
+    fn quick_connect_rejects_invalid_inputs() {
+        assert!(parse_quick_connect("").is_err());
+        assert!(parse_quick_connect("ftp://example.com").is_err());
+        assert!(parse_quick_connect("ssh://example.com:0").is_err());
+        assert!(parse_quick_connect("ssh://example.com:abc").is_err());
+        assert!(parse_quick_connect("ssh://example.com:70000").is_err());
+        assert!(parse_quick_connect("ssh://-bad-host").is_err());
+    }
+
+    #[test]
+    fn draft_validation_rejects_invalid_port_text() {
+        let mut draft = ConnectionDraft::empty();
+        draft.host = "example.com".into();
+        draft.port_text = "abc".into();
+        assert_eq!(
+            draft.validation_error().as_deref(),
+            Some("Port must be between 1 and 65535")
+        );
+
+        draft.port_text.clear();
+        assert_eq!(
+            draft.validation_error().as_deref(),
+            Some("Port is required")
+        );
+    }
+
+    #[test]
+    fn draft_preserves_existing_password_until_user_changes_it() {
+        let mut store = ConnectionStore::default();
+        let mut profile = ConnectionProfile::new("Server", "example.com");
+        profile.password = "saved secret".into();
+        let id = profile.id;
+        store.upsert(profile.clone());
+
+        let mut draft = ConnectionDraft::from_profile(&store, &profile);
+        draft.password.clear();
+        draft.password_changed = false;
+        let unchanged = draft.into_profile(&mut store);
+        assert_eq!(unchanged.password, "saved secret");
+        assert!(!unchanged.password_dirty);
+
+        let mut draft = ConnectionDraft::from_profile(&store, &profile);
+        draft.password.clear();
+        draft.password_changed = true;
+        let cleared = draft.into_profile(&mut store);
+        assert_eq!(cleared.id, id);
+        assert!(cleared.password.is_empty());
+        assert!(cleared.password_dirty);
     }
 }

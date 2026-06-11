@@ -1,5 +1,5 @@
 use crate::config::AppTheme;
-use gtk::{gdk, CssProvider};
+use gtk::{CssProvider, gdk};
 use std::cell::OnceCell;
 
 thread_local! {
