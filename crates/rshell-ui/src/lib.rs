@@ -18,6 +18,7 @@ mod connection_sidebar_row;
 mod connection_sidebar_selection;
 mod connection_sidebar_widgets;
 mod file_selector;
+mod icon_backend;
 mod icon_cache;
 mod icon_registry;
 mod icon_vector;

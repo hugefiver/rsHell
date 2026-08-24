@@ -3,7 +3,7 @@ use std::fmt;
 use gtk::prelude::*;
 use relm4::gtk;
 
-use crate::{icon_cache, icon_vector};
+use crate::{icon_backend, icon_cache, icon_vector};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum ProductIcon {
@@ -136,11 +136,7 @@ impl ProductIcon {
     }
 
     pub fn backend() -> IconBackend {
-        if gtk::gdk_pixbuf::PixbufLoader::with_type("svg").is_ok() {
-            IconBackend::GtkSvg
-        } else {
-            IconBackend::InternalVector
-        }
+        icon_backend::detect()
     }
 
     pub fn decode_texture(self) -> Result<gtk::gdk::Texture, IconRenderError> {
