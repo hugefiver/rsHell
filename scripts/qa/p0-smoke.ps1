@@ -935,6 +935,7 @@ try {
                     cleanup_required = $true
                 }) | ConvertTo-Json)
         $agentCleanupRequired = $true
+        $agentAddedByLostReply = $false
         if ($Mode -eq "All") {
             $lostReplyScript = Join-Path $tempRoot "agent-add-lost-reply.ps1"
             Write-Utf8File $lostReplyScript @"
@@ -955,17 +956,20 @@ exit 91
             if ($lostReplyExit -ne 91 -or -not (Compare-Object $agentBaseline (Get-AgentIdentitySnapshot $sshAdd))) {
                 throw "The deterministic agent_add_lost_reply probe did not mutate before losing its reply."
             }
+            $agentAddedByLostReply = $true
             Add-Phase "agent_add_lost_reply"
         }
-        [void](Invoke-CapturedChild `
-                -Name "agent-add-parent" `
-                -FilePath $sshAdd `
-                -Arguments @($agentPrivateKey) `
-                -Environment $baseEnvironment `
-                -WorkingDirectory $tempRoot `
-                -StdoutPath (Join-Path $artifactRoot "$stem-agent-add.stdout.log") `
-                -StderrPath (Join-Path $artifactRoot "$stem-agent-add.stderr.log") `
-                -TimeoutSeconds 15)
+        if (-not $agentAddedByLostReply) {
+            [void](Invoke-CapturedChild `
+                    -Name "agent-add-parent" `
+                    -FilePath $sshAdd `
+                    -Arguments @($agentPrivateKey) `
+                    -Environment $baseEnvironment `
+                    -WorkingDirectory $tempRoot `
+                    -StdoutPath (Join-Path $artifactRoot "$stem-agent-add.stdout.log") `
+                    -StderrPath (Join-Path $artifactRoot "$stem-agent-add.stderr.log") `
+                    -TimeoutSeconds 15)
+        }
         $agentExpectedWithQa = Get-AgentIdentitySnapshot $sshAdd
         $agentEnvironment = @{}
         foreach ($entry in $baseEnvironment.GetEnumerator()) { $agentEnvironment[$entry.Key] = $entry.Value }

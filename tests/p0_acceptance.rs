@@ -376,6 +376,13 @@ fn agent_cleanup_is_required_before_add_and_survives_a_lost_reply() {
         .expect("agent add phase");
     assert!(required < add, "cleanup obligation must precede ssh-add");
     assert!(harness.contains("agent_add_lost_reply"));
+    let reconciled = harness
+        .find("$agentAddedByLostReply = $true")
+        .expect("lost-reply recovery must record the observed agent mutation");
+    let conditional = harness
+        .find("if (-not $agentAddedByLostReply)")
+        .expect("a reconciled lost reply must suppress duplicate ssh-add mutation");
+    assert!(reconciled < conditional && conditional < add);
     assert!(
         !harness.contains("$agentAdded -and"),
         "cleanup cannot depend on observing ssh-add success"
