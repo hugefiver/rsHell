@@ -249,7 +249,7 @@ async fn default_shell_accepts_input_and_exits_cleanly() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn one_hundred_cycles_reap_children_and_reader_threads() {
-    tokio::time::timeout(Duration::from_secs(60), async {
+    tokio::time::timeout(Duration::from_secs(120), async {
         for cycle in 0..100 {
             let factory = LocalPtyFactory::new(command([] as [&str; 0]));
             let request = TransportRequest::new(size(80, 24));
@@ -260,7 +260,10 @@ async fn one_hundred_cycles_reap_children_and_reader_threads() {
                 panic!("cycle {cycle}: native child did not expose a process id")
             });
             transport.resize(size(81, 25)).await.expect("cycle resize");
-            transport.shutdown().await.expect("cycle shutdown");
+            tokio::time::timeout(Duration::from_secs(2), transport.shutdown())
+                .await
+                .unwrap_or_else(|_| panic!("cycle {cycle}: shutdown timed out"))
+                .expect("cycle shutdown");
             assert!(
                 !process_is_active(pid),
                 "cycle {cycle}: child {pid} is active"

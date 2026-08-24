@@ -78,8 +78,10 @@ fn renderer_resolves_ansi_rgb_reverse_and_all_text_attributes() {
     assert!(
         bytes
             .as_ref()
-            .chunks_exact(4)
-            .any(|pixel| pixel != [0, 0, 0, 0])
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .any(|pixel| *pixel != [0, 0, 0, 0])
     );
 }
 
