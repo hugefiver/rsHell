@@ -82,7 +82,21 @@ jobs:
         if: runner.os == 'Windows' && steps.cache-gtk.outputs.cache-hit != 'true'
         run: |
           pip install gvsbuild==${{ env.GVSBUILD_VERSION }}
-          gvsbuild build gtk4
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $gvsbuildAttempts = 3
+          $gtkRoot = "C:\gtk-build\gtk\x64\release"
+          $gtkBuildSucceeded = $false
+          for ($attempt = 1; $attempt -le $gvsbuildAttempts; $attempt++) {
+            gvsbuild build gtk4
+            if ($LASTEXITCODE -eq 0 -and (Test-Path -LiteralPath $gtkRoot -PathType Container)) {
+              $gtkBuildSucceeded = $true
+              break
+            }
+            if ($attempt -lt $gvsbuildAttempts) {
+              Start-Sleep -Seconds (15 * $attempt)
+            }
+          }
+          if (-not $gtkBuildSucceeded) { throw "gvsbuild GTK build failed after 3 attempts." }
 
       - name: Setup Windows environment
         if: runner.os == 'Windows'
@@ -150,11 +164,11 @@ jobs:
         run: |
           cargo fmt -- --check
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          cargo check --workspace --all-targets --locked
+          cargo check --workspace --all-targets --all-features --locked
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          cargo test --workspace --locked
+          cargo test --workspace --all-features --locked
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          cargo clippy --workspace --all-targets --locked -- -D warnings
+          cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: Run native SSH smoke
@@ -326,8 +340,15 @@ jobs:
           $cleanupErrors = [System.Collections.Generic.List[string]]::new()
           $baselineStatus = $env:RSHELL_WINDOWS_SSH_AGENT_BASELINE_STATUS
           $baselineStartupMode = $env:RSHELL_WINDOWS_SSH_AGENT_BASELINE_START_MODE
-          if ([string]::IsNullOrWhiteSpace($baselineStatus)) { $cleanupErrors.Add('missing baseline status') }
-          if ([string]::IsNullOrWhiteSpace($baselineStartupMode)) { $cleanupErrors.Add('missing baseline startup mode') }
+          $missingBaselineStatus = [string]::IsNullOrWhiteSpace($baselineStatus)
+          $missingBaselineStartupMode = [string]::IsNullOrWhiteSpace($baselineStartupMode)
+          if ($missingBaselineStatus -and $missingBaselineStartupMode) {
+            Write-Output "Credential Manager SSH agent setup did not run; cleanup is not required."
+            exit 0
+          }
+          if ($missingBaselineStatus -xor $missingBaselineStartupMode) {
+            throw "Credential Manager SSH agent cleanup ledger is incomplete."
+          }
           try {
             $agent = Get-Service -Name ssh-agent -ErrorAction Stop
             if ($baselineStatus -eq 'Running' -and $agent.Status -ne 'Running') {

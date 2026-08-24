@@ -221,6 +221,10 @@ function Invoke-StartupSmoke {
         [Parameter(Mandatory)][string]$ReportPath
     )
 
+    $pwsh = Get-Command -Name "pwsh" -ErrorAction Stop
+    if ([string]::IsNullOrWhiteSpace($pwsh.Source)) {
+        throw "PowerShell executable is unavailable for packaged startup smoke."
+    }
     $startInfo = [System.Diagnostics.ProcessStartInfo]::new()
     $startInfo.FileName = $Executable
     $startInfo.WorkingDirectory = $WorkingDirectory
@@ -228,6 +232,7 @@ function Invoke-StartupSmoke {
     $startInfo.CreateNoWindow = $true
     $startInfo.RedirectStandardOutput = $true
     $startInfo.RedirectStandardError = $true
+    $startInfo.Environment["RSHELL_SHELL"] = $pwsh.Source
     $startInfo.ArgumentList.Add("--smoke-startup")
     $startInfo.ArgumentList.Add($ReportPath)
 

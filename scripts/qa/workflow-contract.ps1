@@ -265,9 +265,9 @@ $workspaceStep = Assert-NamedStep -Text $ci -Name "Run required workspace gates"
 Assert-StepHasNoYamlCondition -Step $workspaceStep -Name "Run required workspace gates" -Failures $failures
 foreach ($gate in @(
         "cargo fmt -- --check",
-        "cargo check --workspace --all-targets --locked",
-        "cargo test --workspace --locked",
-        "cargo clippy --workspace --all-targets --locked -- -D warnings"
+        "cargo check --workspace --all-targets --all-features --locked",
+        "cargo test --workspace --all-features --locked",
+        "cargo clippy --workspace --all-targets --all-features --locked -- -D warnings"
     )) {
     Assert-StepLine -Step $workspaceStep -Line $gate -Name "Run required workspace gates" -Failures $failures
 }
@@ -313,7 +313,8 @@ foreach ($pattern in @(
 $windowsAgentStop = Assert-NamedStep -Text $ci -Name "Stop Credential Manager SSH agent (Windows)" -Failures $failures
 foreach ($pattern in @(
         "(?m)^ {8}if:\s*always\(\) && runner\.os == 'Windows'\s*$", '\$cleanupErrors', "status restoration failed",
-        "startup-type restoration failed", 'Set-Service -Name ssh-agent -StartupType \$startupType', "startup-type verification failed"
+        "startup-type restoration failed", 'Set-Service -Name ssh-agent -StartupType \$startupType', "startup-type verification failed",
+        '\$missingBaselineStatus -and \$missingBaselineStartupMode', '\$missingBaselineStatus -xor \$missingBaselineStartupMode'
     )) {
     Assert-StepPattern -Step $windowsAgentStop -Pattern $pattern -Name "Stop Credential Manager SSH agent (Windows)" -Failures $failures
 }
@@ -330,6 +331,20 @@ foreach ($required in @(
     Assert-Contains -Text $ci -Pattern $required -Label "CI real-service setup '$required'" -Failures $failures
 }
 Assert-Contains -Text $ci -Pattern "(?m)^\s*finally\s*\{" -Label "CI cleanup finally block" -Failures $failures
+
+foreach ($workflow in @(
+        [pscustomobject]@{ Name = "CI"; Text = $ci },
+        [pscustomobject]@{ Name = "Release"; Text = $release }
+    )) {
+    $gvsbuild = Assert-NamedStep -Text $workflow.Text -Name "Build GTK4 via gvsbuild" -Failures $failures
+    foreach ($pattern in @(
+            '\$gvsbuildAttempts = 3',
+            'for \(\$attempt = 1; \$attempt -le \$gvsbuildAttempts; \$attempt\+\+\)',
+            'gvsbuild GTK build failed after 3 attempts'
+        )) {
+        Assert-StepPattern -Step $gvsbuild -Pattern $pattern -Name "$($workflow.Name) Build GTK4 via gvsbuild" -Failures $failures
+    }
+}
 
 foreach ($forbidden in @('cargo\.exe', 'pwsh\.exe', 'C:\\gtk-build', 'C:\\Windows\\System32\\OpenSSH', '\$env:TEMP')) {
     Assert-Absent -Text $p0 -Pattern $forbidden -Label "P0 cross-platform hardcoding '$forbidden'" -Failures $failures
@@ -373,7 +388,8 @@ foreach ($packageStep in @(
 }
 foreach ($marker in @(
         "embedded_css_loaded", "embedded_icons_renderable", "embedded_icon_backend",
-        "Assert-NoProductAssetPayload", "external-icon-payload", "runtime-icon-backends"
+        "Assert-NoProductAssetPayload", "external-icon-payload", "runtime-icon-backends",
+        'Get-Command -Name "pwsh" -ErrorAction Stop', '\$startInfo\.Environment\["RSHELL_SHELL"\] = \$pwsh\.Source'
     )) {
     Assert-Contains -Text $package -Pattern $marker -Label "Package embedded-resource contract '$marker'" -Failures $failures
 }

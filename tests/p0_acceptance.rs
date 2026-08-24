@@ -182,6 +182,32 @@ fn embedded_product_assets_and_package_contract_are_closed() {
 }
 
 #[test]
+fn hosted_workflows_fail_closed_and_package_smoke_uses_a_deterministic_shell() {
+    let ci = include_str!("../.github/workflows/ci.yml");
+    let release = include_str!("../.github/workflows/release.yml");
+    let package = include_str!("../scripts/qa/assert-package.ps1");
+
+    for command in [
+        "cargo check --workspace --all-targets --all-features --locked",
+        "cargo test --workspace --all-features --locked",
+        "cargo clippy --workspace --all-targets --all-features --locked -- -D warnings",
+    ] {
+        assert!(ci.contains(command), "CI is missing exact gate: {command}");
+    }
+    for workflow in [ci, release] {
+        assert!(workflow.contains("$gvsbuildAttempts = 3"));
+        assert!(
+            workflow.contains("for ($attempt = 1; $attempt -le $gvsbuildAttempts; $attempt++)")
+        );
+        assert!(workflow.contains("gvsbuild GTK build failed after 3 attempts"));
+    }
+    assert!(ci.contains("$missingBaselineStatus -and $missingBaselineStartupMode"));
+    assert!(ci.contains("$missingBaselineStatus -xor $missingBaselineStartupMode"));
+    assert!(package.contains("Get-Command -Name \"pwsh\" -ErrorAction Stop"));
+    assert!(package.contains("$startInfo.Environment[\"RSHELL_SHELL\"] = $pwsh.Source"));
+}
+
+#[test]
 fn powershell_harness_has_a_cross_platform_tool_and_shell_contract() {
     let harness = include_str!("../scripts/qa/p0-smoke.ps1");
 

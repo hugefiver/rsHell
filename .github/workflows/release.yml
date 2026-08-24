@@ -80,7 +80,21 @@ jobs:
         if: runner.os == 'Windows' && steps.cache-gtk.outputs.cache-hit != 'true'
         run: |
           pip install gvsbuild==${{ env.GVSBUILD_VERSION }}
-          gvsbuild build gtk4
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $gvsbuildAttempts = 3
+          $gtkRoot = "C:\gtk-build\gtk\x64\release"
+          $gtkBuildSucceeded = $false
+          for ($attempt = 1; $attempt -le $gvsbuildAttempts; $attempt++) {
+            gvsbuild build gtk4
+            if ($LASTEXITCODE -eq 0 -and (Test-Path -LiteralPath $gtkRoot -PathType Container)) {
+              $gtkBuildSucceeded = $true
+              break
+            }
+            if ($attempt -lt $gvsbuildAttempts) {
+              Start-Sleep -Seconds (15 * $attempt)
+            }
+          }
+          if (-not $gtkBuildSucceeded) { throw "gvsbuild GTK build failed after 3 attempts." }
 
       - name: Setup Windows environment
         if: runner.os == 'Windows'
