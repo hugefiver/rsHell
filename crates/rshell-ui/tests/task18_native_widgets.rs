@@ -1,3 +1,5 @@
+#![cfg(not(target_os = "macos"))]
+
 use std::{
     cell::RefCell,
     collections::VecDeque,

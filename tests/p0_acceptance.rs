@@ -230,6 +230,40 @@ fn hosted_gui_tests_use_linux_xvfb_and_a_supported_macos_runner() {
 }
 
 #[test]
+fn hosted_native_credentials_and_macos_gtk_evidence_are_fail_closed() {
+    let ci = include_str!("../.github/workflows/ci.yml");
+
+    for marker in [
+        "libsecret-tools",
+        "gnome-keyring-daemon --unlock --components=secrets",
+        "secret-tool store",
+        "secret-tool lookup",
+        "secret-tool clear",
+        "XDG_DATA_HOME",
+        "Upload failed P0 smoke artifacts",
+        "actions/upload-artifact@v4",
+        "hashFiles('artifacts/p0-smoke/**') != ''",
+    ] {
+        assert!(ci.contains(marker), "hosted CI is missing {marker}");
+    }
+
+    for source in [
+        include_str!("../crates/rshell-ui/tests/application_live_view.rs"),
+        include_str!("../crates/rshell-ui/tests/icon_registry.rs"),
+        include_str!("../crates/rshell-ui/tests/native_visual_contract.rs"),
+        include_str!("../crates/rshell-ui/tests/native_widgets.rs"),
+        include_str!("../crates/rshell-ui/tests/startup.rs"),
+        include_str!("../crates/rshell-ui/tests/task18_native_widgets.rs"),
+    ] {
+        assert!(
+            source.contains("#![cfg(not(target_os = \"macos\"))]"),
+            "standard libtest GTK entry points must not initialize GTK off the macOS main thread"
+        );
+    }
+    assert!(ci.contains("Run temporary keychain vault probe and P0 All smoke (macOS)"));
+}
+
+#[test]
 fn powershell_harness_has_a_cross_platform_tool_and_shell_contract() {
     let harness = include_str!("../scripts/qa/p0-smoke.ps1");
 
@@ -287,6 +321,21 @@ fn harness_finalizes_artifacts_only_after_cleanup_and_secret_scan() {
             && !harness.contains("WriteAttributeString(\"failures\", \"0\")"),
         "JUnit failures must be derived instead of hardcoded"
     );
+}
+
+#[test]
+fn completed_children_are_retired_before_pid_reuse_checks() {
+    let harness = include_str!("../scripts/qa/p0-smoke.ps1");
+    let retire = harness
+        .find("$script:ownedChildIds.Remove($Run.Process.Id)")
+        .expect("completed child identities must be retired");
+    let dispose = harness
+        .find("$Run.Process.Dispose()")
+        .expect("completed child process handles must be disposed");
+    let final_check = harness
+        .find("foreach ($ownedId in $script:ownedChildIds)")
+        .expect("uncompleted child identities must be checked at finalization");
+    assert!(retire < dispose && dispose < final_check);
 }
 
 #[test]

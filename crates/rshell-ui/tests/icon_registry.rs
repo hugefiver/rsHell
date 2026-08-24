@@ -1,3 +1,5 @@
+#![cfg(not(target_os = "macos"))]
+
 use gtk::prelude::*;
 use relm4::gtk;
 use rshell_ui::{IconBackend, ProductIcon, embedded_icons_ready};

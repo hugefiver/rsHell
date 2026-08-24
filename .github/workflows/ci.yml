@@ -52,7 +52,7 @@ jobs:
         run: |
           & sudo apt-get update
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          & sudo apt-get install --yes libgtk-4-dev pkg-config xvfb dbus-x11 gnome-keyring libsecret-1-0
+          & sudo apt-get install --yes libgtk-4-dev pkg-config xvfb dbus-x11 gnome-keyring libsecret-1-0 libsecret-tools
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: Install GTK dependencies (macOS)
@@ -209,6 +209,8 @@ jobs:
           try {
             $env:DISPLAY = ':99'
             $env:XDG_RUNTIME_DIR = $runtimeRoot
+            $env:XDG_DATA_HOME = Join-Path $runtimeRoot "data"
+            [void](New-Item -ItemType Directory -Path $env:XDG_DATA_HOME)
             $xvfb = Start-Process -FilePath Xvfb -ArgumentList @(':99', '-screen', '0', '1280x1024x24', '-nolisten', 'tcp') -PassThru
             Start-Sleep -Seconds 1
             if ($xvfb.HasExited) { throw "Xvfb stopped before the GTK smoke started." }
@@ -216,8 +218,22 @@ jobs:
             $env:RSHELL_P0_QA_VAULT_OBSERVATION_PATH = Join-Path $runtimeRoot "vault-observation.json"
             $inner = @'
           $ErrorActionPreference = "Stop"
-          & gnome-keyring-daemon --start --components=secrets
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $keyringPassword = "rshell-ci-$([Guid]::NewGuid().ToString('N'))"
+          $keyringEnvironment = @($keyringPassword | & gnome-keyring-daemon --unlock --components=secrets)
+          if ($LASTEXITCODE -ne 0) { throw "gnome-keyring unlock failed" }
+          foreach ($line in $keyringEnvironment) {
+            if ($line -match '^([A-Z_][A-Z0-9_]*)=(.*)$') {
+              [Environment]::SetEnvironmentVariable($matches[1], $matches[2], 'Process')
+            }
+          }
+          $warmupKey = "rshell-ci-$([Guid]::NewGuid().ToString('N'))"
+          $warmupSecret = [Guid]::NewGuid().ToString('N')
+          $warmupSecret | & secret-tool store --label="rshell CI warmup" rshell-ci $warmupKey
+          if ($LASTEXITCODE -ne 0) { throw "Secret Service warmup store failed" }
+          $warmupValue = (& secret-tool lookup rshell-ci $warmupKey).Trim()
+          if ($LASTEXITCODE -ne 0 -or $warmupValue -ne $warmupSecret) { throw "Secret Service warmup lookup failed" }
+          & secret-tool clear rshell-ci $warmupKey
+          if ($LASTEXITCODE -ne 0) { throw "Secret Service warmup cleanup failed" }
           try {
             cargo test --locked -p rshell-storage --features test-support --test system_vault system_vault_real_os_probe_uses_coordinator_and_cleans_random_entry -- --ignored --exact --nocapture
             if ($LASTEXITCODE -ne 0) { throw "system vault probe failed" }
@@ -345,6 +361,21 @@ jobs:
               Remove-Item -LiteralPath $vaultRoot -Recurse -Force
             }
           }
+
+      - name: Validate failed P0 artifacts are redacted
+        id: failed-p0-redaction
+        if: failure() && hashFiles('artifacts/p0-smoke/**') != ''
+        run: |
+          pwsh -NoProfile -File scripts/qa/assert-no-secrets.ps1 -ArtifactRoot artifacts/p0-smoke
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Upload failed P0 smoke artifacts
+        if: always() && steps.failed-p0-redaction.outcome == 'success'
+        uses: actions/upload-artifact@v4
+        with:
+          name: p0-smoke-failure-${{ runner.os }}-${{ github.run_attempt }}
+          path: artifacts/p0-smoke
+          if-no-files-found: error
 
       - name: Stop isolated OpenSSH agent (Linux/macOS)
         if: always() && runner.os != 'Windows'

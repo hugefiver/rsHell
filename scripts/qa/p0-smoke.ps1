@@ -125,6 +125,9 @@ function Complete-CapturedChild {
     Write-Utf8File -Path $Run.StdoutPath -Text $stdout
     Write-Utf8File -Path $Run.StderrPath -Text $stderr
     $exitCode = if ($timedOut) { -1 } else { $Run.Process.ExitCode }
+    if ($null -ne $script:ownedChildIds) {
+        [void]$script:ownedChildIds.Remove($Run.Process.Id)
+    }
     $Run.Process.Dispose()
     if ($timedOut) {
         throw "P0 smoke phase '$($Run.Name)' timed out; inspect its redacted artifact logs."

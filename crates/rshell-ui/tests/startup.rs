@@ -1,3 +1,5 @@
+#![cfg(not(target_os = "macos"))]
+
 use std::sync::Arc;
 
 use rshell_core::{

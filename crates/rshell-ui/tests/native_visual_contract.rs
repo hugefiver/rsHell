@@ -1,3 +1,5 @@
+#![cfg(not(target_os = "macos"))]
+
 use std::{sync::Arc, time::Duration};
 
 use gtk::gdk::prelude::TextureExtManual;
