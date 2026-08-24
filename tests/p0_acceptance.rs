@@ -500,3 +500,27 @@ fn task20_root_production_modules_remain_focused() {
         );
     }
 }
+
+#[test]
+fn ci_powershell_here_string_remains_inside_the_yaml_run_block() {
+    let lines = include_str!("../.github/workflows/ci.yml")
+        .lines()
+        .collect::<Vec<_>>();
+    let start = lines
+        .iter()
+        .position(|line| line.trim() == "$inner = @'")
+        .expect("Linux vault smoke must define its inner PowerShell script");
+    let end = lines[start + 1..]
+        .iter()
+        .position(|line| line.trim() == "'@")
+        .map(|offset| start + 1 + offset)
+        .expect("inner PowerShell here-string must terminate");
+    assert!(end > start + 1, "inner PowerShell script must not be empty");
+    for (index, line) in lines[start + 1..=end].iter().enumerate() {
+        assert!(
+            line.starts_with("          "),
+            "ci.yml line {} escapes the run block scalar: {line:?}",
+            start + index + 2
+        );
+    }
+}

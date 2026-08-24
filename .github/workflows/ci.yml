@@ -182,20 +182,20 @@ jobs:
             $env:RSHELL_P0_QA_VAULT_REFERENCE = "rshell://credential/$([Guid]::NewGuid().ToString('N'))"
             $env:RSHELL_P0_QA_VAULT_OBSERVATION_PATH = Join-Path $runtimeRoot "vault-observation.json"
             $inner = @'
-$ErrorActionPreference = "Stop"
-& gnome-keyring-daemon --start --components=secrets
-if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-try {
-  cargo test --locked -p rshell-storage --features test-support --test system_vault system_vault_real_os_probe_uses_coordinator_and_cleans_random_entry -- --ignored --exact --nocapture
-  if ($LASTEXITCODE -ne 0) { throw "system vault probe failed" }
-}
-finally {
-  cargo test --locked -p rshell-storage --features test-support --test system_vault system_vault_cleanup_exact_parent_reference -- --ignored --exact --nocapture
-  if ($LASTEXITCODE -ne 0) { throw "system vault cleanup failed" }
-}
-pwsh -NoProfile -File scripts/qa/p0-smoke.ps1 -Mode All
-exit $LASTEXITCODE
-'@
+          $ErrorActionPreference = "Stop"
+          & gnome-keyring-daemon --start --components=secrets
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          try {
+            cargo test --locked -p rshell-storage --features test-support --test system_vault system_vault_real_os_probe_uses_coordinator_and_cleans_random_entry -- --ignored --exact --nocapture
+            if ($LASTEXITCODE -ne 0) { throw "system vault probe failed" }
+          }
+          finally {
+            cargo test --locked -p rshell-storage --features test-support --test system_vault system_vault_cleanup_exact_parent_reference -- --ignored --exact --nocapture
+            if ($LASTEXITCODE -ne 0) { throw "system vault cleanup failed" }
+          }
+          pwsh -NoProfile -File scripts/qa/p0-smoke.ps1 -Mode All
+          exit $LASTEXITCODE
+          '@
             & dbus-run-session -- pwsh -NoProfile -Command $inner
             if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           }
