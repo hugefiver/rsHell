@@ -8,17 +8,6 @@ pub struct PixelRegion {
     y_end: usize,
 }
 
-impl PixelRegion {
-    pub const fn new(x_start: usize, x_end: usize, y_start: usize, y_end: usize) -> Self {
-        Self {
-            x_start,
-            x_end,
-            y_start,
-            y_end,
-        }
-    }
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NativeByteOrder {
     Little,
@@ -73,31 +62,38 @@ pub fn analyze_rgba(
 ) -> Result<SmokePngEvidence, &'static str> {
     let (width, height) = dimensions(width, height, rgba.len())?;
     let accent = region(width, height, 20, 90, 5, 15);
-    analyze_rgba_with_dimensions(rgba, width, height, accent)
+    let thickness = accent_thickness(rgba, width, accent);
+    analyze_rgba_with_dimensions(rgba, width, height, thickness)
 }
 
-pub fn analyze_rgba_in_region(
+pub fn analyze_rgba_with_accent(
     rgba: &[u8],
     width: i32,
     height: i32,
-    accent: PixelRegion,
+    accent_rgba: &[u8],
+    accent_width: i32,
+    accent_height: i32,
 ) -> Result<SmokePngEvidence, &'static str> {
     let (width, height) = dimensions(width, height, rgba.len())?;
-    if accent.x_start >= accent.x_end
-        || accent.y_start >= accent.y_end
-        || accent.x_end > width
-        || accent.y_end > height
-    {
-        return Err("visual_accent_region_invalid");
-    }
-    analyze_rgba_with_dimensions(rgba, width, height, accent)
+    let (accent_width, accent_height) = dimensions(accent_width, accent_height, accent_rgba.len())?;
+    let thickness = accent_thickness(
+        accent_rgba,
+        accent_width,
+        PixelRegion {
+            x_start: 0,
+            x_end: accent_width,
+            y_start: 0,
+            y_end: accent_height,
+        },
+    );
+    analyze_rgba_with_dimensions(rgba, width, height, thickness)
 }
 
 fn analyze_rgba_with_dimensions(
     rgba: &[u8],
     width: usize,
     height: usize,
-    accent: PixelRegion,
+    thickness: usize,
 ) -> Result<SmokePngEvidence, &'static str> {
     let (luminance_buckets, span) = luminance_distribution(rgba);
     if luminance_buckets < 8 || span < 32 {
@@ -117,7 +113,6 @@ fn analyze_rgba_with_dimensions(
     if dark_regions_passed != regions.len() {
         return Err("visual_dark_regions_invalid");
     }
-    let thickness = accent_thickness(rgba, width, accent);
     if !(2..=4).contains(&thickness) {
         return Err("visual_focus_thickness_invalid");
     }

@@ -10,8 +10,8 @@ use rshell_core::{
     UiCommandPort, UiPortError, WorkspaceState,
 };
 use rshell_ui::{
-    MainWindow, MainWindowInit, MainWindowMsg, NativeByteOrder, analyze_rgba_in_region,
-    apply_global_css, argb32_native_to_rgba, collect_visual_facts, selection_pixel_region,
+    MainWindow, MainWindowInit, MainWindowMsg, NativeByteOrder, analyze_rgba_with_accent,
+    apply_global_css, argb32_native_to_rgba, collect_visual_facts, selection_treatment_surface,
 };
 
 #[test]
@@ -98,11 +98,27 @@ fn wait_for_realized_pixels(window: &gtk::ApplicationWindow) -> rshell_ui::Smoke
 fn realized_pixels(
     window: &gtk::ApplicationWindow,
 ) -> Result<rshell_ui::SmokePngEvidence, &'static str> {
-    let width = window.width();
-    let height = window.height();
-    let accent = selection_pixel_region(window.upcast_ref())
-        .ok_or("realized active tab bounds unavailable")?;
-    let paintable = gtk::WidgetPaintable::new(Some(window));
+    let (rgba, width, height) = rendered_rgba(window.upcast_ref())?;
+    let accent = selection_treatment_surface(window.upcast_ref())
+        .ok_or("realized active tab unavailable")?;
+    let (accent_rgba, accent_width, accent_height) = rendered_rgba(&accent)?;
+    analyze_rgba_with_accent(
+        &rgba,
+        width,
+        height,
+        &accent_rgba,
+        accent_width,
+        accent_height,
+    )
+}
+
+fn rendered_rgba(widget: &gtk::Widget) -> Result<(Vec<u8>, i32, i32), &'static str> {
+    let width = widget.width();
+    let height = widget.height();
+    if width <= 0 || height <= 0 {
+        return Err("realized widget allocation unavailable");
+    }
+    let paintable = gtk::WidgetPaintable::new(Some(widget));
     let snapshot = gtk::Snapshot::new();
     paintable.snapshot(&snapshot, f64::from(width), f64::from(height));
     let node = snapshot.to_node().expect("realized snapshot node");
@@ -115,7 +131,7 @@ fn realized_pixels(
     let mut native = vec![0; stride * height as usize];
     texture.download(&mut native, stride);
     let rgba = argb32_native_to_rgba(&native, NativeByteOrder::current()).unwrap();
-    analyze_rgba_in_region(&rgba, width, height, accent)
+    Ok((rgba, width, height))
 }
 
 fn visual_fixture() -> AppViewModel {

@@ -1,8 +1,6 @@
 use gtk::prelude::*;
 use relm4::gtk;
 
-use crate::visual_png::PixelRegion;
-
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct SmokeVisualFacts {
     pub requested_width: i32,
@@ -101,20 +99,18 @@ pub fn collect_visual_facts(root: &gtk::Widget, requested: (i32, i32)) -> SmokeV
     }
 }
 
-pub fn selection_pixel_region(root: &gtk::Widget) -> Option<PixelRegion> {
-    const TREATMENT_BLEED: usize = 2;
-    let widget = descendants_including(root)
+pub fn selection_treatment_surface(root: &gtk::Widget) -> Option<gtk::Widget> {
+    let active_tab = descendants_including(root)
         .into_iter()
         .find(|widget| widget.is_mapped() && widget.has_css_class("active-tab"))?;
-    let bounds = widget.compute_bounds(root)?;
-    // GTK borders and outlines can rasterize just outside the widget allocation.
-    let x_start = (bounds.x().floor().max(0.0) as usize).saturating_sub(TREATMENT_BLEED);
-    let y_start = (bounds.y().floor().max(0.0) as usize).saturating_sub(TREATMENT_BLEED);
-    let x_end = ((bounds.x() + bounds.width()).ceil() as usize + TREATMENT_BLEED)
-        .min(root.width() as usize);
-    let y_end = ((bounds.y() + bounds.height()).ceil() as usize + TREATMENT_BLEED)
-        .min(root.height() as usize);
-    Some(PixelRegion::new(x_start, x_end, y_start, y_end))
+    let mut current = active_tab.parent();
+    while let Some(widget) = current {
+        if widget.is_mapped() && widget.has_css_class("tab-bar") {
+            return Some(widget);
+        }
+        current = widget.parent();
+    }
+    None
 }
 
 fn descendants_including(root: &gtk::Widget) -> Vec<gtk::Widget> {

@@ -1,6 +1,4 @@
-use super::{
-    NativeByteOrder, PixelRegion, analyze_rgba, analyze_rgba_in_region, argb32_native_to_rgba,
-};
+use super::{NativeByteOrder, analyze_rgba, analyze_rgba_with_accent, argb32_native_to_rgba};
 
 const WIDTH: usize = 1_360;
 const HEIGHT: usize = 860;
@@ -35,14 +33,32 @@ fn canonical_rgba_ranges_require_dark_regions_and_two_pixel_treatment() {
 }
 
 #[test]
-fn accent_analysis_uses_the_real_active_tab_bounds_not_window_percentages() {
+fn accent_analysis_uses_a_separately_rendered_active_tab() {
+    const TAB_WIDTH: usize = 220;
+    const TAB_HEIGHT: usize = 36;
     let mut rgba = fixture_rgba();
     fill_rect(&mut rgba, 300, 1_000, 70, 72, [34, 34, 34, 255]);
-    fill_rect(&mut rgba, 40, 240, 220, 222, [96, 180, 220, 255]);
-    let region = PixelRegion::new(40, 240, 190, 223);
+    let mut tab = [34, 34, 34, 255].repeat(TAB_WIDTH * TAB_HEIGHT);
+    fill_rect_with_width(
+        &mut tab,
+        TAB_WIDTH,
+        0,
+        TAB_WIDTH,
+        TAB_HEIGHT - 2,
+        TAB_HEIGHT,
+        [96, 180, 220, 255],
+    );
 
     assert!(analyze_rgba(&rgba, WIDTH as i32, HEIGHT as i32).is_err());
-    let evidence = analyze_rgba_in_region(&rgba, WIDTH as i32, HEIGHT as i32, region).unwrap();
+    let evidence = analyze_rgba_with_accent(
+        &rgba,
+        WIDTH as i32,
+        HEIGHT as i32,
+        &tab,
+        TAB_WIDTH as i32,
+        TAB_HEIGHT as i32,
+    )
+    .unwrap();
     assert_eq!(evidence.focus_or_selection_thickness_px, 2);
 }
 
@@ -88,9 +104,21 @@ fn fill_rect(
     y_end: usize,
     color: [u8; 4],
 ) {
+    fill_rect_with_width(rgba, WIDTH, x_start, x_end, y_start, y_end, color);
+}
+
+fn fill_rect_with_width(
+    rgba: &mut [u8],
+    width: usize,
+    x_start: usize,
+    x_end: usize,
+    y_start: usize,
+    y_end: usize,
+    color: [u8; 4],
+) {
     for y in y_start..y_end {
         for x in x_start..x_end {
-            let offset = (y * WIDTH + x) * 4;
+            let offset = (y * width + x) * 4;
             rgba[offset..offset + 4].copy_from_slice(&color);
         }
     }

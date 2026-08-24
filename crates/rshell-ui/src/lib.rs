@@ -174,8 +174,8 @@ pub use view_model::{
 };
 pub use visual_contract::{
     SmokePngEvidence, SmokeVisualEvidence, SmokeVisualFacts, collect_visual_facts,
-    selection_pixel_region,
+    selection_treatment_surface,
 };
 pub use visual_png::{
-    NativeByteOrder, PixelRegion, analyze_rgba, analyze_rgba_in_region, argb32_native_to_rgba,
+    NativeByteOrder, analyze_rgba, analyze_rgba_with_accent, argb32_native_to_rgba,
 };
