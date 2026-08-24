@@ -2,7 +2,7 @@ use std::{fs, time::Duration};
 
 use rshell_core::{HostKeyDecision, InteractionRequest, InteractionResponse, SessionFailure};
 use rshell_platform::private_file_is_secure;
-use rshell_session::{HostKeyError, HostKeyStorageStep, KnownHostsVerifier, interaction_channel};
+use rshell_session::{HostKeyError, KnownHostsVerifier, interaction_channel};
 use russh::keys::{PublicKey, parse_public_key_base64};
 use tempfile::TempDir;
 
@@ -210,35 +210,24 @@ async fn changed_key_fails_closed_without_prompt_or_live_mutation() {
 }
 
 #[tokio::test]
-async fn learning_failure_preserves_the_live_destination_and_cleans_the_private_temp_file() {
+async fn non_file_known_hosts_destination_fails_verification_without_prompt_or_mutation() {
     let temp = TempDir::new().unwrap();
     let verifier = verifier(&temp);
     fs::create_dir_all(verifier.path()).unwrap();
     let (broker, mut requests) = interaction_channel();
     let key = key_a();
-    let verification = verifier.verify("storage-failure.test", 22, &key, &broker);
-    tokio::pin!(verification);
-    let request = tokio::select! {
-        request = requests.recv() => request.expect("host-key request"),
-        result = &mut verification => panic!("unexpected verification result: {result:?}"),
-    };
-    let InteractionRequest::HostKey(prompt) = request.1 else {
-        panic!("expected host-key prompt");
-    };
-    broker
-        .respond(
-            prompt.id,
-            InteractionResponse::HostKey(HostKeyDecision::AcceptAndStore),
-        )
-        .unwrap();
-
     assert!(matches!(
-        verification.await,
-        Err(HostKeyError::Storage {
-            step: HostKeyStorageStep::CopyExisting,
-            ..
-        })
+        verifier
+            .verify("storage-failure.test", 22, &key, &broker)
+            .await,
+        Err(HostKeyError::Verification { .. })
     ));
+    assert!(
+        tokio::time::timeout(Duration::from_millis(20), requests.recv())
+            .await
+            .is_err(),
+        "invalid known-hosts storage must fail before prompting"
+    );
     assert!(verifier.path().is_dir());
     let entries = fs::read_dir(verifier.path().parent().unwrap())
         .unwrap()

@@ -18,6 +18,16 @@ pub(super) fn store(
     port: u16,
     key: &PublicKey,
 ) -> Result<(), HostKeyError> {
+    store_with_copy(destination, host, port, key, copy_existing_file)
+}
+
+fn store_with_copy(
+    destination: &Path,
+    host: &str,
+    port: u16,
+    key: &PublicKey,
+    copy: impl FnOnce(&Path, &mut File) -> io::Result<()>,
+) -> Result<(), HostKeyError> {
     let Some(parent) = destination.parent() else {
         return Err(storage_error(host, port, HostKeyStorageStep::CreateParent));
     };
@@ -29,7 +39,7 @@ pub(super) fn store(
     let temporary = TemporaryKnownHostsFile(temporary_path);
     {
         let mut temporary_file = temporary_file;
-        copy_existing_file(destination, &mut temporary_file)
+        copy(destination, &mut temporary_file)
             .map_err(|_| storage_error(host, port, HostKeyStorageStep::CopyExisting))?;
         temporary_file
             .flush()
@@ -88,5 +98,42 @@ impl TemporaryKnownHostsFile {
 impl Drop for TemporaryKnownHostsFile {
     fn drop(&mut self) {
         let _ = fs::remove_file(&self.0);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use russh::keys::parse_public_key_base64;
+    use tempfile::TempDir;
+
+    const KEY: &str = "AAAAC3NzaC1lZDI1NTE5AAAAILagOJFgwaMNhBWQINinKOXmqS4Gh5NgxgriXwdOoINJ";
+
+    #[test]
+    fn copy_failure_preserves_destination_and_removes_private_temporary_file() {
+        let temp = TempDir::new().unwrap();
+        let destination = temp.path().join("known_hosts");
+        fs::write(&destination, b"original\n").unwrap();
+        let key = parse_public_key_base64(KEY).unwrap();
+
+        let error = store_with_copy(&destination, "storage.test", 22, &key, |_, target| {
+            target.write_all(b"partial")?;
+            Err(io::Error::other("injected copy failure"))
+        })
+        .expect_err("copy failure must abort learning");
+
+        assert!(matches!(
+            error,
+            HostKeyError::Storage {
+                step: HostKeyStorageStep::CopyExisting,
+                ..
+            }
+        ));
+        assert_eq!(fs::read(&destination).unwrap(), b"original\n");
+        let entries = fs::read_dir(temp.path())
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name())
+            .collect::<Vec<_>>();
+        assert_eq!(entries, ["known_hosts"]);
     }
 }

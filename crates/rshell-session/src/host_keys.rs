@@ -123,6 +123,9 @@ impl KnownHostsVerifier {
     }
 
     fn is_known(&self, host: &str, port: u16, key: &PublicKey) -> Result<bool, HostKeyError> {
+        if self.path.exists() && !self.path.is_file() {
+            return Err(HostKeyError::verification(host, port));
+        }
         match known_hosts::check_known_hosts_path(host, port, key, &self.path) {
             Ok(known) => Ok(known),
             Err(russh::keys::Error::KeyChanged { line }) => {
