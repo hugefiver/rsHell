@@ -805,21 +805,22 @@ async fn native_remote_command_preserves_output_nonzero_exit_and_eof_cleanup() {
 #[tokio::test]
 #[ignore = "requires the real running system OpenSSH agent; run explicitly with -- --ignored"]
 async fn system_openssh_agent_authenticates_against_local_server() {
-    let parent_public_key = std::env::var_os(SYSTEM_AGENT_PUBLIC_KEY_PATH_ENV)
-        .map(PathBuf::from)
-        .map(|path| read_public_key(&path).expect("read parent-owned system-agent public key"));
-    let child_agent_key = parent_public_key
+    let parent_public_key_path =
+        std::env::var_os(SYSTEM_AGENT_PUBLIC_KEY_PATH_ENV).map(PathBuf::from);
+    let child_agent_key = parent_public_key_path
         .is_none()
         .then(DisposableAgentKey::add)
         .transpose()
         .expect("add disposable key to the running system SSH agent");
-    let public_key = parent_public_key.unwrap_or_else(|| {
+    let public_key_path = parent_public_key_path.unwrap_or_else(|| {
         child_agent_key
             .as_ref()
             .expect("child-owned agent key")
-            .public_key
+            .public_key_path
             .clone()
     });
+    let public_key = read_public_key(&public_key_path).expect("read system-agent public key");
+    assert_agent_exposes_public_key(&public_key).expect("system agent must expose the QA key");
     let home = TempDir::new().expect("system SSH temporary home");
     std::fs::create_dir_all(home.path().join(".ssh")).expect("system SSH known-hosts directory");
     let _home = EnvRestore::set("HOME", home.path().as_os_str());
@@ -829,6 +830,9 @@ async fn system_openssh_agent_authenticates_against_local_server() {
     let server = TestSshServer::start(ServerAuth::PublicKey(public_key)).await;
     let endpoint = server.address();
     let mut profile = system_profile(server.address());
+    // A public key file selects the matching private key from the real agent
+    // without exposing or loading private key bytes in the application.
+    profile.identity_file = Some(public_key_path);
     profile.remote_command = Some("exit:0".to_owned());
     let mut transport = SystemOpenSshTransport::new(profile);
     let (broker, _requests): (InteractionBroker, _) = interaction_channel();
@@ -837,7 +841,10 @@ async fn system_openssh_agent_authenticates_against_local_server() {
         .await
         .expect("start production system OpenSSH transport");
     let (output, status) = system_remote_command_after_host_confirmation(&mut transport).await;
-    assert!(contains(&output, b"remote-output-before-exit\r\n"));
+    assert!(contains_complete_terminal_line(
+        &output,
+        b"remote-output-before-exit",
+    ));
     assert_eq!(status.code, Some(0));
     assert!(status.success);
     tokio::time::timeout(SYSTEM_OPENSSH_TIMEOUT, transport.shutdown())
@@ -856,15 +863,55 @@ async fn system_openssh_agent_authenticates_against_local_server() {
     }
 }
 
+#[test]
+fn system_remote_output_accepts_complete_platform_pty_lines_only() {
+    let marker = b"remote-output-before-exit";
+
+    assert!(contains_complete_terminal_line(
+        b"prompt\nremote-output-before-exit\n",
+        marker,
+    ));
+    assert!(contains_complete_terminal_line(
+        b"prompt\r\nremote-output-before-exit\r\n",
+        marker,
+    ));
+    assert!(contains_complete_terminal_line(
+        b"prompt\r\r\nremote-output-before-exit\r\r\n",
+        marker,
+    ));
+    assert!(!contains_complete_terminal_line(marker, marker));
+    assert!(!contains_complete_terminal_line(
+        b"remote-output-before-exit-suffix\n",
+        marker,
+    ));
+    assert!(!contains_complete_terminal_line(
+        b"prefix-remote-output-before-exit\n",
+        marker,
+    ));
+}
+
+fn contains_complete_terminal_line(output: &[u8], expected: &[u8]) -> bool {
+    output.split_inclusive(|byte| *byte == b'\n').any(|line| {
+        let Some(content) = line.strip_suffix(b"\n") else {
+            return false;
+        };
+        let content = content.strip_suffix(b"\r").unwrap_or(content);
+        let content = content.strip_suffix(b"\r").unwrap_or(content);
+        content == expected
+    })
+}
+
 async fn system_remote_command_after_host_confirmation(
     transport: &mut SystemOpenSshTransport,
 ) -> (Vec<u8>, ExitStatus) {
-    tokio::time::timeout(SYSTEM_OPENSSH_TIMEOUT, async {
-        let mut output = Vec::new();
-        let mut confirmed = false;
+    let mut output = Vec::new();
+    let mut confirmed = false;
+    let mut output_events = 0usize;
+    let result = tokio::time::timeout(SYSTEM_OPENSSH_TIMEOUT, async {
         loop {
             match transport.next_event().await.expect("system OpenSSH event") {
                 TransportEvent::Output(bytes) => {
+                    output_events = output_events.saturating_add(1);
                     output.extend_from_slice(&bytes);
                     if !confirmed
                         && (contains(&output, b"yes/no")
@@ -877,13 +924,32 @@ async fn system_remote_command_after_host_confirmation(
                         confirmed = true;
                     }
                 }
-                TransportEvent::Exit(status) => return (output, status),
+                TransportEvent::Exit(status) => return status,
                 _ => panic!("system OpenSSH ended without an exit status"),
             }
         }
     })
-    .await
-    .expect("system OpenSSH remote command timed out")
+    .await;
+    match result {
+        Ok(status) => (output, status),
+        Err(_) => panic!(
+            "system OpenSSH remote command timed out: confirmed={confirmed} output_events={output_events} output_bytes={} marker_seen={} host_prompts={} retry_prompts={} permission_denied={} load_key_error={} agent_refused={}",
+            output.len(),
+            contains_complete_terminal_line(&output, b"remote-output-before-exit"),
+            count_bytes(&output, b"yes/no"),
+            count_bytes(&output, b"Please type"),
+            contains(&output, b"Permission denied"),
+            contains(&output, b"Load key"),
+            contains(&output, b"agent refused operation"),
+        ),
+    }
+}
+
+fn count_bytes(haystack: &[u8], needle: &[u8]) -> usize {
+    haystack
+        .windows(needle.len())
+        .filter(|window| *window == needle)
+        .count()
 }
 
 struct DisposableAgentKey {
@@ -933,22 +999,7 @@ impl DisposableAgentKey {
     }
 
     fn assert_loaded(&self) -> Result<(), String> {
-        let output = Command::new("ssh-add")
-            .arg("-L")
-            .output()
-            .map_err(|_| "system SSH agent smoke could not inspect agent identities".to_owned())?;
-        if !output.status.success()
-            || !String::from_utf8_lossy(&output.stdout)
-                .lines()
-                .filter_map(parse_public_key_line)
-                .any(|key| key == self.public_key)
-        {
-            return Err(
-                "system SSH agent smoke did not expose its disposable task identity after ssh-add"
-                    .to_owned(),
-            );
-        }
-        Ok(())
+        assert_agent_exposes_public_key(&self.public_key)
     }
 
     fn remove(mut self) -> Result<(), String> {
@@ -986,6 +1037,23 @@ impl DisposableAgentKey {
             );
         }
         Ok(())
+    }
+}
+
+fn assert_agent_exposes_public_key(expected: &PublicKey) -> Result<(), String> {
+    let output = Command::new("ssh-add")
+        .arg("-L")
+        .output()
+        .map_err(|_| "system SSH agent smoke could not inspect agent identities".to_owned())?;
+    if output.status.success()
+        && String::from_utf8_lossy(&output.stdout)
+            .lines()
+            .filter_map(parse_public_key_line)
+            .any(|key| key == *expected)
+    {
+        Ok(())
+    } else {
+        Err("system SSH agent smoke did not expose the expected task identity".to_owned())
     }
 }
 
