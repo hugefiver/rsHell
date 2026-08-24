@@ -213,6 +213,8 @@ fn hosted_workflows_fail_closed_and_package_smoke_uses_a_deterministic_shell() {
 fn hosted_gui_tests_use_linux_xvfb_and_a_supported_macos_runner() {
     let ci = include_str!("../.github/workflows/ci.yml");
     let release = include_str!("../.github/workflows/release.yml");
+    let manifest = include_str!("../Cargo.toml");
+    let harness = include_str!("../scripts/qa/p0-smoke.ps1");
 
     for workflow in [ci, release] {
         assert!(workflow.contains("os: macos-26"));
@@ -220,6 +222,10 @@ fn hosted_gui_tests_use_linux_xvfb_and_a_supported_macos_runner() {
     }
     assert!(ci.contains("$env:DISPLAY = ':98'"));
     assert!(ci.contains("Xvfb"));
+    assert!(manifest.contains("name = \"actor_panic_gtk_survival_macos\""));
+    assert!(manifest.contains("path = \"tests/actor_panic_gtk_survival_macos.rs\""));
+    assert!(manifest.contains("harness = false"));
+    assert!(harness.contains("Invoke-MainThreadGtkRegression"));
 }
 
 #[test]

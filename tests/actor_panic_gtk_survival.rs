@@ -66,8 +66,7 @@ impl UiCommandPort for AcceptingPort {
     }
 }
 
-#[test]
-fn actor_panic_keeps_realized_main_window_alive() {
+pub fn run_actor_panic_scenario() {
     gtk::init().expect("GTK must initialize for the required survival surface");
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_time()
@@ -136,6 +135,12 @@ fn actor_panic_keeps_realized_main_window_alive() {
     main.widget().close();
     flush_gtk();
     runtime.block_on(manager.shutdown_all()).ok();
+}
+
+#[cfg(not(target_os = "macos"))]
+#[test]
+fn actor_panic_keeps_realized_main_window_alive() {
+    run_actor_panic_scenario();
 }
 
 fn flush_gtk() {

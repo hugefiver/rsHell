@@ -315,6 +315,20 @@ function Invoke-RegressionCase {
     Add-Phase "regression_$Name"
 }
 
+function Invoke-MainThreadGtkRegression {
+    $name = "actor_panic_gtk_survival"
+    [void](Invoke-CapturedChild `
+            -Name "regression_$name-main-thread" `
+            -FilePath $cargo `
+            -Arguments @("test", "--locked", "-p", "rshell", "--test", "actor_panic_gtk_survival_macos") `
+            -Environment $baseEnvironment `
+            -WorkingDirectory $repoRoot `
+            -StdoutPath (Join-Path $artifactRoot "$stem-regression-$name-main-thread.stdout.log") `
+            -StderrPath (Join-Path $artifactRoot "$stem-regression-$name-main-thread.stderr.log") `
+            -TimeoutSeconds 300)
+    Add-Phase "regression_$name"
+}
+
 function Set-LateFailure {
     param(
         [Parameter(Mandatory)]$Report,
@@ -799,7 +813,12 @@ try {
             @{ Name = "portable_paths"; Package = "rshell-platform"; Tests = @("environment::tests::portable_runtime_paths_are_prepended_once") }
         )
         foreach ($case in $regressionCases) {
-            Invoke-RegressionCase @case
+            if ($platformIsMacOS -and $case.Name -eq "actor_panic_gtk_survival") {
+                Invoke-MainThreadGtkRegression
+            }
+            else {
+                Invoke-RegressionCase @case
+            }
         }
 
         [void](Invoke-CapturedChild `
