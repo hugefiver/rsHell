@@ -162,8 +162,6 @@ jobs:
 
       - name: Run required workspace gates
         run: |
-          $workspaceShell = Get-Command -Name "pwsh" -ErrorAction Stop
-          $env:RSHELL_SHELL = $workspaceShell.Source
           cargo fmt -- --check
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           cargo check --workspace --all-targets --all-features --locked

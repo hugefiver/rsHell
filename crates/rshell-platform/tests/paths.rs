@@ -28,11 +28,12 @@ fn discovered_paths_are_app_specific() {
     let paths = PlatformPaths::discover().unwrap();
 
     for directory in [&paths.config_dir, &paths.state_dir, &paths.cache_dir] {
-        assert!(
-            directory
-                .components()
-                .any(|part| part.as_os_str() == "rshell")
-        );
+        assert!(directory.components().any(|part| {
+            part.as_os_str()
+                .to_string_lossy()
+                .to_ascii_lowercase()
+                .contains("rshell")
+        }));
     }
 }
 

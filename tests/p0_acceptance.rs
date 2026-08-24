@@ -186,6 +186,7 @@ fn hosted_workflows_fail_closed_and_package_smoke_uses_a_deterministic_shell() {
     let ci = include_str!("../.github/workflows/ci.yml");
     let release = include_str!("../.github/workflows/release.yml");
     let package = include_str!("../scripts/qa/assert-package.ps1");
+    let bootstrap = include_str!("../src/bootstrap.rs");
 
     for command in [
         "cargo check --workspace --all-targets --all-features --locked",
@@ -203,8 +204,8 @@ fn hosted_workflows_fail_closed_and_package_smoke_uses_a_deterministic_shell() {
     }
     assert!(ci.contains("$missingBaselineStatus -and $missingBaselineStartupMode"));
     assert!(ci.contains("$missingBaselineStatus -xor $missingBaselineStartupMode"));
-    assert!(ci.contains("Get-Command -Name \"pwsh\" -ErrorAction Stop"));
-    assert!(ci.contains("$env:RSHELL_SHELL = $workspaceShell.Source"));
+    assert!(!ci.contains("$env:RSHELL_SHELL = $workspaceShell.Source"));
+    assert!(bootstrap.contains("ShellOverride::deterministic()"));
     assert!(package.contains("Get-Command -Name \"pwsh\" -ErrorAction Stop"));
     assert!(package.contains("$startInfo.Environment[\"RSHELL_SHELL\"] = $pwsh.Source"));
 }

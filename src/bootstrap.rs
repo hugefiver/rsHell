@@ -224,12 +224,13 @@ fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
 
 #[cfg(test)]
 mod tests {
-    use std::{fs, time::SystemTime};
+    use std::{ffi::OsString, fs, path::PathBuf, time::SystemTime};
 
     use super::*;
 
     #[test]
     fn composition_root_bootstraps_each_process_service_exactly_once_in_order() {
+        let _shell = ShellOverride::deterministic();
         let root = std::env::temp_dir().join(format!(
             "rshell-bootstrap-test-{}-{}",
             std::process::id(),
@@ -262,6 +263,46 @@ mod tests {
             .block_on(application.shutdown())
             .expect("production bootstrap must shut down");
         fs::remove_dir_all(root).expect("test state must be removed");
+    }
+
+    struct ShellOverride(Option<OsString>);
+
+    impl ShellOverride {
+        fn deterministic() -> Self {
+            let previous = std::env::var_os("RSHELL_SHELL");
+            let shell = deterministic_shell();
+            assert!(shell.is_file(), "deterministic test shell must exist");
+            // SAFETY: this root test is the only test in this binary that reads RSHELL_SHELL.
+            unsafe { std::env::set_var("RSHELL_SHELL", shell) };
+            Self(previous)
+        }
+    }
+
+    impl Drop for ShellOverride {
+        fn drop(&mut self) {
+            // SAFETY: the guard restores the process environment before this test returns.
+            unsafe {
+                match self.0.take() {
+                    Some(previous) => std::env::set_var("RSHELL_SHELL", previous),
+                    None => std::env::remove_var("RSHELL_SHELL"),
+                }
+            }
+        }
+    }
+
+    fn deterministic_shell() -> PathBuf {
+        #[cfg(windows)]
+        {
+            let windows = std::env::var_os("WINDIR").expect("WINDIR must be defined");
+            PathBuf::from(windows).join("System32").join("where.exe")
+        }
+        #[cfg(not(windows))]
+        {
+            [PathBuf::from("/usr/bin/true"), PathBuf::from("/bin/true")]
+                .into_iter()
+                .find(|path| path.is_file())
+                .expect("a standard true executable must exist")
+        }
     }
 
     #[test]
