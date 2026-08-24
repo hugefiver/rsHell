@@ -1,0 +1,20 @@
+{
+  "folders": [
+    {
+      "id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      "name": "P0 imported"
+    }
+  ],
+  "connections": [
+    {
+      "id": "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+      "name": "P0 legacy import",
+      "folder_id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      "host": "legacy.example.test",
+      "port": 22,
+      "user": "operator",
+      "backend": "system_open_ssh",
+      "accept_new_host": false
+    }
+  ]
+}

@@ -1,0 +1,502 @@
+use std::collections::BTreeSet;
+
+use std::process::Command;
+
+const REQUIRED_REPORT_FIELDS: [&str; 11] = [
+    "gtk",
+    "local_terminal",
+    "native_password",
+    "native_key",
+    "native_keyboard_interactive",
+    "system_agent",
+    "host_key",
+    "vault",
+    "imports",
+    "tabs_splits",
+    "cleanup",
+];
+
+const REQUIRED_ACTIONS: [&str; 25] = [
+    "wait_window_realized",
+    "new_tab",
+    "open_connection_editor",
+    "set_connection_field",
+    "submit_connection",
+    "select_connection",
+    "connect",
+    "respond_host_key",
+    "respond_auth",
+    "send_terminal_text",
+    "paste_text_from_env",
+    "resize_terminal",
+    "wait_frame_contains",
+    "split_horizontal",
+    "split_vertical",
+    "switch_tab",
+    "search_terminal",
+    "select_range",
+    "copy_selection",
+    "reconnect",
+    "visual_checkpoint",
+    "preview_import",
+    "commit_import",
+    "cancel_import",
+    "close_all",
+];
+
+#[test]
+fn static_p0_fixture_covers_each_exact_ui_action_name() {
+    let fixture: serde_json::Value =
+        serde_json::from_str(include_str!("fixtures/smoke/p0-scenario.json")).unwrap();
+    assert_eq!(fixture["version"], 1);
+    let names = fixture["actions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|action| action["action"].as_str())
+        .collect::<BTreeSet<_>>();
+    assert_eq!(names, REQUIRED_ACTIONS.into_iter().collect());
+}
+
+#[test]
+fn fixture_secret_fields_hold_environment_variable_names_not_values() {
+    let fixture: serde_json::Value =
+        serde_json::from_str(include_str!("fixtures/smoke/p0-scenario.json")).unwrap();
+    for action in fixture["actions"].as_array().unwrap() {
+        let secret_field = action["action"] == "set_connection_field"
+            && action["field"]["kind"] == "secret_from_env";
+        let environment_action = matches!(
+            action["action"].as_str(),
+            Some("respond_auth" | "paste_text_from_env")
+        );
+        if secret_field || environment_action {
+            let environment_name = if secret_field {
+                &action["field"]["env_var"]
+            } else {
+                &action["env_var"]
+            };
+            assert!(environment_name.is_string());
+            assert!(action["field"]["value"].is_null());
+        }
+    }
+}
+
+#[test]
+fn p0_report_contract_has_fixed_fail_or_pass_surfaces() {
+    assert_eq!(REQUIRED_REPORT_FIELDS.len(), 11);
+    assert!(REQUIRED_REPORT_FIELDS.iter().all(|field| !field.is_empty()));
+}
+
+#[test]
+fn powershell_harness_invokes_the_production_p0_driver() {
+    let harness = include_str!("../scripts/qa/p0-smoke.ps1");
+
+    assert!(
+        harness.contains("--smoke-p0"),
+        "the QA entrypoint must invoke the production root smoke control plane"
+    );
+    assert!(
+        harness.contains("try") && harness.contains("finally"),
+        "the QA entrypoint must clean temporary resources even after failure"
+    );
+}
+
+#[test]
+fn visual_contract_uses_native_argb32_range_evidence_and_fatal_gtk_warnings() {
+    let harness = include_str!("../scripts/qa/p0-smoke.ps1");
+    let capture = include_str!("../crates/rshell-ui/src/main_window_smoke_capture.rs");
+    let analyzer = include_str!("../crates/rshell-ui/src/visual_png.rs");
+    for required in [
+        "Assert-VisualContract",
+        "dark_regions_passed",
+        "focus_or_selection_thickness_px",
+        "P0 PNG/report dimensions differ",
+        "G_DEBUG = \"fatal-warnings\"",
+    ] {
+        assert!(
+            harness.contains(required),
+            "missing visual harness contract: {required}"
+        );
+    }
+    assert!(capture.contains("argb32_native_to_rgba"));
+    assert!(capture.contains("TextureExtManual"));
+    assert!(analyzer.contains("NativeByteOrder"));
+    assert!(analyzer.contains("analyze_rgba"));
+    assert!(
+        harness.find("Assert-VisualContract -Report").unwrap()
+            < harness.find("Add-Phase \"gtk_production\"").unwrap(),
+        "visual validation must fail before the GTK phase can pass"
+    );
+}
+
+#[test]
+fn embedded_product_assets_and_package_contract_are_closed() {
+    let labels = rshell_ui::ProductIcon::ALL
+        .into_iter()
+        .map(|icon| icon.metadata().accessible_label)
+        .collect::<BTreeSet<_>>();
+    let assets = rshell_ui::ProductIcon::ALL
+        .into_iter()
+        .map(|icon| icon.metadata().svg)
+        .collect::<BTreeSet<_>>();
+    assert_eq!(labels.len(), 16);
+    assert_eq!(assets.len(), 16);
+    assert!(assets.iter().all(|svg| svg.starts_with(b"<svg")));
+
+    let package = include_str!("../scripts/qa/assert-package.ps1");
+    let workflow = include_str!("../scripts/qa/workflow-contract.ps1");
+    for marker in [
+        "embedded_css_loaded",
+        "embedded_icons_renderable",
+        "embedded_icon_backend",
+        "Assert-NoProductAssetPayload",
+        "external-icon-payload",
+        "runtime-icon-backends",
+    ] {
+        assert!(package.contains(marker));
+        assert!(workflow.contains(marker));
+    }
+    for probe in [
+        "external-icon-payload",
+        "external-resource-directory",
+        "external-icons-directory",
+        "runtime-icon-backends",
+    ] {
+        let output = Command::new("pwsh")
+            .args([
+                "-NoProfile",
+                "-File",
+                "scripts/qa/assert-package.ps1",
+                "-RegressionProbe",
+                probe,
+            ])
+            .current_dir(env!("CARGO_MANIFEST_DIR"))
+            .output()
+            .expect("PowerShell package probe");
+        assert!(
+            output.status.success(),
+            "package probe failed: {probe}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+}
+
+#[test]
+fn powershell_harness_has_a_cross_platform_tool_and_shell_contract() {
+    let harness = include_str!("../scripts/qa/p0-smoke.ps1");
+
+    for forbidden in [
+        "cargo.exe",
+        "pwsh.exe",
+        "C:\\gtk-build",
+        "C:\\Windows\\System32\\OpenSSH",
+        "$env:TEMP",
+    ] {
+        assert!(
+            !harness.contains(forbidden),
+            "the cross-platform harness must not hardcode {forbidden}"
+        );
+    }
+    for required in [
+        "$platformIsWindows",
+        "$platformIsLinux",
+        "$platformIsMacOS",
+        "Get-Command -Name \"cargo\" -ErrorAction Stop",
+        "Get-Command -Name \"pwsh\" -ErrorAction Stop",
+        "Get-Command -Name \"ssh-keygen\" -ErrorAction Stop",
+        "Get-Command -Name \"ssh-add\" -ErrorAction Stop",
+        "RSHELL_SHELL",
+        "[System.IO.Path]::GetTempPath()",
+        "[System.IO.Path]::PathSeparator",
+        "P0 smoke does not support this operating system.",
+        "^ssh_smoke-[0-9a-f]+$",
+    ] {
+        assert!(
+            harness.contains(required),
+            "the cross-platform harness is missing {required}"
+        );
+    }
+}
+
+#[test]
+fn harness_finalizes_artifacts_only_after_cleanup_and_secret_scan() {
+    let harness = include_str!("../scripts/qa/p0-smoke.ps1");
+    let final_junit = harness
+        .rfind("Write-Junit")
+        .expect("harness must write final JUnit");
+    let cleanup = harness
+        .rfind("P0 temp cleanup verification failed")
+        .expect("harness must verify temp cleanup");
+    let secret_scan = harness
+        .rfind("assert-no-secrets")
+        .expect("harness must run the final secret scan");
+    assert!(
+        final_junit > cleanup && final_junit > secret_scan,
+        "JSON/JUnit finalization must occur after cleanup and secret scanning"
+    );
+    assert!(
+        harness.contains("failures",)
+            && !harness.contains("WriteAttributeString(\"failures\", \"0\")"),
+        "JUnit failures must be derived instead of hardcoded"
+    );
+}
+
+#[test]
+fn harness_owns_agent_and_vault_cleanup_ledgers_before_children_start() {
+    let harness = include_str!("../scripts/qa/p0-smoke.ps1");
+    for marker in [
+        "agent-cleanup-ledger",
+        "vault-cleanup-ledger",
+        "fail_before_fixture_ready",
+        "fail_during_vault_probe",
+    ] {
+        assert!(
+            harness.contains(marker),
+            "parent cleanup contract is missing {marker}"
+        );
+    }
+}
+
+#[test]
+fn agent_cleanup_is_required_before_add_and_survives_a_lost_reply() {
+    let harness = include_str!("../scripts/qa/p0-smoke.ps1");
+    let required = harness
+        .find("$agentCleanupRequired = $true")
+        .expect("agent cleanup must become required durably");
+    let add = harness
+        .find("-Name \"agent-add-parent\"")
+        .expect("agent add phase");
+    assert!(required < add, "cleanup obligation must precede ssh-add");
+    assert!(harness.contains("agent_add_lost_reply"));
+    assert!(
+        !harness.contains("$agentAdded -and"),
+        "cleanup cannot depend on observing ssh-add success"
+    );
+}
+
+#[test]
+fn fixture_shutdown_exit_is_checked_in_normal_and_finally_paths() {
+    let harness = include_str!("../scripts/qa/p0-smoke.ps1");
+    assert!(harness.contains("fixture_nonzero_shutdown"));
+    assert!(harness.contains("$fixtureStopExit = Complete-CapturedChild"));
+    assert!(harness.contains("$fixtureFinallyExit = Complete-CapturedChild"));
+    assert!(harness.contains("fixture final assertions failed"));
+}
+
+#[test]
+fn late_failure_invalidates_security_surfaces_and_has_a_real_junit_node() {
+    let harness = include_str!("../scripts/qa/p0-smoke.ps1");
+    assert!(harness.contains("Set-LateFailure"));
+    assert!(harness.contains("harness_finalization"));
+    assert!(harness.contains("late_cleanup_or_security_failure"));
+    assert!(harness.contains("RSHELL_QA_INJECT_LATE_FINALIZATION_FAILURE"));
+    assert!(harness.contains("failureNodes.Count"));
+}
+
+#[test]
+fn mode_all_declares_every_task20_regression_case() {
+    let harness = include_str!("../scripts/qa/p0-smoke.ps1");
+    for case in [
+        "option_like_host",
+        "ports_0_65536",
+        "resize_1x1_999x999",
+        "wide_midpoint",
+        "backpressure_10k",
+        "unknown_host_reject",
+        "changed_host_key",
+        "wrong_password",
+        "kbi_cancel",
+        "vault_result_unknown",
+        "database_finalize_failure",
+        "backup_recovery",
+        "openssh_wildcard_include_cycle",
+        "repeated_shutdown_reconnect",
+        "argv_injection",
+        "secret_unchanged_clear",
+        "actor_panic_gtk_survival",
+        "eof_clean_exit",
+        "latest_frame_wins",
+        "portable_paths",
+        "release_no_legacy_dependencies",
+    ] {
+        assert!(
+            harness.contains(case),
+            "Mode All is missing regression {case}"
+        );
+    }
+}
+
+#[test]
+fn powershell_tui_exit_waits_for_a_post_alternate_screen_prompt_frame() {
+    let harness = include_str!("../scripts/qa/p0-smoke.ps1");
+    let tui_exit_wait = harness
+        .find("P0-TUI-EXITED")
+        .expect("Mode All must wait for the TUI exit marker");
+    assert!(
+        harness[tui_exit_wait..].contains("text = \"PS \""),
+        "the PowerShell scenario must observe a post-TUI prompt frame before changing panes"
+    );
+    let post_exit_marker = "P0-TUI-POST-EXIT-FRAME";
+    let post_exit_tail = &harness[tui_exit_wait..];
+    let post_exit_send = post_exit_tail
+        .find("Write-Output P0-TUI-POST-EXIT-FRAME")
+        .expect("the PowerShell scenario must request a new post-TUI terminal frame");
+    assert!(
+        post_exit_tail[post_exit_send..].contains(&format!("text = \"{post_exit_marker}\"")),
+        "the PowerShell scenario must observe the new post-TUI terminal frame before changing panes"
+    );
+}
+
+#[test]
+fn regression_cases_are_exact_commands_not_labels_after_an_aggregate_suite() {
+    let harness = include_str!("../scripts/qa/p0-smoke.ps1");
+    assert!(harness.contains("Invoke-RegressionCase"));
+    assert!(harness.contains("-Arguments $arguments"));
+    assert!(!harness.contains("-Name \"task20-regression-matrix\""));
+    assert!(harness.contains("resize_extremes_emit_real_1x1_and_999x999_commands"));
+    assert!(harness.contains("actor_panic_keeps_realized_main_window_alive"));
+    assert!(
+        harness.contains(
+            "wide_midpoint_selection_normalizes_to_the_stable_wide_cell_and_frame_overlay"
+        )
+    );
+    assert!(
+        harness.contains("stale_and_equal_frames_are_dropped_and_dirty_rows_track_stable_content")
+    );
+    assert!(!harness.contains("cursor_width_uses_the_wide_cell_under_the_cursor"));
+    assert!(
+        !harness
+            .contains("session_binding_forwards_events_latest_frame_and_interaction_to_same_actor")
+    );
+}
+
+#[test]
+fn mode_all_builds_and_inspects_the_release_dependency_surface() {
+    let harness = include_str!("../scripts/qa/p0-smoke.ps1");
+    assert!(
+        harness.contains("\"build\", \"--release\"")
+            && harness.contains("\"tree\", \"--locked\"")
+            && harness.contains("release dependency scan found a removed dependency"),
+        "release_no_legacy_dependencies must be backed by a real release build and dependency scan"
+    );
+}
+
+#[test]
+fn regression_harness_rejects_zero_multiple_and_failed_exact_test_results() {
+    for probe in ["zero", "one", "multiple", "failure"] {
+        let output = invoke_harness_probe("-RegressionParserProbe", probe);
+        assert!(
+            output.status.success(),
+            "regression parser probe {probe} failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    let output = invoke_harness_probe("-RegressionCaseProbe", "p0_task20_missing_exact_test");
+    assert!(
+        !output.status.success(),
+        "a missing exact test must fail the harness instead of adding a passed phase"
+    );
+    let output = format!(
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        output.contains(
+            "P0 regression exact-test discovery did not yield exactly one matching test."
+        ),
+        "the harness must fail specifically because discovery found zero exact tests"
+    );
+}
+
+fn invoke_harness_probe(argument: &str, value: &str) -> std::process::Output {
+    Command::new("pwsh")
+        .args([
+            "-NoProfile",
+            "-File",
+            "scripts/qa/p0-smoke.ps1",
+            "-Mode",
+            "Unit",
+            argument,
+            value,
+        ])
+        .current_dir(env!("CARGO_MANIFEST_DIR"))
+        .output()
+        .expect("PowerShell must launch the Task20 smoke harness")
+}
+
+#[test]
+fn task20_root_production_modules_remain_focused() {
+    for (path, source) in [
+        ("src/bootstrap.rs", include_str!("../src/bootstrap.rs")),
+        ("src/cleanup.rs", include_str!("../src/cleanup.rs")),
+        ("src/main.rs", include_str!("../src/main.rs")),
+        ("src/p0_smoke.rs", include_str!("../src/p0_smoke.rs")),
+        (
+            "src/p0_smoke_action_fields.rs",
+            include_str!("../src/p0_smoke_action_fields.rs"),
+        ),
+        (
+            "src/p0_smoke_actions.rs",
+            include_str!("../src/p0_smoke_actions.rs"),
+        ),
+        (
+            "src/p0_smoke_cleanup.rs",
+            include_str!("../src/p0_smoke_cleanup.rs"),
+        ),
+        (
+            "src/p0_smoke_contract.rs",
+            include_str!("../src/p0_smoke_contract.rs"),
+        ),
+        (
+            "src/p0_smoke_contract_binding.rs",
+            include_str!("../src/p0_smoke_contract_binding.rs"),
+        ),
+        (
+            "src/p0_smoke_contract_evidence.rs",
+            include_str!("../src/p0_smoke_contract_evidence.rs"),
+        ),
+        (
+            "src/p0_smoke_evidence.rs",
+            include_str!("../src/p0_smoke_evidence.rs"),
+        ),
+        (
+            "src/p0_smoke_report.rs",
+            include_str!("../src/p0_smoke_report.rs"),
+        ),
+        (
+            "src/p0_smoke_report_steps.rs",
+            include_str!("../src/p0_smoke_report_steps.rs"),
+        ),
+        (
+            "src/p0_smoke_report_terminal.rs",
+            include_str!("../src/p0_smoke_report_terminal.rs"),
+        ),
+        (
+            "src/p0_smoke_runtime.rs",
+            include_str!("../src/p0_smoke_runtime.rs"),
+        ),
+        (
+            "src/p0_smoke_scenario.rs",
+            include_str!("../src/p0_smoke_scenario.rs"),
+        ),
+        (
+            "src/p0_smoke_status.rs",
+            include_str!("../src/p0_smoke_status.rs"),
+        ),
+    ] {
+        let production = source.split("#[cfg(test)]").next().unwrap_or(source);
+        let pure_lines = production
+            .lines()
+            .filter(|line| {
+                let trimmed = line.trim();
+                !trimmed.is_empty() && !trimmed.starts_with("//")
+            })
+            .count();
+        assert!(
+            pure_lines <= 250,
+            "{path} has {pure_lines} pure production lines (limit 250)"
+        );
+    }
+}
