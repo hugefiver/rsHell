@@ -9,6 +9,15 @@ use rshell_session::{DefaultTerminalEngine, TerminalEngine};
 
 const FIXTURE: &[u8] = include_bytes!("fixtures/compatibility.ansi");
 
+#[test]
+fn compatibility_fixture_is_not_rewritten_by_platform_line_endings() {
+    assert!(FIXTURE.ends_with(b"\x1b[?25l\n"));
+    assert!(
+        !FIXTURE.windows(2).any(|bytes| bytes == b"\r\n"),
+        "terminal control fixture must retain repository LF bytes"
+    );
+}
+
 fn size(cols: u16, rows: u16) -> TerminalSize {
     TerminalSize {
         cols,
