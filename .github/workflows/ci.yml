@@ -9,11 +9,16 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: pwsh
+
 env:
   CARGO_TERM_COLOR: always
   GVSBUILD_VERSION: '2025.3.0'
-  VCPKG_OPENSSL_VERSION: '3.4.1'
-  VCPKG_LIBSSH2_VERSION: '1.11.1'
 
 jobs:
   check:
@@ -23,49 +28,55 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - name: Linux
+          - name: Linux x86_64
             os: ubuntu-24.04
-          - name: macOS
-            os: macos-latest
-          - name: Windows
-            os: windows-latest
+          - name: macOS arm64
+            os: macos-15
+          - name: Windows x86_64
+            os: windows-2022
 
     steps:
       - uses: actions/checkout@v4
 
+      - name: Validate workflow contract
+        run: |
+          pwsh -NoProfile -File scripts/qa/workflow-contract.ps1
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
       - uses: dtolnay/rust-toolchain@stable
         with:
-          components: clippy
+          components: clippy, rustfmt
 
-      # === Linux ===
-      - name: Cache apt packages
+      - name: Install GTK, display, and Secret Service dependencies (Linux)
         if: runner.os == 'Linux'
-        uses: awalsh128/cache-apt-pkgs-action@latest
-        with:
-          packages: libgtk-4-dev libssh2-1-dev libssl-dev pkg-config
-          version: 1.0
+        run: |
+          & sudo apt-get update
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          & sudo apt-get install --yes libgtk-4-dev pkg-config xvfb dbus-x11 gnome-keyring libsecret-1-0
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
-      # === macOS ===
-      - name: Install dependencies (macOS)
+      - name: Install GTK dependencies (macOS)
         if: runner.os == 'macOS'
         run: |
-          brew install gtk4 libssh2 openssl pkg-config
-          echo "PKG_CONFIG_PATH=$(brew --prefix openssl@3)/lib/pkgconfig:$(brew --prefix libssh2)/lib/pkgconfig${PKG_CONFIG_PATH:+:$PKG_CONFIG_PATH}" >> $GITHUB_ENV
+          & brew install gtk4 pkg-config
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $gtkPrefix = (& brew --prefix gtk4).Trim()
+          if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($gtkPrefix)) { exit 1 }
+          Add-Content -LiteralPath $env:GITHUB_ENV -Value "PKG_CONFIG_PATH=$gtkPrefix/lib/pkgconfig"
 
-      # === Windows ===
       - uses: actions/setup-python@v5
         if: runner.os == 'Windows'
         with:
           python-version: '3.12'
 
-      - name: Cache gvsbuild
+      - name: Cache gvsbuild GTK runtime
         if: runner.os == 'Windows'
         id: cache-gtk
         uses: actions/cache@v4
         with:
           path: C:\gtk-build
           key: gvsbuild-${{ env.GVSBUILD_VERSION }}-gtk4
-          save-always: true
+          save-always: false
 
       - name: Build GTK4 via gvsbuild
         if: runner.os == 'Windows' && steps.cache-gtk.outputs.cache-hit != 'true'
@@ -73,42 +84,276 @@ jobs:
           pip install gvsbuild==${{ env.GVSBUILD_VERSION }}
           gvsbuild build gtk4
 
-      - name: Cache vcpkg packages
-        if: runner.os == 'Windows'
-        id: cache-vcpkg
-        uses: actions/cache@v4
-        with:
-          path: C:\vcpkg\installed
-          key: vcpkg-openssl${{ env.VCPKG_OPENSSL_VERSION }}-libssh2${{ env.VCPKG_LIBSSH2_VERSION }}-x64-static-md
-          save-always: true
-
-      - name: Install OpenSSL and libssh2 (Windows)
-        if: runner.os == 'Windows' && steps.cache-vcpkg.outputs.cache-hit != 'true'
-        run: vcpkg install openssl:x64-windows-static-md libssh2:x64-windows-static-md
-
       - name: Setup Windows environment
         if: runner.os == 'Windows'
-        shell: pwsh
         run: |
           $gtkRoot = "C:\gtk-build\gtk\x64\release"
-          echo "PKG_CONFIG_PATH=$gtkRoot\lib\pkgconfig" >> $env:GITHUB_ENV
-          echo "LIB=$gtkRoot\lib" >> $env:GITHUB_ENV
-          echo "$gtkRoot\bin" >> $env:GITHUB_PATH
-          echo "VCPKG_ROOT=$env:VCPKG_INSTALLATION_ROOT" >> $env:GITHUB_ENV
-
-          # gvsbuild produces zlib1.lib / zlib.lib, but pkg-config emits -lz
-          # which MSVC linker translates to z.lib — create alias if missing
+          if (-not (Test-Path -LiteralPath $gtkRoot -PathType Container)) { throw "gvsbuild GTK root is unavailable." }
+          Add-Content -LiteralPath $env:GITHUB_ENV -Value "PKG_CONFIG_PATH=$gtkRoot\lib\pkgconfig"
+          Add-Content -LiteralPath $env:GITHUB_ENV -Value "LIB=$gtkRoot\lib"
+          Add-Content -LiteralPath $env:GITHUB_ENV -Value "RSHELL_GTK_ROOT=$gtkRoot"
+          Add-Content -LiteralPath $env:GITHUB_PATH -Value "$gtkRoot\bin"
           $libDir = "$gtkRoot\lib"
           if (-not (Test-Path "$libDir\z.lib")) {
             if (Test-Path "$libDir\zlib1.lib") {
               Copy-Item "$libDir\zlib1.lib" "$libDir\z.lib"
             } elseif (Test-Path "$libDir\zlib.lib") {
               Copy-Item "$libDir\zlib.lib" "$libDir\z.lib"
+            } else {
+              throw "gvsbuild zlib import library is unavailable."
             }
           }
 
       - uses: Swatinem/rust-cache@v2
 
-      - run: cargo check
-      - run: cargo test --lib
-      - run: cargo clippy -- -D warnings
+      - name: Confirm system OpenSSH tools
+        run: |
+          $ssh = Get-Command ssh -ErrorAction Stop
+          $sshKeygen = Get-Command ssh-keygen -ErrorAction Stop
+          if ([string]::IsNullOrWhiteSpace($ssh.Source) -or [string]::IsNullOrWhiteSpace($sshKeygen.Source)) {
+            throw "System OpenSSH tools are unavailable."
+          }
+
+      - name: Start isolated OpenSSH agent (Linux/macOS)
+        if: runner.os != 'Windows'
+        run: |
+          $agentOutput = & ssh-agent -s
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $variables = @{}
+          foreach ($line in $agentOutput) {
+            if ($line -match '^(SSH_AUTH_SOCK|SSH_AGENT_PID)=([^;]+);') {
+              $variables[$matches[1]] = $matches[2]
+            }
+          }
+          if ($variables.Count -ne 2) { throw "ssh-agent did not provide a complete environment." }
+          foreach ($entry in $variables.GetEnumerator()) {
+            Add-Content -LiteralPath $env:GITHUB_ENV -Value "$($entry.Key)=$($entry.Value)"
+          }
+
+      - name: Start Credential Manager SSH agent (Windows)
+        if: runner.os == 'Windows'
+        run: |
+          Get-Command cmdkey.exe -ErrorAction Stop | Out-Null
+          $agent = Get-Service -Name ssh-agent -ErrorAction Stop
+          $startupMode = (Get-CimInstance -ClassName Win32_Service -Filter "Name='ssh-agent'" -ErrorAction Stop).StartMode
+          if ([string]::IsNullOrWhiteSpace($startupMode)) { throw "Credential Manager SSH agent startup mode is unavailable." }
+          Add-Content -LiteralPath $env:GITHUB_ENV -Value "RSHELL_WINDOWS_SSH_AGENT_BASELINE_STATUS=$($agent.Status)"
+          Add-Content -LiteralPath $env:GITHUB_ENV -Value "RSHELL_WINDOWS_SSH_AGENT_BASELINE_START_MODE=$startupMode"
+          if ($startupMode -eq 'Disabled') {
+            Set-Service -Name ssh-agent -StartupType Manual -ErrorAction Stop
+          }
+          if ($agent.Status -ne 'Running') {
+            Start-Service -Name ssh-agent -ErrorAction Stop
+          }
+
+      - name: Run required workspace gates
+        run: |
+          cargo fmt -- --check
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          cargo check --workspace --all-targets --locked
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          cargo test --workspace --locked
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          cargo clippy --workspace --all-targets --locked -- -D warnings
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Run native SSH smoke
+        run: |
+          cargo test --locked -p rshell-session --test ssh_smoke -- --nocapture
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Run system OpenSSH agent smoke
+        run: |
+          cargo test --locked -p rshell-session --test ssh_smoke system_openssh_agent_authenticates_against_local_server -- --ignored --exact --nocapture
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Run Secret Service vault probe and P0 All smoke (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          $runtimeRoot = Join-Path $env:RUNNER_TEMP "rshell-linux-p0-$([Guid]::NewGuid().ToString('N'))"
+          [void](New-Item -ItemType Directory -Path $runtimeRoot)
+          $xvfb = $null
+          try {
+            $env:DISPLAY = ':99'
+            $env:XDG_RUNTIME_DIR = $runtimeRoot
+            $xvfb = Start-Process -FilePath Xvfb -ArgumentList @(':99', '-screen', '0', '1280x1024x24', '-nolisten', 'tcp') -PassThru
+            Start-Sleep -Seconds 1
+            if ($xvfb.HasExited) { throw "Xvfb stopped before the GTK smoke started." }
+            $env:RSHELL_P0_QA_VAULT_REFERENCE = "rshell://credential/$([Guid]::NewGuid().ToString('N'))"
+            $env:RSHELL_P0_QA_VAULT_OBSERVATION_PATH = Join-Path $runtimeRoot "vault-observation.json"
+            $inner = @'
+$ErrorActionPreference = "Stop"
+& gnome-keyring-daemon --start --components=secrets
+if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+try {
+  cargo test --locked -p rshell-storage --features test-support --test system_vault system_vault_real_os_probe_uses_coordinator_and_cleans_random_entry -- --ignored --exact --nocapture
+  if ($LASTEXITCODE -ne 0) { throw "system vault probe failed" }
+}
+finally {
+  cargo test --locked -p rshell-storage --features test-support --test system_vault system_vault_cleanup_exact_parent_reference -- --ignored --exact --nocapture
+  if ($LASTEXITCODE -ne 0) { throw "system vault cleanup failed" }
+}
+pwsh -NoProfile -File scripts/qa/p0-smoke.ps1 -Mode All
+exit $LASTEXITCODE
+'@
+            & dbus-run-session -- pwsh -NoProfile -Command $inner
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          }
+          finally {
+            if ($null -ne $xvfb -and -not $xvfb.HasExited) {
+              Stop-Process -Id $xvfb.Id -Force
+              $xvfb.WaitForExit()
+            }
+            if (Test-Path -LiteralPath $runtimeRoot -PathType Container) {
+              Remove-Item -LiteralPath $runtimeRoot -Recurse -Force
+            }
+          }
+
+      - name: Run temporary keychain vault probe and P0 All smoke (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          $keychainPath = Join-Path $env:RUNNER_TEMP "rshell-p0-$([Guid]::NewGuid().ToString('N')).keychain-db"
+          $keychainPassword = [Guid]::NewGuid().ToString('N')
+          $vaultRoot = Join-Path $env:RUNNER_TEMP "rshell-macos-p0-$([Guid]::NewGuid().ToString('N'))"
+          [void](New-Item -ItemType Directory -Path $vaultRoot)
+          $originalKeychain = (& security default-keychain -d user).Trim().Trim('"')
+          if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($originalKeychain)) { throw "The default keychain is unavailable." }
+          $originalKeychainSearchOutput = @(& security list-keychains -d user)
+          if ($LASTEXITCODE -ne 0) { throw "The keychain search list is unavailable." }
+          $originalKeychainSearchList = @($originalKeychainSearchOutput | ForEach-Object { $_.Trim().Trim('"') } | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+          if ($originalKeychainSearchList.Count -eq 0) { throw "The keychain search list is unavailable." }
+          $created = $false
+          $defaultChanged = $false
+          $searchListChanged = $false
+          try {
+            & security create-keychain -p $keychainPassword $keychainPath
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+            $created = $true
+            & security set-keychain-settings -lut 3600 $keychainPath
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+            & security unlock-keychain -p $keychainPassword $keychainPath
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+            $temporarySearchList = @($keychainPath) + $originalKeychainSearchList
+            & security list-keychains -d user -s @temporarySearchList
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+            $searchListChanged = $true
+            & security default-keychain -s $keychainPath
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+            $defaultChanged = $true
+            $env:RSHELL_P0_QA_VAULT_REFERENCE = "rshell://credential/$([Guid]::NewGuid().ToString('N'))"
+            $env:RSHELL_P0_QA_VAULT_OBSERVATION_PATH = Join-Path $vaultRoot "vault-observation.json"
+            try {
+              cargo test --locked -p rshell-storage --features test-support --test system_vault system_vault_real_os_probe_uses_coordinator_and_cleans_random_entry -- --ignored --exact --nocapture
+              if ($LASTEXITCODE -ne 0) { throw "system vault probe failed" }
+            }
+            finally {
+              cargo test --locked -p rshell-storage --features test-support --test system_vault system_vault_cleanup_exact_parent_reference -- --ignored --exact --nocapture
+              if ($LASTEXITCODE -ne 0) { throw "system vault cleanup failed" }
+            }
+            pwsh -NoProfile -File scripts/qa/p0-smoke.ps1 -Mode All
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          }
+          finally {
+            $cleanupErrors = [System.Collections.Generic.List[string]]::new()
+            if ($defaultChanged) {
+              try {
+                & security default-keychain -s $originalKeychain
+                if ($LASTEXITCODE -ne 0) { throw "restore failed" }
+              }
+              catch { $cleanupErrors.Add('default keychain restore failed') }
+            }
+            if ($searchListChanged) {
+              try {
+                & security list-keychains -d user -s @originalKeychainSearchList
+                if ($LASTEXITCODE -ne 0) { throw "restore failed" }
+              }
+              catch { $cleanupErrors.Add('keychain search list restore failed') }
+            }
+            if ($created) {
+              try {
+                & security delete-keychain $keychainPath
+                if ($LASTEXITCODE -ne 0) { throw "delete failed" }
+              }
+              catch { $cleanupErrors.Add('temporary keychain delete failed') }
+            }
+            try {
+              if (Test-Path -LiteralPath $vaultRoot -PathType Container) {
+                Remove-Item -LiteralPath $vaultRoot -Recurse -Force
+              }
+              if (Test-Path -LiteralPath $vaultRoot) { throw "remove failed" }
+            }
+            catch { $cleanupErrors.Add('vault root cleanup failed') }
+            if ($cleanupErrors.Count -ne 0) {
+              throw "Temporary macOS keychain cleanup failed."
+            }
+          }
+
+      - name: Run Credential Manager vault probe and P0 All smoke (Windows)
+        if: runner.os == 'Windows'
+        run: |
+          $vaultRoot = Join-Path $env:RUNNER_TEMP "rshell-windows-p0-$([Guid]::NewGuid().ToString('N'))"
+          [void](New-Item -ItemType Directory -Path $vaultRoot)
+          try {
+            $env:RSHELL_P0_QA_VAULT_REFERENCE = "rshell://credential/$([Guid]::NewGuid().ToString('N'))"
+            $env:RSHELL_P0_QA_VAULT_OBSERVATION_PATH = Join-Path $vaultRoot "vault-observation.json"
+            try {
+              cargo test --locked -p rshell-storage --features test-support --test system_vault system_vault_real_os_probe_uses_coordinator_and_cleans_random_entry -- --ignored --exact --nocapture
+              if ($LASTEXITCODE -ne 0) { throw "system vault probe failed" }
+            }
+            finally {
+              cargo test --locked -p rshell-storage --features test-support --test system_vault system_vault_cleanup_exact_parent_reference -- --ignored --exact --nocapture
+              if ($LASTEXITCODE -ne 0) { throw "system vault cleanup failed" }
+            }
+            pwsh -NoProfile -File scripts/qa/p0-smoke.ps1 -Mode All
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          }
+          finally {
+            if (Test-Path -LiteralPath $vaultRoot -PathType Container) {
+              Remove-Item -LiteralPath $vaultRoot -Recurse -Force
+            }
+          }
+
+      - name: Stop isolated OpenSSH agent (Linux/macOS)
+        if: always() && runner.os != 'Windows'
+        run: |
+          if ([string]::IsNullOrWhiteSpace($env:SSH_AGENT_PID)) { throw "The isolated ssh-agent environment is unavailable for cleanup." }
+          & ssh-agent -k
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Stop Credential Manager SSH agent (Windows)
+        if: always() && runner.os == 'Windows'
+        run: |
+          $cleanupErrors = [System.Collections.Generic.List[string]]::new()
+          $baselineStatus = $env:RSHELL_WINDOWS_SSH_AGENT_BASELINE_STATUS
+          $baselineStartupMode = $env:RSHELL_WINDOWS_SSH_AGENT_BASELINE_START_MODE
+          if ([string]::IsNullOrWhiteSpace($baselineStatus)) { $cleanupErrors.Add('missing baseline status') }
+          if ([string]::IsNullOrWhiteSpace($baselineStartupMode)) { $cleanupErrors.Add('missing baseline startup mode') }
+          try {
+            $agent = Get-Service -Name ssh-agent -ErrorAction Stop
+            if ($baselineStatus -eq 'Running' -and $agent.Status -ne 'Running') {
+              Start-Service -Name ssh-agent -ErrorAction Stop
+            } elseif ($baselineStatus -ne 'Running' -and $agent.Status -eq 'Running') {
+              Stop-Service -Name ssh-agent -ErrorAction Stop
+            }
+          }
+          catch { $cleanupErrors.Add('status restoration failed') }
+          try {
+            $startupType = switch ($baselineStartupMode) {
+              'Auto' { 'Automatic' }
+              'Manual' { 'Manual' }
+              'Disabled' { 'Disabled' }
+              default { throw 'unsupported baseline startup mode' }
+            }
+            Set-Service -Name ssh-agent -StartupType $startupType -ErrorAction Stop
+          }
+          catch { $cleanupErrors.Add('startup-type restoration failed') }
+          try {
+            $verifiedStatus = (Get-Service -Name ssh-agent -ErrorAction Stop).Status.ToString()
+            $verifiedStartupMode = (Get-CimInstance -ClassName Win32_Service -Filter "Name='ssh-agent'" -ErrorAction Stop).StartMode
+            if ($verifiedStatus -ne $baselineStatus) { $cleanupErrors.Add('status verification failed') }
+            if ($verifiedStartupMode -ne $baselineStartupMode) { $cleanupErrors.Add('startup-type verification failed') }
+          }
+          catch { $cleanupErrors.Add('cleanup verification failed') }
+          if ($cleanupErrors.Count -ne 0) {
+            throw "Credential Manager SSH agent cleanup failed."
+          }

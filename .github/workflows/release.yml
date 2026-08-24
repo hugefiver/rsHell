@@ -10,13 +10,15 @@ concurrency:
   cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/') }}
 
 permissions:
-  contents: write
+  contents: read
+
+defaults:
+  run:
+    shell: pwsh
 
 env:
   CARGO_TERM_COLOR: always
   GVSBUILD_VERSION: '2025.3.0'
-  VCPKG_OPENSSL_VERSION: '3.4.1'
-  VCPKG_LIBSSH2_VERSION: '1.11.1'
 
 jobs:
   build:
@@ -30,10 +32,10 @@ jobs:
             os: ubuntu-24.04
             target: x86_64-unknown-linux-gnu
           - name: macos-arm64
-            os: macos-latest
+            os: macos-15
             target: aarch64-apple-darwin
           - name: windows-x86_64
-            os: windows-latest
+            os: windows-2022
             target: x86_64-pc-windows-msvc
 
     steps:
@@ -43,18 +45,22 @@ jobs:
         with:
           targets: ${{ matrix.target }}
 
-      - name: Cache apt packages
+      - name: Install GTK dependencies (Linux)
         if: runner.os == 'Linux'
-        uses: awalsh128/cache-apt-pkgs-action@latest
-        with:
-          packages: libgtk-4-dev libssh2-1-dev libssl-dev pkg-config
-          version: 1.0
+        run: |
+          & sudo apt-get update
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          & sudo apt-get install --yes libgtk-4-dev pkg-config xvfb
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
-      - name: Install dependencies (macOS)
+      - name: Install GTK dependencies (macOS)
         if: runner.os == 'macOS'
         run: |
-          brew install gtk4 libssh2 openssl pkg-config
-          echo "PKG_CONFIG_PATH=$(brew --prefix openssl@3)/lib/pkgconfig:$(brew --prefix libssh2)/lib/pkgconfig${PKG_CONFIG_PATH:+:$PKG_CONFIG_PATH}" >> $GITHUB_ENV
+          & brew install gtk4 pkg-config
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $gtkPrefix = (& brew --prefix gtk4).Trim()
+          if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($gtkPrefix)) { exit 1 }
+          Add-Content -LiteralPath $env:GITHUB_ENV -Value "PKG_CONFIG_PATH=$gtkPrefix/lib/pkgconfig"
 
       - uses: actions/setup-python@v5
         if: runner.os == 'Windows'
@@ -68,7 +74,7 @@ jobs:
         with:
           path: C:\gtk-build
           key: gvsbuild-${{ env.GVSBUILD_VERSION }}-gtk4
-          save-always: true
+          save-always: false
 
       - name: Build GTK4 via gvsbuild
         if: runner.os == 'Windows' && steps.cache-gtk.outputs.cache-hit != 'true'
@@ -76,37 +82,22 @@ jobs:
           pip install gvsbuild==${{ env.GVSBUILD_VERSION }}
           gvsbuild build gtk4
 
-      - name: Cache vcpkg packages
-        if: runner.os == 'Windows'
-        id: cache-vcpkg
-        uses: actions/cache@v4
-        with:
-          path: C:\vcpkg\installed
-          key: vcpkg-openssl${{ env.VCPKG_OPENSSL_VERSION }}-libssh2${{ env.VCPKG_LIBSSH2_VERSION }}-x64-static-md
-          save-always: true
-
-      - name: Install OpenSSL and libssh2 (Windows)
-        if: runner.os == 'Windows' && steps.cache-vcpkg.outputs.cache-hit != 'true'
-        run: vcpkg install openssl:x64-windows-static-md libssh2:x64-windows-static-md
-
       - name: Setup Windows environment
         if: runner.os == 'Windows'
-        shell: pwsh
         run: |
           $gtkRoot = "C:\gtk-build\gtk\x64\release"
-          echo "PKG_CONFIG_PATH=$gtkRoot\lib\pkgconfig" >> $env:GITHUB_ENV
-          echo "LIB=$gtkRoot\lib" >> $env:GITHUB_ENV
-          echo "$gtkRoot\bin" >> $env:GITHUB_PATH
-          echo "VCPKG_ROOT=$env:VCPKG_INSTALLATION_ROOT" >> $env:GITHUB_ENV
-
-          # gvsbuild produces zlib1.lib / zlib.lib, but pkg-config emits -lz
-          # which MSVC linker translates to z.lib — create alias if missing
+          if (-not (Test-Path -LiteralPath $gtkRoot -PathType Container)) { throw "gvsbuild GTK root is unavailable." }
+          Add-Content -LiteralPath $env:GITHUB_ENV -Value "PKG_CONFIG_PATH=$gtkRoot\lib\pkgconfig"
+          Add-Content -LiteralPath $env:GITHUB_ENV -Value "LIB=$gtkRoot\lib"
+          Add-Content -LiteralPath $env:GITHUB_PATH -Value "$gtkRoot\bin"
           $libDir = "$gtkRoot\lib"
           if (-not (Test-Path "$libDir\z.lib")) {
             if (Test-Path "$libDir\zlib1.lib") {
               Copy-Item "$libDir\zlib1.lib" "$libDir\z.lib"
             } elseif (Test-Path "$libDir\zlib.lib") {
               Copy-Item "$libDir\zlib.lib" "$libDir\z.lib"
+            } else {
+              throw "gvsbuild zlib import library is unavailable."
             }
           }
 
@@ -115,42 +106,113 @@ jobs:
           key: ${{ matrix.target }}
 
       - name: Build release
-        run: cargo build --release --target ${{ matrix.target }}
+        run: |
+          cargo build --release --workspace --target ${{ matrix.target }} --locked
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: Package (Linux/macOS)
         if: runner.os != 'Windows'
         run: |
-          cd target/${{ matrix.target }}/release
-          tar czf ../../../rshell-${{ matrix.target }}.tar.gz rshell
+          $stageRoot = Join-Path "dist" "rshell-${{ matrix.target }}"
+          if (Test-Path -LiteralPath $stageRoot) { Remove-Item -LiteralPath $stageRoot -Recurse -Force }
+          [void](New-Item -ItemType Directory -Path $stageRoot)
+          Copy-Item -LiteralPath "target/${{ matrix.target }}/release/rshell" -Destination (Join-Path $stageRoot "rshell")
+          Copy-Item -LiteralPath "LICENSE" -Destination (Join-Path $stageRoot "LICENSE")
+          Copy-Item -LiteralPath "README.md" -Destination (Join-Path $stageRoot "README.md")
+          $package = "rshell-${{ matrix.target }}.tar.gz"
+          if (Test-Path -LiteralPath $package) { Remove-Item -LiteralPath $package -Force }
+          & tar -C "dist" -czf $package "rshell-${{ matrix.target }}"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $xvfb = $null
+          try {
+            if ('${{ runner.os }}' -eq 'Linux') {
+              $env:DISPLAY = ':99'
+              $xvfb = Start-Process -FilePath Xvfb -ArgumentList @(':99', '-screen', '0', '1280x1024x24', '-nolisten', 'tcp') -PassThru
+              Start-Sleep -Seconds 1
+              if ($xvfb.HasExited) { throw "Xvfb stopped before package validation." }
+            }
+            $env:RSHELL_TARGET = "${{ matrix.target }}"
+            $env:RSHELL_PACKAGE = $package
+            pwsh -NoProfile -File scripts/qa/assert-package.ps1 -Target $env:RSHELL_TARGET -Package $env:RSHELL_PACKAGE
+            if ($LASTEXITCODE -ne 0) { throw "Package validation failed." }
+          }
+          finally {
+            if ($null -ne $xvfb -and -not $xvfb.HasExited) {
+              Stop-Process -Id $xvfb.Id -Force
+              $xvfb.WaitForExit()
+            }
+          }
 
       - name: Package (Windows)
         if: runner.os == 'Windows'
-        shell: pwsh
         run: |
-          $dist = "rshell-${{ matrix.target }}"
+          $dist = Join-Path "dist" "rshell-${{ matrix.target }}"
           $gtkRoot = "C:\gtk-build\gtk\x64\release"
-          New-Item -ItemType Directory -Force -Path $dist | Out-Null
-
-          Copy-Item "target\${{ matrix.target }}\release\rshell.exe" $dist
-
-          Get-ChildItem "$gtkRoot\bin\*.dll" | Copy-Item -Destination $dist
-
-          $schemas = "$dist\share\glib-2.0\schemas"
-          New-Item -ItemType Directory -Force -Path $schemas | Out-Null
-          Copy-Item "$gtkRoot\share\glib-2.0\schemas\*.xml" $schemas -ErrorAction SilentlyContinue
-          if (Test-Path "$gtkRoot\share\glib-2.0\schemas\gschemas.compiled") {
-            Copy-Item "$gtkRoot\share\glib-2.0\schemas\gschemas.compiled" $schemas
-          } else {
-            & "$gtkRoot\bin\glib-compile-schemas.exe" $schemas
+          if (Test-Path -LiteralPath $dist) { Remove-Item -LiteralPath $dist -Recurse -Force }
+          [void](New-Item -ItemType Directory -Path $dist)
+          Copy-Item -LiteralPath "target\${{ matrix.target }}\release\rshell.exe" -Destination (Join-Path $dist "rshell.exe")
+          $dlls = @(Get-ChildItem -LiteralPath "$gtkRoot\bin" -Filter "*.dll" -File | Where-Object { $_.Name -notmatch '(?i)(ssh2|libssl|libcrypto)' })
+          if ($dlls.Count -eq 0) { throw "gvsbuild GTK DLLs are unavailable." }
+          foreach ($dll in $dlls) { Copy-Item -LiteralPath $dll.FullName -Destination $dist }
+          $schemasSource = "$gtkRoot\share\glib-2.0\schemas"
+          if (-not (Test-Path -LiteralPath $schemasSource -PathType Container)) { throw "GLib schemas are unavailable." }
+          $schemas = Join-Path $dist "share\glib-2.0\schemas"
+          [void](New-Item -ItemType Directory -Force -Path $schemas)
+          $schemaFiles = @(Get-ChildItem -LiteralPath $schemasSource -Force)
+          if ($schemaFiles.Count -eq 0) { throw "GLib schemas are unavailable." }
+          foreach ($schemaFile in $schemaFiles) { Copy-Item -LiteralPath $schemaFile.FullName -Destination $schemas -Recurse -Force }
+          $compiledSchemas = Join-Path $schemas "gschemas.compiled"
+          if (-not (Test-Path -LiteralPath $compiledSchemas -PathType Leaf)) {
+            $compileSchemas = Join-Path $gtkRoot "bin\glib-compile-schemas.exe"
+            if (-not (Test-Path -LiteralPath $compileSchemas -PathType Leaf)) { throw "glib-compile-schemas is unavailable." }
+            & $compileSchemas $schemas
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           }
-
-          if (Test-Path "$gtkRoot\lib\gdk-pixbuf-2.0") {
-            $pixbuf = "$dist\lib\gdk-pixbuf-2.0"
-            New-Item -ItemType Directory -Force -Path $pixbuf | Out-Null
-            Copy-Item "$gtkRoot\lib\gdk-pixbuf-2.0\*" $pixbuf -Recurse
+          $pixbufSource = "$gtkRoot\lib\gdk-pixbuf-2.0"
+          if (-not (Test-Path -LiteralPath $pixbufSource -PathType Container)) { throw "GDK Pixbuf loaders are unavailable." }
+          $pixbufDestination = Join-Path $dist "lib\gdk-pixbuf-2.0"
+          [void](New-Item -ItemType Directory -Force -Path (Split-Path -Parent $pixbufDestination))
+          Copy-Item -LiteralPath $pixbufSource -Destination $pixbufDestination -Recurse -Force
+          $pixbufRuntime = @(Get-ChildItem -LiteralPath $pixbufDestination -Directory -Force)
+          if ($pixbufRuntime.Count -ne 1 -or $pixbufRuntime[0].Name -ne "2.10.0") { throw "GDK Pixbuf runtime layout is invalid." }
+          $loaderCachePath = Join-Path $pixbufRuntime[0].FullName "loaders.cache"
+          if (-not (Test-Path -LiteralPath $loaderCachePath -PathType Leaf) -or (Get-Item -LiteralPath $loaderCachePath).Length -eq 0) { throw "GDK Pixbuf loader cache is unavailable." }
+          $loaderDirectory = Join-Path $pixbufRuntime[0].FullName "loaders"
+          if (Test-Path -LiteralPath $loaderDirectory -PathType Container) {
+            $loaderDlls = @(Get-ChildItem -LiteralPath $loaderDirectory -Filter "*.dll" -File)
+            if ($loaderDlls.Count -eq 0) { throw "GDK Pixbuf loader DLLs are unavailable." }
+            $queryLoaders = Join-Path $gtkRoot "bin\gdk-pixbuf-query-loaders.exe"
+            if (-not (Test-Path -LiteralPath $queryLoaders -PathType Leaf)) { throw "gdk-pixbuf-query-loaders is unavailable." }
+            $stagedQueryLoaders = Join-Path $dist "gdk-pixbuf-query-loaders.exe"
+            Copy-Item -LiteralPath $queryLoaders -Destination $stagedQueryLoaders
+            try {
+              $loaderCache = & $stagedQueryLoaders @($loaderDlls.FullName)
+              if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+            }
+            finally {
+              Remove-Item -LiteralPath $stagedQueryLoaders -Force
+              if (Test-Path -LiteralPath $stagedQueryLoaders) { throw "staged gdk-pixbuf-query-loaders cleanup failed." }
+            }
+            if (@($loaderCache | Where-Object { $_ -match '^"[A-Za-z]:[\\/]' }).Count -ne 0) { throw "GDK Pixbuf loader cache is not relocatable." }
+            [System.IO.File]::WriteAllLines($loaderCachePath, [string[]]$loaderCache, [System.Text.UTF8Encoding]::new($false))
           }
-
-          Compress-Archive -Path "$dist\*" -DestinationPath "rshell-${{ matrix.target }}.zip"
+          elseif ([System.IO.File]::ReadAllText($loaderCachePath) -notmatch "GdkPixbuf Image Loader Modules file") {
+            throw "GDK Pixbuf built-in loader cache is invalid."
+          }
+          $fontsSource = "$gtkRoot\etc\fonts"
+          $fontconfigSource = "$gtkRoot\share\fontconfig"
+          if (-not (Test-Path -LiteralPath $fontsSource -PathType Container) -or -not (Test-Path -LiteralPath $fontconfigSource -PathType Container)) { throw "fontconfig runtime files are unavailable." }
+          [void](New-Item -ItemType Directory -Force -Path (Join-Path $dist "etc"))
+          [void](New-Item -ItemType Directory -Force -Path (Join-Path $dist "share"))
+          Copy-Item -LiteralPath $fontsSource -Destination (Join-Path $dist "etc\fonts") -Recurse -Force
+          Copy-Item -LiteralPath $fontconfigSource -Destination (Join-Path $dist "share\fontconfig") -Recurse -Force
+          $package = "rshell-${{ matrix.target }}.zip"
+          if (Test-Path -LiteralPath $package) { Remove-Item -LiteralPath $package -Force }
+          Compress-Archive -LiteralPath $dist -DestinationPath $package
+          $env:RSHELL_TARGET = "${{ matrix.target }}"
+          $env:RSHELL_PACKAGE = $package
+          pwsh -NoProfile -File scripts/qa/assert-package.ps1 -Target $env:RSHELL_TARGET -Package $env:RSHELL_PACKAGE
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: Upload artifact (Unix)
         if: runner.os != 'Windows'
@@ -170,6 +232,8 @@ jobs:
     name: Release
     needs: build
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@v4
 
@@ -177,9 +241,6 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           merge-multiple: true
-
-      - name: List artifacts
-        run: ls -la rshell-*
 
       - name: Create Release
         if: startsWith(github.ref, 'refs/tags/')
@@ -193,11 +254,15 @@ jobs:
       - name: Update Nightly
         if: ${{ !startsWith(github.ref, 'refs/tags/') }}
         run: |
-          gh release delete nightly --yes --cleanup-tag 2>/dev/null || true
-          gh release create nightly \
-            --title "Nightly Build" \
-            --notes "Automated build from master ($(date -u +'%Y-%m-%d %H:%M UTC')). May be unstable." \
-            --prerelease \
-            rshell-*.tar.gz rshell-*.zip
+          $existing = & gh release view nightly --json id 2>&1
+          if ($LASTEXITCODE -eq 0) {
+            & gh release delete nightly --yes --cleanup-tag
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          } elseif (($existing -join "`n") -notmatch "(?i)not found") {
+            throw "Unable to determine whether the nightly release exists."
+          }
+          $notes = "Automated build from master ($([DateTime]::UtcNow.ToString('yyyy-MM-dd HH:mm UTC'))). May be unstable."
+          & gh release create nightly --title "Nightly Build" --notes $notes --prerelease rshell-*.tar.gz rshell-*.zip
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
