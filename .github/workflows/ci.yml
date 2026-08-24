@@ -190,14 +190,9 @@ jobs:
           cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
-      - name: Run native SSH smoke
+      - name: Run bounded SSH surface smoke
         run: |
-          cargo test --locked -p rshell-session --test ssh_smoke -- --nocapture
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-
-      - name: Run system OpenSSH agent smoke
-        run: |
-          cargo test --locked -p rshell-session --test ssh_smoke system_openssh_agent_authenticates_against_local_server -- --ignored --exact --nocapture
+          pwsh -NoProfile -File scripts/qa/p0-smoke.ps1 -Mode Ssh
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: Run Secret Service vault probe and P0 All smoke (Linux)

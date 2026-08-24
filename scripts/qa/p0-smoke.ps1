@@ -740,6 +740,7 @@ $secretEnvironment = @{
 }
 
 $baseEnvironment = @{ G_DEBUG = "fatal-warnings"; RSHELL_SHELL = $pwsh }
+if ($platformIsLinux) { $baseEnvironment.GTK_A11Y = "none" }
 if ($platformIsWindows) {
     $baseEnvironment.PATH = (Join-Path $gtkRoot "bin") + $pathSeparator + $env:PATH
     $baseEnvironment.LIB = Join-Path $gtkRoot "lib"

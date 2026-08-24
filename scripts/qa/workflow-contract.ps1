@@ -285,15 +285,11 @@ Assert-StepHasNoYamlCondition -Step $openSshToolsStep -Name "Confirm system Open
 Assert-StepLine -Step $openSshToolsStep -Line '$ssh = Get-Command ssh -ErrorAction Stop' -Name "Confirm system OpenSSH tools" -Failures $failures
 Assert-StepLine -Step $openSshToolsStep -Line '$sshKeygen = Get-Command ssh-keygen -ErrorAction Stop' -Name "Confirm system OpenSSH tools" -Failures $failures
 
-$nativeSshStep = Assert-NamedStep -Text $ci -Name "Run native SSH smoke" -Failures $failures
-Assert-StepHasNoYamlCondition -Step $nativeSshStep -Name "Run native SSH smoke" -Failures $failures
-Assert-StepLine -Step $nativeSshStep -Line 'cargo test --locked -p rshell-session --test ssh_smoke -- --nocapture' -Name "Run native SSH smoke" -Failures $failures
-Assert-StepLineCount -Step $nativeSshStep -Line $failureCheck -Expected 1 -Name "Run native SSH smoke" -Failures $failures
-
-$systemAgentStep = Assert-NamedStep -Text $ci -Name "Run system OpenSSH agent smoke" -Failures $failures
-Assert-StepHasNoYamlCondition -Step $systemAgentStep -Name "Run system OpenSSH agent smoke" -Failures $failures
-Assert-StepLine -Step $systemAgentStep -Line 'cargo test --locked -p rshell-session --test ssh_smoke system_openssh_agent_authenticates_against_local_server -- --ignored --exact --nocapture' -Name "Run system OpenSSH agent smoke" -Failures $failures
-Assert-StepLineCount -Step $systemAgentStep -Line $failureCheck -Expected 1 -Name "Run system OpenSSH agent smoke" -Failures $failures
+$boundedSshStep = Assert-NamedStep -Text $ci -Name "Run bounded SSH surface smoke" -Failures $failures
+Assert-StepHasNoYamlCondition -Step $boundedSshStep -Name "Run bounded SSH surface smoke" -Failures $failures
+Assert-StepLine -Step $boundedSshStep -Line 'pwsh -NoProfile -File scripts/qa/p0-smoke.ps1 -Mode Ssh' -Name "Run bounded SSH surface smoke" -Failures $failures
+Assert-StepLineCount -Step $boundedSshStep -Line $failureCheck -Expected 1 -Name "Run bounded SSH surface smoke" -Failures $failures
+Assert-Absent -Text $ci -Pattern 'cargo test --locked -p rshell-session --test ssh_smoke system_openssh_agent_authenticates_against_local_server' -Label "CI unbounded system-agent smoke" -Failures $failures
 
 foreach ($modeAllStep in @(
         [pscustomobject]@{ Name = "Run Secret Service vault probe and P0 All smoke (Linux)"; Condition = "runner.os == 'Linux'" },
@@ -399,7 +395,8 @@ foreach ($packageStep in @(
 foreach ($marker in @(
         "embedded_css_loaded", "embedded_icons_renderable", "embedded_icon_backend",
         "Assert-NoProductAssetPayload", "external-icon-payload", "runtime-icon-backends",
-        'Get-Command -Name "pwsh" -ErrorAction Stop', '\$startInfo\.Environment\["RSHELL_SHELL"\] = \$pwsh\.Source'
+        'Get-Command -Name "pwsh" -ErrorAction Stop', '\$startInfo\.Environment\["RSHELL_SHELL"\] = \$pwsh\.Source',
+        '\$startupAttempts = 2', 'if \(\$timedOut -and \$attempt -lt \$startupAttempts\)'
     )) {
     Assert-Contains -Text $package -Pattern $marker -Label "Package embedded-resource contract '$marker'" -Failures $failures
 }

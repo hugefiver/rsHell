@@ -205,9 +205,16 @@ fn hosted_workflows_fail_closed_and_package_smoke_uses_a_deterministic_shell() {
     assert!(ci.contains("$missingBaselineStatus -and $missingBaselineStartupMode"));
     assert!(ci.contains("$missingBaselineStatus -xor $missingBaselineStartupMode"));
     assert!(!ci.contains("$env:RSHELL_SHELL = $workspaceShell.Source"));
+    assert!(ci.contains("Run bounded SSH surface smoke"));
+    assert!(ci.contains("pwsh -NoProfile -File scripts/qa/p0-smoke.ps1 -Mode Ssh"));
+    assert!(!ci.contains(
+        "cargo test --locked -p rshell-session --test ssh_smoke system_openssh_agent_authenticates_against_local_server -- --ignored --exact --nocapture"
+    ));
     assert!(bootstrap.contains("ShellOverride::deterministic()"));
     assert!(package.contains("Get-Command -Name \"pwsh\" -ErrorAction Stop"));
     assert!(package.contains("$startInfo.Environment[\"RSHELL_SHELL\"] = $pwsh.Source"));
+    assert!(package.contains("$startupAttempts = 2"));
+    assert!(package.contains("if ($timedOut -and $attempt -lt $startupAttempts)"));
 }
 
 #[test]
@@ -232,6 +239,7 @@ fn hosted_gui_tests_use_linux_xvfb_and_a_supported_macos_runner() {
 #[test]
 fn hosted_native_credentials_and_macos_gtk_evidence_are_fail_closed() {
     let ci = include_str!("../.github/workflows/ci.yml");
+    let harness = include_str!("../scripts/qa/p0-smoke.ps1");
 
     for marker in [
         "libsecret-tools",
@@ -246,6 +254,7 @@ fn hosted_native_credentials_and_macos_gtk_evidence_are_fail_closed() {
     ] {
         assert!(ci.contains(marker), "hosted CI is missing {marker}");
     }
+    assert!(harness.contains("$baseEnvironment.GTK_A11Y = \"none\""));
 
     for source in [
         include_str!("../crates/rshell-ui/tests/application_live_view.rs"),

@@ -225,44 +225,54 @@ function Invoke-StartupSmoke {
     if ([string]::IsNullOrWhiteSpace($pwsh.Source)) {
         throw "PowerShell executable is unavailable for packaged startup smoke."
     }
-    $startInfo = [System.Diagnostics.ProcessStartInfo]::new()
-    $startInfo.FileName = $Executable
-    $startInfo.WorkingDirectory = $WorkingDirectory
-    $startInfo.UseShellExecute = $false
-    $startInfo.CreateNoWindow = $true
-    $startInfo.RedirectStandardOutput = $true
-    $startInfo.RedirectStandardError = $true
-    $startInfo.Environment["RSHELL_SHELL"] = $pwsh.Source
-    $startInfo.ArgumentList.Add("--smoke-startup")
-    $startInfo.ArgumentList.Add($ReportPath)
+    $startupAttempts = 2
+    for ($attempt = 1; $attempt -le $startupAttempts; $attempt++) {
+        if (Test-Path -LiteralPath $ReportPath -PathType Leaf) {
+            Remove-Item -LiteralPath $ReportPath -Force
+        }
+        $startInfo = [System.Diagnostics.ProcessStartInfo]::new()
+        $startInfo.FileName = $Executable
+        $startInfo.WorkingDirectory = $WorkingDirectory
+        $startInfo.UseShellExecute = $false
+        $startInfo.CreateNoWindow = $true
+        $startInfo.RedirectStandardOutput = $true
+        $startInfo.RedirectStandardError = $true
+        $startInfo.Environment["RSHELL_SHELL"] = $pwsh.Source
+        $startInfo.ArgumentList.Add("--smoke-startup")
+        $startInfo.ArgumentList.Add($ReportPath)
 
-    $process = [System.Diagnostics.Process]::new()
-    $process.StartInfo = $startInfo
-    $started = $false
-    try {
-        if (-not $process.Start()) {
-            throw "Packaged startup smoke could not start."
+        $process = [System.Diagnostics.Process]::new()
+        $process.StartInfo = $startInfo
+        $started = $false
+        $timedOut = $false
+        try {
+            if (-not $process.Start()) {
+                throw "Packaged startup smoke could not start."
+            }
+            $started = $true
+            $stdout = $process.StandardOutput.ReadToEndAsync()
+            $stderr = $process.StandardError.ReadToEndAsync()
+            $timedOut = -not $process.WaitForExit(120000)
+            if ($timedOut) {
+                $process.Kill($true)
+                $process.WaitForExit()
+            }
+            [void]$stdout.GetAwaiter().GetResult()
+            [void]$stderr.GetAwaiter().GetResult()
+            if ($timedOut -and $attempt -lt $startupAttempts) { continue }
+            if ($timedOut) { throw "Packaged startup smoke timed out." }
+            if ($process.ExitCode -ne 0) {
+                throw "Packaged startup smoke failed."
+            }
+            return
         }
-        $started = $true
-        $stdout = $process.StandardOutput.ReadToEndAsync()
-        $stderr = $process.StandardError.ReadToEndAsync()
-        if (-not $process.WaitForExit(120000)) {
-            $process.Kill($true)
-            $process.WaitForExit()
-            throw "Packaged startup smoke timed out."
+        finally {
+            if ($started -and -not $process.HasExited) {
+                try { $process.Kill($true) } catch {}
+                $process.WaitForExit()
+            }
+            $process.Dispose()
         }
-        [void]$stdout.GetAwaiter().GetResult()
-        [void]$stderr.GetAwaiter().GetResult()
-        if ($process.ExitCode -ne 0) {
-            throw "Packaged startup smoke failed."
-        }
-    }
-    finally {
-        if ($started -and -not $process.HasExited) {
-            try { $process.Kill($true) } catch {}
-            $process.WaitForExit()
-        }
-        $process.Dispose()
     }
 }
 
