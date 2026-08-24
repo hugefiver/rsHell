@@ -137,13 +137,20 @@ jobs:
           if (Test-Path -LiteralPath $package) { Remove-Item -LiteralPath $package -Force }
           & tar -C "dist" -czf $package "rshell-${{ matrix.target }}"
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          $xvfb = $null
+          $displayServer = $null
           try {
             if ('${{ runner.os }}' -eq 'Linux') {
               $env:DISPLAY = ':99'
-              $xvfb = Start-Process -FilePath Xvfb -ArgumentList @(':99', '-screen', '0', '1280x1024x24', '-nolisten', 'tcp') -PassThru
+              $displayServer = Start-Process -FilePath Xvfb -ArgumentList @(':99', '-screen', '0', '1280x1024x24', '-nolisten', 'tcp') -PassThru
+            } elseif ('${{ runner.os }}' -eq 'macOS') {
+              $broadway = Get-Command -Name gtk4-broadwayd -ErrorAction Stop
+              $env:GDK_BACKEND = "broadway"
+              $env:BROADWAY_DISPLAY = ":5"
+              $displayServer = Start-Process -FilePath $broadway.Source -ArgumentList @(':5') -PassThru
+            }
+            if ($null -ne $displayServer) {
               Start-Sleep -Seconds 1
-              if ($xvfb.HasExited) { throw "Xvfb stopped before package validation." }
+              if ($displayServer.HasExited) { throw "The package GTK display server stopped before validation." }
             }
             $env:RSHELL_TARGET = "${{ matrix.target }}"
             $env:RSHELL_PACKAGE = $package
@@ -151,9 +158,9 @@ jobs:
             if ($LASTEXITCODE -ne 0) { throw "Package validation failed." }
           }
           finally {
-            if ($null -ne $xvfb -and -not $xvfb.HasExited) {
-              Stop-Process -Id $xvfb.Id -Force
-              $xvfb.WaitForExit()
+            if ($null -ne $displayServer -and -not $displayServer.HasExited) {
+              Stop-Process -Id $displayServer.Id -Force
+              $displayServer.WaitForExit()
             }
           }
 

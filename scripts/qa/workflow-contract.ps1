@@ -271,7 +271,15 @@ foreach ($gate in @(
     )) {
     Assert-StepLine -Step $workspaceStep -Line $gate -Name "Run required workspace gates" -Failures $failures
 }
-Assert-StepLineCount -Step $workspaceStep -Line $failureCheck -Expected 4 -Name "Run required workspace gates" -Failures $failures
+Assert-StepLineCount -Step $workspaceStep -Line $failureCheck -Expected 3 -Name "Run required workspace gates" -Failures $failures
+Assert-StepLine -Step $workspaceStep -Line 'if ($workspaceTestExitCode -ne 0) { exit $workspaceTestExitCode }' -Name "Run required workspace gates" -Failures $failures
+foreach ($pattern in @(
+        "\$env:DISPLAY = ':98'", 'Start-Process -FilePath Xvfb',
+        'Get-Command -Name gtk4-broadwayd -ErrorAction Stop', '\$env:GDK_BACKEND = "broadway"',
+        '\$env:BROADWAY_DISPLAY = ":5"', 'Stop-Process -Id \$displayServer\.Id -Force'
+    )) {
+    Assert-StepPattern -Step $workspaceStep -Pattern $pattern -Name "Run required workspace gates" -Failures $failures
+}
 
 $openSshToolsStep = Assert-NamedStep -Text $ci -Name "Confirm system OpenSSH tools" -Failures $failures
 Assert-StepHasNoYamlCondition -Step $openSshToolsStep -Name "Confirm system OpenSSH tools" -Failures $failures
@@ -319,7 +327,11 @@ foreach ($pattern in @(
     Assert-StepPattern -Step $windowsAgentStop -Pattern $pattern -Name "Stop Credential Manager SSH agent (Windows)" -Failures $failures
 }
 $macosModeAll = Assert-NamedStep -Text $ci -Name "Run temporary keychain vault probe and P0 All smoke (macOS)" -Failures $failures
-foreach ($pattern in @("security list-keychains", '\$cleanupErrors', "default keychain restore failed", "temporary keychain delete failed", "vault root cleanup failed")) {
+foreach ($pattern in @(
+        "security list-keychains", '\$cleanupErrors', "default keychain restore failed", "temporary keychain delete failed",
+        "vault root cleanup failed", 'Get-Command -Name gtk4-broadwayd -ErrorAction Stop',
+        '\$env:GDK_BACKEND = "broadway"', 'Broadway display cleanup failed'
+    )) {
     Assert-StepPattern -Step $macosModeAll -Pattern $pattern -Name "Run temporary keychain vault probe and P0 All smoke (macOS)" -Failures $failures
 }
 
@@ -385,6 +397,14 @@ foreach ($packageStep in @(
         Add-ContractFailure -Failures $failures -Message "Workflow step '$($packageStep.Name)' must have its exact platform condition."
     }
     Assert-StepLine -Step $step -Line $packageProbe -Name $packageStep.Name -Failures $failures
+    if ($packageStep.Name -eq "Package (Linux/macOS)") {
+        foreach ($pattern in @(
+                'Get-Command -Name gtk4-broadwayd -ErrorAction Stop', '\$env:GDK_BACKEND = "broadway"',
+                '\$env:BROADWAY_DISPLAY = ":5"', 'Stop-Process -Id \$displayServer\.Id -Force'
+            )) {
+            Assert-StepPattern -Step $step -Pattern $pattern -Name $packageStep.Name -Failures $failures
+        }
+    }
 }
 foreach ($marker in @(
         "embedded_css_loaded", "embedded_icons_renderable", "embedded_icon_backend",

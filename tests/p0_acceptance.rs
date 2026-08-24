@@ -208,6 +208,21 @@ fn hosted_workflows_fail_closed_and_package_smoke_uses_a_deterministic_shell() {
 }
 
 #[test]
+fn hosted_gui_tests_use_owned_platform_display_servers() {
+    let ci = include_str!("../.github/workflows/ci.yml");
+    let release = include_str!("../.github/workflows/release.yml");
+
+    for workflow in [ci, release] {
+        assert!(workflow.contains("Get-Command -Name gtk4-broadwayd -ErrorAction Stop"));
+        assert!(workflow.contains("$env:GDK_BACKEND = \"broadway\""));
+        assert!(workflow.contains("$env:BROADWAY_DISPLAY = \":5\""));
+        assert!(workflow.contains("Stop-Process -Id $displayServer.Id -Force"));
+    }
+    assert!(ci.contains("$env:DISPLAY = ':98'"));
+    assert!(ci.contains("Xvfb"));
+}
+
+#[test]
 fn powershell_harness_has_a_cross_platform_tool_and_shell_contract() {
     let harness = include_str!("../scripts/qa/p0-smoke.ps1");
 
