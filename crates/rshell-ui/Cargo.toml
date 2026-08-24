@@ -1,0 +1,18 @@
+[package]
+name = "rshell-ui"
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+
+[dependencies]
+gtk = { package = "gtk4", version = "0.10.3" }
+pangocairo = "0.21.5"
+relm4 = "0.10.1"
+rshell-core = { path = "../rshell-core" }
+rshell-platform = { path = "../rshell-platform" }
+
+[dev-dependencies]
+async-channel = "2.5"
+async-trait = "0.1"
+secrecy = "0.10.3"
+tokio = { version = "1", features = ["macros", "rt", "sync", "time"] }

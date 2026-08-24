@@ -1,0 +1,177 @@
+use std::sync::Arc;
+
+use gtk::gdk::prelude::TextureExtManual;
+use gtk::prelude::*;
+use relm4::{Component, ComponentController};
+use rshell_core::{
+    AppBootstrapState, AppSettings, AppViewModel, CellAttributes, Color, ConnectionCatalog,
+    ConnectionProfile, PaneId, PaneLaunchTarget, PaneTree, RenderCell, RenderFrame, RenderRow,
+    SessionId, SessionState, TabId, TabState, TerminalProfile, TerminalSize, UiCommand,
+    UiCommandPort, UiPortError, WorkspaceState,
+};
+use rshell_ui::{
+    MainWindow, MainWindowInit, MainWindowMsg, NativeByteOrder, analyze_rgba, apply_global_css,
+    argb32_native_to_rgba, collect_visual_facts,
+};
+
+#[test]
+fn realized_main_window_satisfies_the_fluent_visual_contract() {
+    if let Err(error) = gtk::init() {
+        eprintln!("native visual contract skipped: {error}");
+        return;
+    }
+    apply_global_css();
+    let main = MainWindow::builder()
+        .launch(MainWindowInit::new(
+            Arc::new(AcceptingPort),
+            visual_fixture(),
+        ))
+        .detach();
+    main.widget().set_default_size(1_360, 860);
+    main.widget().present();
+    main.emit(MainWindowMsg::OpenSettings);
+    assert!(flush_gtk());
+
+    let facts = collect_visual_facts(main.widget().upcast_ref(), (1_360, 860));
+    let sidebar =
+        find_by_css_class(main.widget().upcast_ref(), "sidebar").expect("realized Fluent sidebar");
+    let allocation = sidebar.allocation();
+    let (minimum, natural, _, _) = sidebar.measure(gtk::Orientation::Horizontal, -1);
+    assert!(
+        allocation.x() >= 0 && allocation.width() <= 280 && minimum <= 232,
+        "sidebar must fit its 232px pane without left clipping: allocation={allocation:?}, minimum={minimum}, natural={natural}"
+    );
+    assert_eq!(
+        (facts.requested_width, facts.requested_height),
+        (1_360, 860)
+    );
+    assert!(facts.realized_width > 0 && facts.realized_height > 0);
+    assert!(facts.command_bar);
+    assert!(facts.dense_sidebar, "{facts:?}");
+    assert!(facts.tab_strip);
+    assert!(facts.pane_command_row);
+    assert!(facts.terminal_canvas);
+    assert!(facts.content_dialog);
+    assert!(facts.embedded_icon_count >= 6);
+    assert!(facts.focus_or_selection_treatment);
+    assert!(facts.contract_passes());
+    let pixels = realized_pixels(main.widget());
+    assert_eq!(
+        (pixels.width, pixels.height),
+        (facts.realized_width, facts.realized_height)
+    );
+    assert_eq!(pixels.dark_regions_passed, 4);
+    assert!((2..=4).contains(&pixels.focus_or_selection_thickness_px));
+
+    main.widget().close();
+    assert!(flush_gtk());
+}
+
+fn find_by_css_class(root: &gtk::Widget, class: &str) -> Option<gtk::Widget> {
+    if root.has_css_class(class) {
+        return Some(root.clone());
+    }
+    let mut child = root.first_child();
+    while let Some(widget) = child {
+        if let Some(found) = find_by_css_class(&widget, class) {
+            return Some(found);
+        }
+        child = widget.next_sibling();
+    }
+    None
+}
+
+fn realized_pixels(window: &gtk::ApplicationWindow) -> rshell_ui::SmokePngEvidence {
+    let width = window.width();
+    let height = window.height();
+    let paintable = gtk::WidgetPaintable::new(Some(window));
+    let snapshot = gtk::Snapshot::new();
+    paintable.snapshot(&snapshot, f64::from(width), f64::from(height));
+    let node = snapshot.to_node().expect("realized snapshot node");
+    let renderer = gtk::gsk::CairoRenderer::new();
+    renderer.realize(None).expect("Cairo renderer");
+    let viewport = gtk::graphene::Rect::new(0.0, 0.0, width as f32, height as f32);
+    let texture = renderer.render_texture(&node, Some(&viewport));
+    renderer.unrealize();
+    let stride = width as usize * 4;
+    let mut native = vec![0; stride * height as usize];
+    texture.download(&mut native, stride);
+    let rgba = argb32_native_to_rgba(&native, NativeByteOrder::current()).unwrap();
+    analyze_rgba(&rgba, width, height).expect("realized Fluent pixel ranges")
+}
+
+fn visual_fixture() -> AppViewModel {
+    let pane = PaneId::new();
+    let session = SessionId::new();
+    let tab = TabId::new_v4();
+    let mut catalog = ConnectionCatalog::default();
+    let profile = ConnectionProfile::new("Visual fixture", "safe.example.test");
+    catalog.connections.insert(profile.id, profile);
+    let mut view = AppViewModel::from(AppBootstrapState {
+        catalog,
+        settings: AppSettings::default(),
+        terminal_profiles: vec![TerminalProfile::default()],
+    });
+    view.workspace = WorkspaceState {
+        tabs: vec![TabState {
+            id: tab,
+            title: "Visual fixture".into(),
+            pane_tree: PaneTree::with_session(pane, session),
+            active_pane: pane,
+        }],
+        active_tab: Some(tab),
+    };
+    view.pane_launches.insert(pane, PaneLaunchTarget::Local);
+    view.session_states.insert(session, SessionState::Connected);
+    view.latest_frames
+        .insert(session, Arc::new(nonempty_frame()));
+    view
+}
+
+fn nonempty_frame() -> RenderFrame {
+    RenderFrame {
+        generation: 1,
+        size: TerminalSize {
+            cols: 80,
+            rows: 24,
+            pixel_width: 720,
+            pixel_height: 432,
+            dpi: 96,
+        },
+        viewport_top: 0,
+        rows: Arc::from([RenderRow {
+            stable_row: 0,
+            wrapped: false,
+            cells: Arc::from([RenderCell {
+                text: "Visual fixture".into(),
+                width: 1,
+                foreground: Color::Default,
+                background: Color::Default,
+                attributes: CellAttributes::default(),
+                selected: false,
+            }]),
+        }]),
+        cursor: None,
+        title: "Visual fixture".into(),
+        alternate_screen: false,
+        mouse_reporting: false,
+    }
+}
+
+struct AcceptingPort;
+
+impl UiCommandPort for AcceptingPort {
+    fn try_send(&self, _command: UiCommand) -> Result<(), UiPortError> {
+        Ok(())
+    }
+}
+
+fn flush_gtk() -> bool {
+    let context = gtk::glib::MainContext::default();
+    for _ in 0..512 {
+        if !context.iteration(false) {
+            return true;
+        }
+    }
+    false
+}

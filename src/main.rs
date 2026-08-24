@@ -1,131 +1,258 @@
-use relm4::RelmApp;
-use rshell::app::RshellApp;
-#[cfg(windows)]
+mod bootstrap;
+mod cleanup;
+mod p0_smoke;
+mod p0_smoke_action_fields;
+mod p0_smoke_actions;
+mod p0_smoke_cleanup;
+mod p0_smoke_contract;
+mod p0_smoke_contract_binding;
+mod p0_smoke_contract_evidence;
+mod p0_smoke_evidence;
+mod p0_smoke_report;
+mod p0_smoke_report_steps;
+mod p0_smoke_report_terminal;
+mod p0_smoke_report_visual;
+mod p0_smoke_runtime;
+mod p0_smoke_scenario;
+mod p0_smoke_status;
+
 use std::{
-    ffi::{c_char, c_void},
+    ffi::OsStr,
+    fs,
     path::{Path, PathBuf},
+    time::{Duration, SystemTime},
 };
 
+use rshell_platform::PlatformPaths;
+use rshell_ui::{StartupProbe, StartupReport};
+
+use crate::bootstrap::BootstrapError;
+
+pub(crate) const APPLICATION_ID: &str = "io.github.hugefiver.rshell";
+const STARTUP_SMOKE_TIMEOUT: Duration = Duration::from_secs(15);
+
+enum LaunchMode {
+    Normal,
+    SmokeStartup(PathBuf),
+    SmokeP0 { scenario: PathBuf, report: PathBuf },
+}
+
+#[derive(Clone, Copy)]
+pub(crate) enum RootError {
+    Arguments,
+    PlatformPaths,
+    Bootstrap(BootstrapError),
+    Gtk,
+    SmokeTemp,
+    SmokeCleanup,
+    SmokeReport,
+    SmokeIncomplete,
+    P0Scenario,
+    P0Timeout,
+    P0Incomplete,
+}
+
+impl RootError {
+    pub(crate) const fn category(self) -> &'static str {
+        match self {
+            Self::Arguments => "arguments",
+            Self::PlatformPaths => "platform",
+            Self::Bootstrap(error) => error.category(),
+            Self::Gtk | Self::P0Timeout => "gtk",
+            Self::SmokeTemp | Self::SmokeCleanup => "smoke-cleanup",
+            Self::SmokeReport | Self::SmokeIncomplete | Self::P0Incomplete => "smoke-report",
+            Self::P0Scenario => "smoke-scenario",
+        }
+    }
+
+    pub(crate) const fn context(self) -> &'static str {
+        match self {
+            Self::Arguments => "parsing launch arguments",
+            Self::PlatformPaths => "discovering platform paths",
+            Self::Bootstrap(error) => error.context(),
+            Self::Gtk => "running GTK application",
+            Self::P0Timeout => "reaching the P0 GTK fail-safe timeout",
+            Self::SmokeTemp => "creating smoke state",
+            Self::SmokeCleanup => "removing smoke state",
+            Self::SmokeReport => "writing smoke report",
+            Self::SmokeIncomplete => "validating startup report",
+            Self::P0Scenario => "parsing P0 scenario",
+            Self::P0Incomplete => "validating P0 smoke evidence",
+        }
+    }
+
+    pub(crate) const fn code(self) -> &'static str {
+        match self {
+            Self::Arguments => "arguments",
+            Self::PlatformPaths => "platform_paths",
+            Self::Bootstrap(error) => error.category(),
+            Self::Gtk => "gtk",
+            Self::SmokeTemp => "smoke_temp",
+            Self::SmokeCleanup => "smoke_cleanup",
+            Self::SmokeReport => "smoke_report",
+            Self::SmokeIncomplete => "smoke_incomplete",
+            Self::P0Scenario => "p0_scenario",
+            Self::P0Timeout => "p0_timeout",
+            Self::P0Incomplete => "p0_incomplete",
+        }
+    }
+}
+
 fn main() {
-    configure_process_dpi_awareness();
-    configure_windows_portable_runtime();
-    suppress_gio_warnings();
-    RelmApp::new("io.github.hugefiver.rshell").run::<RshellApp>(());
-}
-
-#[cfg(windows)]
-fn configure_process_dpi_awareness() {
-    const DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2: isize = -4;
-
-    type SetProcessDpiAwarenessContext = unsafe extern "system" fn(isize) -> i32;
-
-    #[link(name = "kernel32")]
-    unsafe extern "system" {
-        fn LoadLibraryA(name: *const c_char) -> *mut c_void;
-        fn GetProcAddress(module: *mut c_void, name: *const c_char) -> *mut c_void;
-    }
-
-    unsafe {
-        let user32 = LoadLibraryA(c"user32.dll".as_ptr());
-        if user32.is_null() {
-            return;
-        }
-
-        let proc = GetProcAddress(user32, c"SetProcessDpiAwarenessContext".as_ptr());
-        if proc.is_null() {
-            return;
-        }
-
-        let set_dpi_awareness: SetProcessDpiAwarenessContext = std::mem::transmute(proc);
-        let _ = set_dpi_awareness(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
+    init_tracing();
+    let result = parse_arguments().and_then(|mode| match mode {
+        LaunchMode::Normal => run_normal(),
+        LaunchMode::SmokeStartup(report) => run_startup_smoke(&report),
+        LaunchMode::SmokeP0 { scenario, report } => p0_smoke::run(&scenario, &report),
+    });
+    if let Err(error) = result {
+        tracing::error!(
+            category = error.category(),
+            context = error.context(),
+            "startup failed"
+        );
+        std::process::exit(1);
     }
 }
 
-#[cfg(not(windows))]
-fn configure_process_dpi_awareness() {}
+fn init_tracing() {
+    let _ = tracing_subscriber::fmt()
+        .with_ansi(false)
+        .without_time()
+        .with_target(false)
+        .try_init();
+}
 
-#[cfg(windows)]
-fn configure_windows_portable_runtime() {
-    let Ok(exe_path) = std::env::current_exe() else {
-        return;
-    };
-    let Some(app_dir) = exe_path.parent() else {
-        return;
-    };
-
-    prepend_path_env("PATH", app_dir);
-
-    let share_dir = app_dir.join("share");
-    if share_dir.is_dir() {
-        prepend_path_env("XDG_DATA_DIRS", &share_dir);
-        unsafe {
-            std::env::set_var("GTK_DATA_PREFIX", app_dir);
-            std::env::set_var("GTK_EXE_PREFIX", app_dir);
+fn parse_arguments() -> Result<LaunchMode, RootError> {
+    let mut arguments = std::env::args_os().skip(1);
+    match arguments.next() {
+        None => Ok(LaunchMode::Normal),
+        Some(flag) if flag == OsStr::new("--smoke-startup") => {
+            single_path_argument(&mut arguments).map(LaunchMode::SmokeStartup)
         }
+        Some(flag) if flag == OsStr::new("--smoke-p0") => {
+            let scenario = required_path(&mut arguments)?;
+            let report = required_path(&mut arguments)?;
+            if arguments.next().is_some() {
+                return Err(RootError::Arguments);
+            }
+            Ok(LaunchMode::SmokeP0 { scenario, report })
+        }
+        Some(_) => Err(RootError::Arguments),
     }
+}
 
-    set_env_if_exists(
-        "GSETTINGS_SCHEMA_DIR",
-        &share_dir.join("glib-2.0").join("schemas"),
+fn required_path(
+    arguments: &mut impl Iterator<Item = std::ffi::OsString>,
+) -> Result<PathBuf, RootError> {
+    arguments
+        .next()
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
+        .ok_or(RootError::Arguments)
+}
+
+fn single_path_argument(
+    arguments: &mut impl Iterator<Item = std::ffi::OsString>,
+) -> Result<PathBuf, RootError> {
+    let path = required_path(arguments)?;
+    if arguments.next().is_some() {
+        return Err(RootError::Arguments);
+    }
+    Ok(path)
+}
+
+fn run_normal() -> Result<(), RootError> {
+    let paths = PlatformPaths::discover().map_err(|_| RootError::PlatformPaths)?;
+    p0_smoke_runtime::run_normal(&paths)
+}
+
+fn run_startup_smoke(report_path: &Path) -> Result<(), RootError> {
+    let (paths, temporary_root) = startup_smoke_paths()?;
+    let probe = StartupProbe::for_gtk();
+    let startup = p0_smoke_runtime::run_startup(&paths, probe.clone(), STARTUP_SMOKE_TIMEOUT);
+    let state_removed = fs::remove_dir_all(&temporary_root).is_ok();
+    let report = probe.report(startup.is_ok() && state_removed);
+    let report_write = write_startup_report(report_path, report);
+
+    match (startup, state_removed, report_write, report.is_complete()) {
+        (Err(error), _, _, _) => Err(error),
+        (_, false, _, _) => Err(RootError::SmokeCleanup),
+        (_, _, Err(error), _) => Err(error),
+        (_, _, _, false) => Err(RootError::SmokeIncomplete),
+        (_, _, _, true) => Ok(()),
+    }
+}
+
+fn startup_smoke_paths() -> Result<(PlatformPaths, PathBuf), RootError> {
+    let suffix = SystemTime::now()
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .map_or(0, |duration| duration.as_nanos());
+    let root = std::env::temp_dir().join(format!("rshell-startup-{}-{suffix}", std::process::id()));
+    fs::create_dir(&root).map_err(|_| RootError::SmokeTemp)?;
+    Ok((
+        PlatformPaths::from_roots(root.join("config"), root.join("state"), root.join("cache")),
+        root,
+    ))
+}
+
+fn write_startup_report(path: &Path, report: StartupReport) -> Result<(), RootError> {
+    let json = format!(
+        concat!(
+            "{{\"window_realized\":{},\"local_session_connected\":{},",
+            "\"non_empty_render_frame\":{},\"shutdown_clean\":{},",
+            "\"embedded_css_loaded\":{},\"embedded_icons_renderable\":{},",
+            "\"embedded_icon_backend\":\"{}\"}}\n"
+        ),
+        report.window_realized,
+        report.local_session_connected,
+        report.non_empty_render_frame,
+        report.shutdown_clean,
+        report.embedded_css_loaded,
+        report.embedded_icons_renderable,
+        report.embedded_icon_backend,
     );
-    set_env_if_exists(
-        "GDK_PIXBUF_MODULE_FILE",
-        &app_dir
-            .join("lib")
-            .join("gdk-pixbuf-2.0")
-            .join("2.10.0")
-            .join("loaders.cache"),
-    );
-    set_env_if_exists(
-        "GDK_PIXBUF_MODULEDIR",
-        &app_dir
-            .join("lib")
-            .join("gdk-pixbuf-2.0")
-            .join("2.10.0")
-            .join("loaders"),
-    );
-
-    let fontconfig_dir = app_dir.join("etc").join("fonts");
-    set_env_if_exists("FONTCONFIG_FILE", &fontconfig_dir.join("fonts.conf"));
-    set_env_if_exists("FONTCONFIG_PATH", &fontconfig_dir);
+    fs::write(path, json).map_err(|_| RootError::SmokeReport)
 }
 
-#[cfg(not(windows))]
-fn configure_windows_portable_runtime() {}
+#[cfg(test)]
+mod tests {
+    use super::*;
 
-#[cfg(windows)]
-fn prepend_path_env(name: &str, value: &Path) {
-    if !value.exists() {
-        return;
+    #[test]
+    fn accepts_only_the_exact_p0_control_plane() {
+        let arguments = ["--smoke-p0", "scenario.json", "report.json"]
+            .into_iter()
+            .map(std::ffi::OsString::from);
+        let mode = match parse_from(arguments) {
+            Ok(mode) => mode,
+            Err(_) => panic!("P0 arguments must parse"),
+        };
+        assert!(matches!(mode, LaunchMode::SmokeP0 { .. }));
     }
 
-    let mut entries = vec![PathBuf::from(value)];
-    if let Some(existing) = std::env::var_os(name) {
-        entries.extend(std::env::split_paths(&existing));
+    #[test]
+    fn rejects_extra_p0_arguments() {
+        let arguments = ["--smoke-p0", "scenario.json", "report.json", "extra"]
+            .into_iter()
+            .map(std::ffi::OsString::from);
+        assert!(matches!(parse_from(arguments), Err(RootError::Arguments)));
     }
-    if let Ok(joined) = std::env::join_paths(entries) {
-        unsafe {
-            std::env::set_var(name, joined);
+
+    fn parse_from(
+        arguments: impl Iterator<Item = std::ffi::OsString>,
+    ) -> Result<LaunchMode, RootError> {
+        let mut arguments = arguments;
+        match arguments.next() {
+            Some(flag) if flag == "--smoke-p0" => {
+                let scenario = required_path(&mut arguments)?;
+                let report = required_path(&mut arguments)?;
+                if arguments.next().is_some() {
+                    return Err(RootError::Arguments);
+                }
+                Ok(LaunchMode::SmokeP0 { scenario, report })
+            }
+            _ => Err(RootError::Arguments),
         }
-    }
-}
-
-#[cfg(windows)]
-fn set_env_if_exists(name: &str, path: &Path) {
-    if path.exists() {
-        unsafe {
-            std::env::set_var(name, path);
-        }
-    }
-}
-
-fn suppress_gio_warnings() {
-    #[cfg(windows)]
-    unsafe {
-        std::env::set_var("DBUS_SESSION_BUS_ADDRESS", "disabled:");
-    }
-
-    unsafe {
-        std::env::set_var("G_MESSAGES_DEBUG", "");
     }
 }

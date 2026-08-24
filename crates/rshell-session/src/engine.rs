@@ -1,0 +1,143 @@
+use std::sync::Arc;
+
+use rshell_core::{
+    RenderFrame, ResolvedTerminalProfile, SearchMatch, SearchQuery, SelectionRange, TerminalInput,
+    TerminalMouseEvent, TerminalSize, Viewport,
+};
+
+use crate::{EngineError, input, render, text, wezterm_adapter::WezTermAdapter};
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EngineDelta {
+    pub outbound: Vec<u8>,
+    pub dirty: bool,
+}
+
+pub trait TerminalEngine: Send {
+    fn advance(&mut self, bytes: &[u8]) -> Result<EngineDelta, EngineError>;
+    fn resize(&mut self, size: TerminalSize) -> Result<(), EngineError>;
+    fn render(
+        &mut self,
+        viewport: Viewport,
+        selection: Option<SelectionRange>,
+    ) -> Result<Arc<RenderFrame>, EngineError>;
+    fn encode_input(&mut self, input: TerminalInput) -> Result<Vec<u8>, EngineError>;
+    fn encode_mouse(&mut self, input: TerminalMouseEvent) -> Result<Vec<u8>, EngineError>;
+    fn scroll(&mut self, delta_rows: i32) -> Result<(), EngineError>;
+    fn search(&self, query: &SearchQuery) -> Result<Vec<SearchMatch>, EngineError>;
+    fn selected_text(&self, range: SelectionRange) -> Result<String, EngineError>;
+}
+
+pub struct DefaultTerminalEngine {
+    adapter: WezTermAdapter,
+}
+
+impl std::fmt::Debug for DefaultTerminalEngine {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("DefaultTerminalEngine")
+            .field("size", &self.adapter.size())
+            .finish_non_exhaustive()
+    }
+}
+
+impl DefaultTerminalEngine {
+    pub fn new(
+        settings: &ResolvedTerminalProfile,
+        size: TerminalSize,
+    ) -> Result<Self, EngineError> {
+        validate_size(size)?;
+        Ok(Self {
+            adapter: WezTermAdapter::new(settings, size),
+        })
+    }
+
+    pub fn input(&mut self, bytes: &[u8]) -> Result<(), EngineError> {
+        self.advance(bytes)?;
+        Ok(())
+    }
+
+    pub fn resize(&mut self, size: TerminalSize) -> Result<(), EngineError> {
+        TerminalEngine::resize(self, size)
+    }
+
+    pub fn snapshot(
+        &self,
+        viewport: Viewport,
+        selection: Option<SelectionRange>,
+    ) -> Arc<RenderFrame> {
+        Arc::new(render::snapshot(&self.adapter, viewport, selection))
+    }
+
+    pub fn search(&self, query: &SearchQuery) -> Vec<SearchMatch> {
+        text::search(&self.adapter, query)
+    }
+
+    pub fn selection_text(&self, range: SelectionRange) -> String {
+        text::selection_text(&self.adapter, range)
+    }
+
+    pub fn clear_scrollback(&mut self) {
+        self.adapter.clear_scrollback();
+    }
+
+    pub fn reset(&mut self) {
+        self.adapter.reset();
+    }
+}
+
+impl TerminalEngine for DefaultTerminalEngine {
+    fn advance(&mut self, bytes: &[u8]) -> Result<EngineDelta, EngineError> {
+        let outbound = self.adapter.input(bytes);
+        Ok(EngineDelta {
+            outbound,
+            dirty: !bytes.is_empty(),
+        })
+    }
+
+    fn resize(&mut self, size: TerminalSize) -> Result<(), EngineError> {
+        validate_size(size)?;
+        self.adapter.resize(size);
+        Ok(())
+    }
+
+    fn render(
+        &mut self,
+        viewport: Viewport,
+        selection: Option<SelectionRange>,
+    ) -> Result<Arc<RenderFrame>, EngineError> {
+        Ok(self.snapshot(viewport, selection))
+    }
+
+    fn encode_input(&mut self, input: TerminalInput) -> Result<Vec<u8>, EngineError> {
+        input::encode_input(input)
+    }
+
+    fn encode_mouse(&mut self, input: TerminalMouseEvent) -> Result<Vec<u8>, EngineError> {
+        input::encode_mouse(input, self.adapter.terminal().is_mouse_grabbed())
+    }
+
+    fn scroll(&mut self, _delta_rows: i32) -> Result<(), EngineError> {
+        // Viewport position is actor-owned; this stateless backend needs no extra mutation.
+        Ok(())
+    }
+
+    fn search(&self, query: &SearchQuery) -> Result<Vec<SearchMatch>, EngineError> {
+        Ok(DefaultTerminalEngine::search(self, query))
+    }
+
+    fn selected_text(&self, range: SelectionRange) -> Result<String, EngineError> {
+        Ok(self.selection_text(range))
+    }
+}
+
+fn validate_size(size: TerminalSize) -> Result<(), EngineError> {
+    if size.cols == 0 || size.rows == 0 {
+        Err(EngineError::InvalidSize {
+            cols: size.cols,
+            rows: size.rows,
+        })
+    } else {
+        Ok(())
+    }
+}

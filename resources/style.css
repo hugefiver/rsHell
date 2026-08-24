@@ -1,15 +1,32 @@
-/* rsHell — Adaptive Theme */
-/* App chrome follows GTK theme (light/dark).                     */
-/* Terminal area, tab bar, status bar, right-click menu: always dark. */
+/* rsHell — Task21 Fluent shell authority */
+/* Opaque Windows Terminal Dark / Fluent 2 presentation. */
 
-/* ── Window — remove CSD shadow/resize margin ──── */
-window {
-    box-shadow: none;
+window,
+.fluent-shell,
+.command-bar,
+.sidebar,
+.editor-dialog,
+.content-dialog {
+    background: #202020;
+    color: #f5f5f5;
+    font-family: "Segoe UI", system-ui, sans-serif;
 }
 
 window.csd {
-    box-shadow: 0 0 0 1px rgba(128, 128, 128, 0.25);
     margin: 0;
+    border: 1px solid rgba(255, 255, 255, 0.10);
+}
+
+headerbar {
+    background: #202020;
+    color: #f5f5f5;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.10);
+}
+
+headerbar button {
+    background: transparent;
+    color: #d4d4d4;
+    border: none;
 }
 
 /* ── Accent Colors (shared) ──────────────────────── */
@@ -33,32 +50,49 @@ window.csd {
     color: #002b40;
 }
 
-/* ── HeaderBar / Toolbar ─────────────────────────── */
-headerbar {
-    box-shadow: none;
+/* ── In-content command bar ──────────────────────── */
+.command-bar {
     min-height: 36px;
-    padding: 0 6px;
-    border-bottom: 1px solid alpha(@borders, 0.5);
+    padding: 0 8px;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.10);
 }
 
-headerbar button {
+.command-bar button {
     min-height: 26px;
     min-width: 26px;
     padding: 2px 8px;
     border-radius: 4px;
     font-size: 13px;
     transition: background 100ms ease;
+    background: transparent;
+    color: #d4d4d4;
+    border: none;
 }
 
-headerbar button:hover {
-    background: alpha(@window_fg_color, 0.06);
+.command-bar button:hover {
+    background: rgba(255, 255, 255, 0.08);
 }
 
-headerbar button:active {
-    background: alpha(@window_fg_color, 0.03);
+.command-bar button:active {
+    background: rgba(255, 255, 255, 0.05);
 }
 
-/* Pane action buttons in headerbar — consistent icon sizing */
+.command-bar button:focus,
+.sidebar button:focus,
+.connection-list row:focus,
+.tab-button:focus,
+.tab-add:focus,
+.tab-close:focus,
+.pane-command-row button:focus,
+.pane-toolbar button:focus,
+.content-dialog button:focus,
+.content-dialog entry:focus,
+.terminal-canvas:focus {
+    outline: 2px solid #60cdff;
+    outline-offset: -2px;
+}
+
+/* Pane action buttons use consistent compact icon sizing. */
 .pane-action-btn {
     min-height: 26px;
     min-width: 26px;
@@ -68,7 +102,9 @@ headerbar button:active {
 /* ── Sidebar ─────────────────────────────────────── */
 .sidebar {
     padding: 0;
-    border-right: 1px solid alpha(@borders, 0.5);
+    background: #202020;
+    color: #f5f5f5;
+    border-right: 1px solid rgba(255, 255, 255, 0.10);
 }
 
 .sidebar-header {
@@ -91,10 +127,13 @@ headerbar button:active {
     border-radius: 4px;
     font-size: 12px;
     transition: background 100ms ease;
+    background: transparent;
+    color: #d4d4d4;
+    border: none;
 }
 
 .sidebar-toolbar button:hover {
-    background: alpha(@window_fg_color, 0.08);
+    background: rgba(255, 255, 255, 0.08);
 }
 
 /* ── Connection List ─────────────────────────────── */
@@ -109,11 +148,13 @@ headerbar button:active {
 }
 
 .connection-list row:hover {
-    background: alpha(@window_fg_color, 0.04);
+    background: rgba(255, 255, 255, 0.06);
 }
 
+.connection-list row.navigation-selected,
 .connection-list row:selected {
-    background: alpha(#d0dff0, 0.18);
+    background: #323232;
+    border-left: 2px solid #60cdff;
 }
 
 .connection-row {
@@ -122,30 +163,32 @@ headerbar button:active {
 }
 
 .connection-name {
+    color: #f5f5f5;
     font-size: 13px;
     font-weight: 600;
 }
 
 .connection-meta {
+    color: #cccccc;
     font-size: 11px;
-    opacity: 0.5;
 }
 
 .folder-header {
+    color: #cccccc;
     font-size: 11px;
     font-weight: 700;
     letter-spacing: 0.06em;
     padding: 8px 10px 2px 10px;
-    opacity: 0.5;
 }
 
 /* ── Editor / Settings Dialog ────────────────────── */
 .editor-dialog {
-    background-color: @window_bg_color;
+    background: #202020;
+    color: #f5f5f5;
 }
 
 .editor-group {
-    background-color: #fafafa;
+    background: #252525;
     padding: 6px 10px;
 }
 
@@ -177,32 +220,33 @@ passwordentry {
     min-height: 30px;
     border-radius: 4px;
     font-size: 14px;
-    border: 1px solid alpha(@borders, 0.6);
-    border-bottom: 2px solid alpha(@borders, 0.8);
-    background: alpha(@view_bg_color, 0.5);
+    color: #f5f5f5;
+    border: 1px solid rgba(255, 255, 255, 0.16);
+    border-bottom: 2px solid rgba(255, 255, 255, 0.24);
+    background: #2b2b2b;
     transition: border-color 120ms ease;
 }
 
 entry:focus,
 spinbutton:focus,
 passwordentry:focus {
-    border-color: alpha(@borders, 0.6);
-    border-bottom: 2px solid #d0dff0;
-    background: alpha(@view_bg_color, 0.7);
+    border-color: rgba(255, 255, 255, 0.20);
+    border-bottom: 2px solid #60cdff;
+    background: #303030;
 }
 
 entry:disabled,
 spinbutton:disabled,
 passwordentry:disabled {
     opacity: 0.45;
-    border-color: alpha(@borders, 0.2);
-    border-bottom-color: alpha(@borders, 0.3);
+    border-color: rgba(255, 255, 255, 0.08);
+    border-bottom-color: rgba(255, 255, 255, 0.10);
 }
 
 /* ── Notebook (tabs inside dialogs) ──────────────── */
 .editor-dialog notebook > header {
     background: transparent;
-    border-bottom: 1px solid alpha(@borders, 0.5);
+    border-bottom: 1px solid rgba(255, 255, 255, 0.10);
 }
 
 .editor-dialog notebook > header tab {
@@ -214,11 +258,11 @@ passwordentry:disabled {
 }
 
 .editor-dialog notebook > header tab:checked {
-    border-bottom-color: #d0dff0;
+    border-bottom-color: #60cdff;
 }
 
 .editor-dialog notebook > header tab:hover:not(:checked) {
-    background: alpha(@window_fg_color, 0.04);
+    background: rgba(255, 255, 255, 0.06);
 }
 
 /* ── Dialog Buttons ──────────────────────────────── */
@@ -239,21 +283,30 @@ passwordentry:disabled {
 /* ── Drop Down (theme selector etc.) ─────────────── */
 dropdown {
     min-height: 30px;
-    border: 1px solid alpha(@borders, 0.6);
-    border-bottom: 2px solid alpha(@borders, 0.8);
+    color: #f5f5f5;
+    border: 1px solid rgba(255, 255, 255, 0.16);
+    border-bottom: 2px solid rgba(255, 255, 255, 0.24);
     border-radius: 4px;
-    background: alpha(@view_bg_color, 0.5);
+    background: #2b2b2b;
+}
+
+dropdown button {
+    background: #2b2b2b;
+    color: #f5f5f5;
+    border: none;
 }
 
 dropdown:focus {
-    border-color: alpha(@borders, 0.6);
-    border-bottom: 2px solid #d0dff0;
+    border-color: rgba(255, 255, 255, 0.20);
+    border-bottom: 2px solid #60cdff;
 }
 
 /* Dropdown popup list */
 dropdown > popover {
-    border: 1px solid alpha(@borders, 0.5);
-    border-radius: 6px;
+    background: #2b2b2b;
+    color: #f5f5f5;
+    border: 1px solid rgba(255, 255, 255, 0.12);
+    border-radius: 8px;
     padding: 3px;
 }
 
@@ -271,11 +324,11 @@ dropdown > popover listview > row {
 }
 
 dropdown > popover listview > row:hover {
-    background: alpha(@window_fg_color, 0.06);
+    background: rgba(255, 255, 255, 0.08);
 }
 
 dropdown > popover listview > row:selected {
-    background: alpha(#d0dff0, 0.18);
+    background: rgba(96, 205, 255, 0.16);
 }
 
 /* ── CheckButton ─────────────────────────────────── */
@@ -284,14 +337,14 @@ checkbutton {
 }
 
 checkbutton indicator {
-    border: 1px solid alpha(@borders, 1.0);
+    border: 1px solid rgba(255, 255, 255, 0.60);
     border-radius: 3px;
-    background: alpha(@view_bg_color, 0.4);
+    background: #2b2b2b;
 }
 
 checkbutton:checked indicator {
-    background: #d0dff0;
-    border-color: #d0dff0;
+    background: #60cdff;
+    border-color: #60cdff;
 }
 
 /* ── TextView (notes field) ──────────────────────── */
@@ -301,12 +354,13 @@ textview {
 }
 
 textview text {
-    background: alpha(@view_bg_color, 0.4);
+    background: #2b2b2b;
+    color: #f5f5f5;
 }
 
 /* ── ScrolledWindow border inside editors ────────── */
 scrolledwindow {
-    border: 1px solid alpha(@borders, 0.6);
+    border: 1px solid rgba(255, 255, 255, 0.16);
     border-radius: 4px;
 }
 
@@ -322,12 +376,12 @@ scrolledwindow {
 paned > separator {
     min-width: 2px;
     min-height: 2px;
-    background: alpha(@borders, 0.3);
-    transition: background 150ms ease;
+    background: rgba(255, 255, 255, 0.10);
+    transition: background 120ms ease;
 }
 
 paned > separator:hover {
-    background: alpha(#d0dff0, 0.55);
+    background: rgba(96, 205, 255, 0.55);
 }
 
 /* ══════════════════════════════════════════════════ */
@@ -352,7 +406,11 @@ paned > separator:hover {
     min-height: 26px;
     margin: 0 0;
     border-bottom: 2px solid transparent;
-    transition: color 100ms ease, border-color 150ms ease, background 100ms ease;
+    transition: color 100ms ease, border-color 120ms ease, background 100ms ease;
+}
+
+.terminal-tab {
+    border-right: 1px solid rgba(255, 255, 255, 0.06);
 }
 
 .tab-button:hover {
@@ -400,11 +458,77 @@ paned > separator:hover {
     color: #ff8a95;
 }
 
+/* ── Session Pane Host (always dark) ─────────────── */
+.pane-host,
+.pane-surface,
+.pane-status-page {
+    background: #1a1a1a;
+    color: #cccccc;
+}
+
+.pane-surface.active-pane {
+    outline: 2px solid #60cdff;
+    outline-offset: -2px;
+}
+
+.pane-command-row,
+.pane-toolbar {
+    min-height: 26px;
+    padding: 0 4px;
+    background: #1e1e1e;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+.pane-command-row button,
+.pane-toolbar button,
+.pane-error-actions button {
+    min-height: 22px;
+    min-width: 22px;
+    padding: 2px 6px;
+    border-radius: 4px;
+    transition: background 100ms ease, color 100ms ease;
+    background: transparent;
+    color: #d4d4d4;
+    border: none;
+}
+
+.pane-state-label {
+    color: #d4d4d4;
+    font-size: 12px;
+}
+
+.pane-status-page {
+    padding: 20px;
+}
+
+.pane-error-actions {
+    margin-top: 8px;
+}
+
 /* ── Terminal View (always dark) ─────────────────── */
 .terminal-view {
     background: #1a1a1a;
     color: #cccccc;
     font-family: "Cascadia Mono", "JetBrains Mono", "Consolas", monospace;
+}
+
+.terminal-canvas {
+    background: #1a1a1a;
+    color: #cccccc;
+    outline: 2px solid transparent;
+    outline-offset: -2px;
+}
+
+.terminal-canvas:focus {
+    outline-color: #60cdff;
+}
+
+.terminal-search {
+    margin: 8px;
+    background: #2c2c2c;
+    color: #e0e0e0;
+    border-color: rgba(255, 255, 255, 0.20);
+    border-bottom-color: #60cdff;
 }
 
 .terminal-container {
@@ -413,13 +537,14 @@ paned > separator:hover {
 
 /* ── Status Bar (always dark / accent) ───────────── */
 .status-bar {
-    background: #0078d4;
+    background: #1e1e1e;
+    border-top: 1px solid rgba(96, 205, 255, 0.55);
     padding: 0 10px;
     min-height: 20px;
 }
 
 .status-label {
-    color: #ffffff;
+    color: #d4d4d4;
     font-size: 12px;
     font-weight: 500;
 }
@@ -458,8 +583,113 @@ paned > separator:hover {
 
 /* ── Separator in dialogs ────────────────────────── */
 .editor-dialog separator {
-    background: alpha(@borders, 0.4);
+    background: rgba(255, 255, 255, 0.10);
     min-height: 1px;
+}
+
+/* ── Task 18 settings/import/interaction overlays ── */
+.settings-window,
+.import-dialog,
+.interaction-dialog {
+    background: #2b2b2b;
+    color: #f5f5f5;
+    border: 1px solid rgba(255, 255, 255, 0.12);
+    border-radius: 8px;
+    padding: 16px;
+}
+
+.content-dialog {
+    background: #2b2b2b;
+    color: #f5f5f5;
+    border: 1px solid rgba(255, 255, 255, 0.12);
+    border-radius: 8px;
+}
+
+.dialog-header {
+    color: #f5f5f5;
+    font-size: 16px;
+    font-weight: 600;
+    padding-bottom: 4px;
+}
+
+.dialog-body {
+    color: #f5f5f5;
+}
+
+.dialog-footer {
+    padding-top: 8px;
+    border-top: 1px solid rgba(255, 255, 255, 0.10);
+}
+
+.dialog-error {
+    color: #ff99a4;
+    padding: 4px 0;
+}
+
+.settings-window grid > label {
+    font-size: 13px;
+    opacity: 0.75;
+}
+
+.settings-window .settings-error,
+.import-dialog .import-error,
+.interaction-dialog .interaction-error {
+    color: @error_color;
+    padding: 4px 0;
+}
+
+.import-candidates {
+    border-top: 1px solid rgba(255, 255, 255, 0.10);
+    border-bottom: 1px solid rgba(255, 255, 255, 0.10);
+}
+
+.import-candidate {
+    min-height: 42px;
+    padding: 6px 8px;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.import-candidate:disabled {
+    opacity: 0.55;
+}
+
+.import-warnings .warning,
+.interaction-dialog .danger {
+    color: @warning_color;
+}
+
+.interaction-dialog .danger {
+    background: alpha(@error_color, 0.08);
+    border-left: 2px solid @error_color;
+    padding: 8px;
+}
+
+.import-result {
+    color: @success_color;
+    font-weight: 600;
+}
+
+.settings-window button,
+.import-dialog button,
+.interaction-dialog button {
+    min-height: 30px;
+    border-radius: 4px;
+    transition: background 100ms ease;
+    background: #333333;
+    color: #f5f5f5;
+    border: 1px solid rgba(255, 255, 255, 0.12);
+}
+
+.content-dialog button.suggested-action {
+    background: #60cdff;
+    color: #002b40;
+    border-color: #60cdff;
+}
+
+.content-dialog button.destructive-action {
+    background: rgba(255, 80, 100, 0.16);
+    color: #ff99a4;
+    border-color: rgba(255, 80, 100, 0.35);
 }
 
 /* ══════════════════════════════════════════════════ */
@@ -470,8 +700,8 @@ paned > separator:hover {
 popover.menu,
 menubutton > popover.menu {
     background: #2c2c2c;
-    border: 1px solid rgba(255, 255, 255, 0.08);
-    border-radius: 6px;
+    border: 1px solid rgba(255, 255, 255, 0.12);
+    border-radius: 8px;
     padding: 3px;
 }
 
