@@ -653,6 +653,25 @@ $pathSeparator = [string][System.IO.Path]::PathSeparator
 $binarySuffix = if ($platformIsWindows) { ".exe" } else { "" }
 $cargo = (Get-Command -Name "cargo" -ErrorAction Stop).Source
 $pwsh = (Get-Command -Name "pwsh" -ErrorAction Stop).Source
+$cargoHome = if (-not [string]::IsNullOrWhiteSpace($env:CARGO_HOME)) {
+    [System.IO.Path]::GetFullPath($env:CARGO_HOME)
+} else {
+    [System.IO.Path]::GetFullPath((Split-Path -Parent (Split-Path -Parent $cargo)))
+}
+$rustupHome = if (-not [string]::IsNullOrWhiteSpace($env:RUSTUP_HOME)) {
+    [System.IO.Path]::GetFullPath($env:RUSTUP_HOME)
+} else {
+    $rustupCommand = Get-Command -Name "rustup" -ErrorAction SilentlyContinue
+    if ($rustupCommand) {
+        $rustupHomeLines = @(& $rustupCommand.Source show home)
+        if ($LASTEXITCODE -ne 0 -or $rustupHomeLines.Count -eq 0) {
+            throw "P0 smoke could not resolve the active Rustup home."
+        }
+        [System.IO.Path]::GetFullPath(($rustupHomeLines -join "`n").Trim())
+    } else {
+        $null
+    }
+}
 $sshKeygen = $null
 $sshAdd = $null
 if ($needsSsh) {
@@ -1301,6 +1320,8 @@ exit 91
         [void](New-Item -ItemType Directory -Path (Join-Path $guiHome ".ssh") -Force)
         $guiEnvironment.HOME = $guiHome
         $guiEnvironment.USERPROFILE = $guiHome
+        $guiEnvironment.CARGO_HOME = $cargoHome
+        if ($rustupHome) { $guiEnvironment.RUSTUP_HOME = $rustupHome }
         $guiReportTemp = Join-Path $tempRoot "production-p0-report.json"
         $guiPngTemp = [System.IO.Path]::ChangeExtension($guiReportTemp, ".png")
         $guiExit = Invoke-CapturedChild `

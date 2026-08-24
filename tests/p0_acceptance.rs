@@ -297,6 +297,8 @@ fn powershell_harness_has_a_cross_platform_tool_and_shell_contract() {
         "Get-Command -Name \"ssh-keygen\" -ErrorAction Stop",
         "Get-Command -Name \"ssh-add\" -ErrorAction Stop",
         "RSHELL_SHELL",
+        "$guiEnvironment.CARGO_HOME = $cargoHome",
+        "$guiEnvironment.RUSTUP_HOME = $rustupHome",
         "[System.IO.Path]::GetTempPath()",
         "[System.IO.Path]::PathSeparator",
         "P0 smoke does not support this operating system.",

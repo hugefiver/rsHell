@@ -30,6 +30,7 @@ use support::ssh_server::{
 };
 
 const CASE_TIMEOUT: Duration = Duration::from_secs(8);
+const SYSTEM_OPENSSH_TIMEOUT: Duration = Duration::from_secs(30);
 const BACKPRESSURE_BYTES: usize = 10 * 1024;
 const BACKPRESSURE_MARKER: &[u8] = b"\r\nSMOKE_BURST_COMPLETE\r\n";
 const WRONG_PASSWORD: &str = "incorrect-password";
@@ -827,37 +828,26 @@ async fn system_openssh_agent_authenticates_against_local_server() {
 
     let server = TestSshServer::start(ServerAuth::PublicKey(public_key)).await;
     let endpoint = server.address();
-    let profile = system_profile(server.address());
+    let mut profile = system_profile(server.address());
+    profile.remote_command = Some("exit:0".to_owned());
     let mut transport = SystemOpenSshTransport::new(profile);
     let (broker, _requests): (InteractionBroker, _) = interaction_channel();
     transport
         .connect(&TransportRequest::new(size(80, 24)), broker)
         .await
         .expect("start production system OpenSSH transport");
-    assert!(contains(
-        &system_shell_output_after_host_confirmation(&mut transport).await,
-        b"READY\r\n"
-    ));
-    transport
-        .write(b"system-agent-ok\r\n")
+    let (output, status) = system_remote_command_after_host_confirmation(&mut transport).await;
+    assert!(contains(&output, b"remote-output-before-exit\r\n"));
+    assert_eq!(status.code, Some(0));
+    assert!(status.success);
+    tokio::time::timeout(SYSTEM_OPENSSH_TIMEOUT, transport.shutdown())
         .await
-        .expect("write through production system OpenSSH transport");
-    tokio::time::timeout(CASE_TIMEOUT, async {
-        loop {
-            if contains(&server.snapshot().received_input, b"system-agent-ok\r\n") {
-                return;
-            }
-            tokio::time::sleep(Duration::from_millis(20)).await;
-        }
-    })
-    .await
-    .expect("local SSH server did not receive production system OpenSSH input");
-    transport.shutdown().await.expect("system OpenSSH shutdown");
-    let received_input = server.snapshot().received_input;
+        .expect("system OpenSSH shutdown timed out")
+        .expect("system OpenSSH shutdown");
 
     let snapshot = shutdown_server(server).await;
     assert_eq!(snapshot.successful_authentications, 1);
-    assert!(contains(&received_input, b"system-agent-ok\r\n"));
+    assert_eq!(snapshot.remote_commands, [b"exit:0".to_vec()]);
     emit_observation_from_snapshot(QaSurface::SystemAgent, endpoint, &snapshot);
     if let Some(agent_key) = child_agent_key {
         agent_key
@@ -866,10 +856,10 @@ async fn system_openssh_agent_authenticates_against_local_server() {
     }
 }
 
-async fn system_shell_output_after_host_confirmation(
+async fn system_remote_command_after_host_confirmation(
     transport: &mut SystemOpenSshTransport,
-) -> Vec<u8> {
-    tokio::time::timeout(CASE_TIMEOUT, async {
+) -> (Vec<u8>, ExitStatus) {
+    tokio::time::timeout(SYSTEM_OPENSSH_TIMEOUT, async {
         let mut output = Vec::new();
         let mut confirmed = false;
         loop {
@@ -886,16 +876,14 @@ async fn system_shell_output_after_host_confirmation(
                             .expect("accept system SSH host key");
                         confirmed = true;
                     }
-                    if contains(&output, b"READY\r\n") {
-                        return output;
-                    }
                 }
-                _ => panic!("system OpenSSH exited before the server remote command completed"),
+                TransportEvent::Exit(status) => return (output, status),
+                _ => panic!("system OpenSSH ended without an exit status"),
             }
         }
     })
     .await
-    .expect("system OpenSSH did not reach the local server remote command")
+    .expect("system OpenSSH remote command timed out")
 }
 
 struct DisposableAgentKey {
