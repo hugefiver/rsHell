@@ -46,7 +46,9 @@ pub(crate) fn render(icon: ProductIcon) -> Result<gtk::gdk::Texture, IconRenderE
 
 fn cairo_argb32_to_rgba(source: &[u8]) -> Vec<u8> {
     source
-        .chunks_exact(4)
+        .as_chunks::<4>()
+        .0
+        .iter()
         .flat_map(|pixel| {
             #[cfg(target_endian = "little")]
             let (red, green, blue, alpha) = (pixel[2], pixel[1], pixel[0], pixel[3]);

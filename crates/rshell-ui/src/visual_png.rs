@@ -31,11 +31,12 @@ pub fn argb32_native_to_rgba(
     bytes: &[u8],
     order: NativeByteOrder,
 ) -> Result<Vec<u8>, &'static str> {
-    if !bytes.len().is_multiple_of(4) {
+    let (pixels, remainder) = bytes.as_chunks::<4>();
+    if !remainder.is_empty() {
         return Err("argb32_length_invalid");
     }
     let mut rgba = Vec::with_capacity(bytes.len());
-    for pixel in bytes.chunks_exact(4) {
+    for pixel in pixels {
         let (a, red, green, blue) = match order {
             NativeByteOrder::Little => (pixel[3], pixel[2], pixel[1], pixel[0]),
             NativeByteOrder::Big => (pixel[0], pixel[1], pixel[2], pixel[3]),
@@ -142,7 +143,12 @@ fn dimensions(width: i32, height: i32, length: usize) -> Result<(usize, usize), 
 
 fn luminance_distribution(rgba: &[u8]) -> (usize, usize) {
     let mut occupied = [false; 256];
-    for pixel in rgba.chunks_exact(4).filter(|pixel| pixel[3] >= 230) {
+    for pixel in rgba
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .filter(|pixel| pixel[3] >= 230)
+    {
         let luminance = (2_126 * usize::from(pixel[0])
             + 7_152 * usize::from(pixel[1])
             + 722 * usize::from(pixel[2]))
