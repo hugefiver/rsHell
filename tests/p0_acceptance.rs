@@ -208,15 +208,13 @@ fn hosted_workflows_fail_closed_and_package_smoke_uses_a_deterministic_shell() {
 }
 
 #[test]
-fn hosted_gui_tests_use_owned_platform_display_servers() {
+fn hosted_gui_tests_use_linux_xvfb_and_a_supported_macos_runner() {
     let ci = include_str!("../.github/workflows/ci.yml");
     let release = include_str!("../.github/workflows/release.yml");
 
     for workflow in [ci, release] {
-        assert!(workflow.contains("Get-Command -Name gtk4-broadwayd -ErrorAction Stop"));
-        assert!(workflow.contains("$env:GDK_BACKEND = \"broadway\""));
-        assert!(workflow.contains("$env:BROADWAY_DISPLAY = \":5\""));
-        assert!(workflow.contains("Stop-Process -Id $displayServer.Id -Force"));
+        assert!(workflow.contains("os: macos-26"));
+        assert!(!workflow.contains("gtk4-broadwayd"));
     }
     assert!(ci.contains("$env:DISPLAY = ':98'"));
     assert!(ci.contains("Xvfb"));
@@ -424,6 +422,8 @@ fn mode_all_builds_and_inspects_the_release_dependency_surface() {
 
 #[test]
 fn regression_harness_rejects_zero_multiple_and_failed_exact_test_results() {
+    let harness = include_str!("../scripts/qa/p0-smoke.ps1");
+    assert!(harness.contains("if ($RegressionCaseProbe) { throw }"));
     for probe in ["zero", "one", "multiple", "failure"] {
         let output = invoke_harness_probe("-RegressionParserProbe", probe);
         assert!(
@@ -447,7 +447,7 @@ fn regression_harness_rejects_zero_multiple_and_failed_exact_test_results() {
         output.contains(
             "P0 regression exact-test discovery did not yield exactly one matching test."
         ),
-        "the harness must fail specifically because discovery found zero exact tests"
+        "the harness must fail specifically because discovery found zero exact tests: {output}"
     );
 }
 

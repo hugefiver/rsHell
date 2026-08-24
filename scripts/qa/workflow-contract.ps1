@@ -253,7 +253,7 @@ foreach ($workflow in @(
 Assert-Contains -Text $ci -Pattern "(?ms)^permissions:\s*\r?\n\s*contents:\s*read\s*$" -Label "CI least-privilege permissions" -Failures $failures
 foreach ($runner in @(
         "(?ms)^\s*- name: Linux x86_64\s*\r?\n\s*os: ubuntu-24\.04\s*$",
-        "(?ms)^\s*- name: macOS arm64\s*\r?\n\s*os: macos-15\s*$",
+        "(?ms)^\s*- name: macOS arm64\s*\r?\n\s*os: macos-26\s*$",
         "(?ms)^\s*- name: Windows x86_64\s*\r?\n\s*os: windows-2022\s*$"
     )) {
     Assert-Exactly -Text $ci -Pattern $runner -Expected 1 -Label "CI runner matrix entry '$runner'" -Failures $failures
@@ -275,8 +275,7 @@ Assert-StepLineCount -Step $workspaceStep -Line $failureCheck -Expected 3 -Name 
 Assert-StepLine -Step $workspaceStep -Line 'if ($workspaceTestExitCode -ne 0) { exit $workspaceTestExitCode }' -Name "Run required workspace gates" -Failures $failures
 foreach ($pattern in @(
         "\$env:DISPLAY = ':98'", 'Start-Process -FilePath Xvfb',
-        'Get-Command -Name gtk4-broadwayd -ErrorAction Stop', '\$env:GDK_BACKEND = "broadway"',
-        '\$env:BROADWAY_DISPLAY = ":5"', 'Stop-Process -Id \$displayServer\.Id -Force'
+        'Stop-Process -Id \$displayServer\.Id -Force'
     )) {
     Assert-StepPattern -Step $workspaceStep -Pattern $pattern -Name "Run required workspace gates" -Failures $failures
 }
@@ -329,8 +328,7 @@ foreach ($pattern in @(
 $macosModeAll = Assert-NamedStep -Text $ci -Name "Run temporary keychain vault probe and P0 All smoke (macOS)" -Failures $failures
 foreach ($pattern in @(
         "security list-keychains", '\$cleanupErrors', "default keychain restore failed", "temporary keychain delete failed",
-        "vault root cleanup failed", 'Get-Command -Name gtk4-broadwayd -ErrorAction Stop',
-        '\$env:GDK_BACKEND = "broadway"', 'Broadway display cleanup failed'
+        "vault root cleanup failed"
     )) {
     Assert-StepPattern -Step $macosModeAll -Pattern $pattern -Name "Run temporary keychain vault probe and P0 All smoke (macOS)" -Failures $failures
 }
@@ -376,7 +374,7 @@ Assert-Absent -Text $release -Pattern "(?im)^ {8}if:\s*false\s*(?:#.*)?$" -Label
 Assert-Exactly -Text $release -Pattern "(?ms)^\s*release:\s*\r?\n\s*name: Release\s*\r?\n\s*needs: build\s*\r?\n\s*runs-on: ubuntu-latest\s*\r?\n\s*permissions:\s*\r?\n\s*contents: write\s*$" -Expected 1 -Label "Release publisher scoped write permission" -Failures $failures
 foreach ($target in @(
         [pscustomobject]@{ Name = "linux-x86_64"; Os = "ubuntu-24.04"; Target = "x86_64-unknown-linux-gnu" },
-        [pscustomobject]@{ Name = "macos-arm64"; Os = "macos-15"; Target = "aarch64-apple-darwin" },
+        [pscustomobject]@{ Name = "macos-arm64"; Os = "macos-26"; Target = "aarch64-apple-darwin" },
         [pscustomobject]@{ Name = "windows-x86_64"; Os = "windows-2022"; Target = "x86_64-pc-windows-msvc" }
     )) {
     $entry = "(?ms)^\s*- name: $([regex]::Escape($target.Name))\s*\r?\n\s*os: $([regex]::Escape($target.Os))\s*\r?\n\s*target: $([regex]::Escape($target.Target))\s*$"
@@ -397,14 +395,6 @@ foreach ($packageStep in @(
         Add-ContractFailure -Failures $failures -Message "Workflow step '$($packageStep.Name)' must have its exact platform condition."
     }
     Assert-StepLine -Step $step -Line $packageProbe -Name $packageStep.Name -Failures $failures
-    if ($packageStep.Name -eq "Package (Linux/macOS)") {
-        foreach ($pattern in @(
-                'Get-Command -Name gtk4-broadwayd -ErrorAction Stop', '\$env:GDK_BACKEND = "broadway"',
-                '\$env:BROADWAY_DISPLAY = ":5"', 'Stop-Process -Id \$displayServer\.Id -Force'
-            )) {
-            Assert-StepPattern -Step $step -Pattern $pattern -Name $packageStep.Name -Failures $failures
-        }
-    }
 }
 foreach ($marker in @(
         "embedded_css_loaded", "embedded_icons_renderable", "embedded_icon_backend",

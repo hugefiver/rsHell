@@ -1360,6 +1360,7 @@ exit 91
     }
 }
 catch {
+    if ($RegressionCaseProbe) { throw }
     $failure = $_.Exception.Message
 }
 finally {

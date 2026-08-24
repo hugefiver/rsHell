@@ -31,7 +31,7 @@ jobs:
           - name: Linux x86_64
             os: ubuntu-24.04
           - name: macOS arm64
-            os: macos-15
+            os: macos-26
           - name: Windows x86_64
             os: windows-2022
 
@@ -172,11 +172,6 @@ jobs:
             if ('${{ runner.os }}' -eq 'Linux') {
               $env:DISPLAY = ':98'
               $displayServer = Start-Process -FilePath Xvfb -ArgumentList @(':98', '-screen', '0', '1280x1024x24', '-nolisten', 'tcp') -PassThru
-            } elseif ('${{ runner.os }}' -eq 'macOS') {
-              $broadway = Get-Command -Name gtk4-broadwayd -ErrorAction Stop
-              $env:GDK_BACKEND = "broadway"
-              $env:BROADWAY_DISPLAY = ":5"
-              $displayServer = Start-Process -FilePath $broadway.Source -ArgumentList @(':5') -PassThru
             }
             if ($null -ne $displayServer) {
               Start-Sleep -Seconds 1
@@ -263,14 +258,7 @@ jobs:
           $created = $false
           $defaultChanged = $false
           $searchListChanged = $false
-          $displayServer = $null
           try {
-            $broadway = Get-Command -Name gtk4-broadwayd -ErrorAction Stop
-            $env:GDK_BACKEND = "broadway"
-            $env:BROADWAY_DISPLAY = ":5"
-            $displayServer = Start-Process -FilePath $broadway.Source -ArgumentList @(':5') -PassThru
-            Start-Sleep -Seconds 1
-            if ($displayServer.HasExited) { throw "The macOS GTK display server stopped before P0 smoke." }
             & security create-keychain -p $keychainPassword $keychainPath
             if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
             $created = $true
@@ -300,13 +288,6 @@ jobs:
           }
           finally {
             $cleanupErrors = [System.Collections.Generic.List[string]]::new()
-            if ($null -ne $displayServer -and -not $displayServer.HasExited) {
-              try {
-                Stop-Process -Id $displayServer.Id -Force
-                $displayServer.WaitForExit()
-              }
-              catch { $cleanupErrors.Add('Broadway display cleanup failed') }
-            }
             if ($defaultChanged) {
               try {
                 & security default-keychain -s $originalKeychain
