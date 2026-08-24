@@ -165,10 +165,16 @@ async fn argv_cwd_env_and_term_are_passed_without_shell_parsing() {
 
     assert!(contains(&output, b"ARG:0:space value"));
     assert!(contains(&output, format!("ARG:1:{injection}").as_bytes()));
-    assert!(contains(
-        &output,
-        format!("CWD:{}", directory.display()).as_bytes()
-    ));
+    let text = String::from_utf8_lossy(&output);
+    let child_cwd = text
+        .lines()
+        .map(|line| line.trim_end_matches('\r'))
+        .find_map(|line| line.strip_prefix("CWD:"))
+        .expect("fixture must report its current directory");
+    assert_eq!(
+        fs::canonicalize(child_cwd).expect("canonical child cwd"),
+        fs::canonicalize(&directory).expect("canonical requested cwd")
+    );
     assert!(contains(&output, b"ENV:value with spaces"));
     assert!(contains(&output, b"TERM:screen-256color"));
     assert!(!sentinel.exists(), "an argument was interpreted by a shell");
