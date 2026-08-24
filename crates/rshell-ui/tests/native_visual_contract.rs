@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::{sync::Arc, time::Duration};
 
 use gtk::gdk::prelude::TextureExtManual;
 use gtk::prelude::*;
@@ -55,7 +55,7 @@ fn realized_main_window_satisfies_the_fluent_visual_contract() {
     assert!(facts.embedded_icon_count >= 6);
     assert!(facts.focus_or_selection_treatment);
     assert!(facts.contract_passes());
-    let pixels = realized_pixels(main.widget());
+    let pixels = wait_for_realized_pixels(main.widget());
     assert_eq!(
         (pixels.width, pixels.height),
         (facts.realized_width, facts.realized_height)
@@ -81,7 +81,23 @@ fn find_by_css_class(root: &gtk::Widget, class: &str) -> Option<gtk::Widget> {
     None
 }
 
-fn realized_pixels(window: &gtk::ApplicationWindow) -> rshell_ui::SmokePngEvidence {
+fn wait_for_realized_pixels(window: &gtk::ApplicationWindow) -> rshell_ui::SmokePngEvidence {
+    let deadline = std::time::Instant::now() + Duration::from_secs(2);
+    loop {
+        match realized_pixels(window) {
+            Ok(evidence) => return evidence,
+            Err(_) if std::time::Instant::now() < deadline => {
+                assert!(flush_gtk());
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            Err(error) => panic!("realized Fluent pixel ranges did not settle: {error}"),
+        }
+    }
+}
+
+fn realized_pixels(
+    window: &gtk::ApplicationWindow,
+) -> Result<rshell_ui::SmokePngEvidence, &'static str> {
     let width = window.width();
     let height = window.height();
     let paintable = gtk::WidgetPaintable::new(Some(window));
@@ -97,7 +113,7 @@ fn realized_pixels(window: &gtk::ApplicationWindow) -> rshell_ui::SmokePngEviden
     let mut native = vec![0; stride * height as usize];
     texture.download(&mut native, stride);
     let rgba = argb32_native_to_rgba(&native, NativeByteOrder::current()).unwrap();
-    analyze_rgba(&rgba, width, height).expect("realized Fluent pixel ranges")
+    analyze_rgba(&rgba, width, height)
 }
 
 fn visual_fixture() -> AppViewModel {

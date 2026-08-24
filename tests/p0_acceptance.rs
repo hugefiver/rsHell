@@ -203,6 +203,8 @@ fn hosted_workflows_fail_closed_and_package_smoke_uses_a_deterministic_shell() {
     }
     assert!(ci.contains("$missingBaselineStatus -and $missingBaselineStartupMode"));
     assert!(ci.contains("$missingBaselineStatus -xor $missingBaselineStartupMode"));
+    assert!(ci.contains("Get-Command -Name \"pwsh\" -ErrorAction Stop"));
+    assert!(ci.contains("$env:RSHELL_SHELL = $workspaceShell.Source"));
     assert!(package.contains("Get-Command -Name \"pwsh\" -ErrorAction Stop"));
     assert!(package.contains("$startInfo.Environment[\"RSHELL_SHELL\"] = $pwsh.Source"));
 }
@@ -423,7 +425,8 @@ fn mode_all_builds_and_inspects_the_release_dependency_surface() {
 #[test]
 fn regression_harness_rejects_zero_multiple_and_failed_exact_test_results() {
     let harness = include_str!("../scripts/qa/p0-smoke.ps1");
-    assert!(harness.contains("if ($RegressionCaseProbe) { throw }"));
+    assert!(harness.contains("if ($RegressionCaseProbe) {"));
+    assert!(harness.contains("[Console]::Error.WriteLine($_.Exception.Message)"));
     for probe in ["zero", "one", "multiple", "failure"] {
         let output = invoke_harness_probe("-RegressionParserProbe", probe);
         assert!(

@@ -1360,7 +1360,10 @@ exit 91
     }
 }
 catch {
-    if ($RegressionCaseProbe) { throw }
+    if ($RegressionCaseProbe) {
+        [Console]::Error.WriteLine($_.Exception.Message)
+        throw
+    }
     $failure = $_.Exception.Message
 }
 finally {
