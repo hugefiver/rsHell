@@ -3,8 +3,8 @@ use gtk::prelude::*;
 use relm4::gtk;
 
 use crate::{
-    SmokeVisualEvidence, SmokeVisualFacts,
-    visual_png::{NativeByteOrder, analyze_rgba, argb32_native_to_rgba},
+    SmokeVisualEvidence, SmokeVisualFacts, selection_pixel_region,
+    visual_png::{NativeByteOrder, analyze_rgba_in_region, argb32_native_to_rgba},
 };
 
 pub(crate) fn capture_widget_png(
@@ -18,6 +18,7 @@ pub(crate) fn capture_widget_png(
     if width <= 0 || height <= 0 {
         return Err("snapshot_allocation_unavailable");
     }
+    let accent = selection_pixel_region(&widget).ok_or("snapshot_active_tab_unavailable")?;
     let snapshot = gtk::Snapshot::new();
     paintable.snapshot(&snapshot, f64::from(width), f64::from(height));
     let node = snapshot.to_node().ok_or("snapshot_node_unavailable")?;
@@ -38,7 +39,7 @@ pub(crate) fn capture_widget_png(
     let mut argb32 = vec![0; length];
     texture.download(&mut argb32, stride);
     let rgba = argb32_native_to_rgba(&argb32, NativeByteOrder::current())?;
-    let png = analyze_rgba(&rgba, width, height)?;
+    let png = analyze_rgba_in_region(&rgba, width, height, accent)?;
     texture
         .save_to_png(path)
         .map_err(|_| "snapshot_write_failed")?;

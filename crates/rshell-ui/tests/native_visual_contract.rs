@@ -10,8 +10,8 @@ use rshell_core::{
     UiCommandPort, UiPortError, WorkspaceState,
 };
 use rshell_ui::{
-    MainWindow, MainWindowInit, MainWindowMsg, NativeByteOrder, analyze_rgba, apply_global_css,
-    argb32_native_to_rgba, collect_visual_facts,
+    MainWindow, MainWindowInit, MainWindowMsg, NativeByteOrder, analyze_rgba_in_region,
+    apply_global_css, argb32_native_to_rgba, collect_visual_facts, selection_pixel_region,
 };
 
 #[test]
@@ -100,6 +100,8 @@ fn realized_pixels(
 ) -> Result<rshell_ui::SmokePngEvidence, &'static str> {
     let width = window.width();
     let height = window.height();
+    let accent = selection_pixel_region(window.upcast_ref())
+        .ok_or("realized active tab bounds unavailable")?;
     let paintable = gtk::WidgetPaintable::new(Some(window));
     let snapshot = gtk::Snapshot::new();
     paintable.snapshot(&snapshot, f64::from(width), f64::from(height));
@@ -113,7 +115,7 @@ fn realized_pixels(
     let mut native = vec![0; stride * height as usize];
     texture.download(&mut native, stride);
     let rgba = argb32_native_to_rgba(&native, NativeByteOrder::current()).unwrap();
-    analyze_rgba(&rgba, width, height)
+    analyze_rgba_in_region(&rgba, width, height, accent)
 }
 
 fn visual_fixture() -> AppViewModel {

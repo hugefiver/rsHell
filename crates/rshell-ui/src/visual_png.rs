@@ -1,6 +1,25 @@
 use crate::SmokePngEvidence;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PixelRegion {
+    x_start: usize,
+    x_end: usize,
+    y_start: usize,
+    y_end: usize,
+}
+
+impl PixelRegion {
+    pub const fn new(x_start: usize, x_end: usize, y_start: usize, y_end: usize) -> Self {
+        Self {
+            x_start,
+            x_end,
+            y_start,
+            y_end,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NativeByteOrder {
     Little,
     Big,
@@ -53,6 +72,33 @@ pub fn analyze_rgba(
     height: i32,
 ) -> Result<SmokePngEvidence, &'static str> {
     let (width, height) = dimensions(width, height, rgba.len())?;
+    let accent = region(width, height, 20, 90, 5, 15);
+    analyze_rgba_with_dimensions(rgba, width, height, accent)
+}
+
+pub fn analyze_rgba_in_region(
+    rgba: &[u8],
+    width: i32,
+    height: i32,
+    accent: PixelRegion,
+) -> Result<SmokePngEvidence, &'static str> {
+    let (width, height) = dimensions(width, height, rgba.len())?;
+    if accent.x_start >= accent.x_end
+        || accent.y_start >= accent.y_end
+        || accent.x_end > width
+        || accent.y_end > height
+    {
+        return Err("visual_accent_region_invalid");
+    }
+    analyze_rgba_with_dimensions(rgba, width, height, accent)
+}
+
+fn analyze_rgba_with_dimensions(
+    rgba: &[u8],
+    width: usize,
+    height: usize,
+    accent: PixelRegion,
+) -> Result<SmokePngEvidence, &'static str> {
     let (luminance_buckets, span) = luminance_distribution(rgba);
     if luminance_buckets < 8 || span < 32 {
         return Err("visual_luminance_range_invalid");
@@ -71,8 +117,7 @@ pub fn analyze_rgba(
     if dark_regions_passed != regions.len() {
         return Err("visual_dark_regions_invalid");
     }
-    let accent_region = region(width, height, 20, 90, 5, 15);
-    let thickness = accent_thickness(rgba, width, accent_region);
+    let thickness = accent_thickness(rgba, width, accent);
     if !(2..=4).contains(&thickness) {
         return Err("visual_focus_thickness_invalid");
     }
@@ -117,14 +162,6 @@ fn luminance_distribution(rgba: &[u8]) -> (usize, usize) {
     )
 }
 
-#[derive(Clone, Copy)]
-struct Region {
-    x_start: usize,
-    x_end: usize,
-    y_start: usize,
-    y_end: usize,
-}
-
 fn region(
     width: usize,
     height: usize,
@@ -132,8 +169,8 @@ fn region(
     x_end: usize,
     y_start: usize,
     y_end: usize,
-) -> Region {
-    Region {
+) -> PixelRegion {
+    PixelRegion {
         x_start: width * x_start / 100,
         x_end: width * x_end / 100,
         y_start: height * y_start / 100,
@@ -141,7 +178,7 @@ fn region(
     }
 }
 
-fn dark_ratio(rgba: &[u8], width: usize, bounds: Region) -> f64 {
+fn dark_ratio(rgba: &[u8], width: usize, bounds: PixelRegion) -> f64 {
     let mut dark = 0usize;
     let mut total = 0usize;
     for pixel in pixels(rgba, width, bounds) {
@@ -153,7 +190,7 @@ fn dark_ratio(rgba: &[u8], width: usize, bounds: Region) -> f64 {
     dark as f64 / total.max(1) as f64
 }
 
-fn accent_thickness(rgba: &[u8], width: usize, bounds: Region) -> usize {
+fn accent_thickness(rgba: &[u8], width: usize, bounds: PixelRegion) -> usize {
     let row_flags = (bounds.y_start..bounds.y_end).map(|y| {
         (bounds.x_start..bounds.x_end)
             .filter(|x| cyan(pixel(rgba, width, *x, y)))
@@ -182,7 +219,7 @@ fn cyan(pixel: &[u8]) -> bool {
     pixel[0] <= 150 && pixel[1] >= 140 && pixel[2] >= 190 && pixel[2] >= pixel[1] && pixel[3] >= 230
 }
 
-fn pixels(rgba: &[u8], width: usize, bounds: Region) -> impl Iterator<Item = &[u8]> {
+fn pixels(rgba: &[u8], width: usize, bounds: PixelRegion) -> impl Iterator<Item = &[u8]> {
     (bounds.y_start..bounds.y_end)
         .flat_map(move |y| (bounds.x_start..bounds.x_end).map(move |x| pixel(rgba, width, x, y)))
 }

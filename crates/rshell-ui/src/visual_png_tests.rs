@@ -1,4 +1,6 @@
-use super::{NativeByteOrder, analyze_rgba, argb32_native_to_rgba};
+use super::{
+    NativeByteOrder, PixelRegion, analyze_rgba, analyze_rgba_in_region, argb32_native_to_rgba,
+};
 
 const WIDTH: usize = 1_360;
 const HEIGHT: usize = 860;
@@ -30,6 +32,18 @@ fn canonical_rgba_ranges_require_dark_regions_and_two_pixel_treatment() {
     assert!(analyze_rgba(&failed_dark_region(), WIDTH as i32, HEIGHT as i32).is_err());
     assert!(analyze_rgba(&accent_thickness(1), WIDTH as i32, HEIGHT as i32).is_err());
     assert!(analyze_rgba(&accent_thickness(5), WIDTH as i32, HEIGHT as i32).is_err());
+}
+
+#[test]
+fn accent_analysis_uses_the_real_active_tab_bounds_not_window_percentages() {
+    let mut rgba = fixture_rgba();
+    fill_rect(&mut rgba, 300, 1_000, 70, 72, [34, 34, 34, 255]);
+    fill_rect(&mut rgba, 40, 240, 220, 222, [96, 180, 220, 255]);
+    let region = PixelRegion::new(40, 240, 190, 223);
+
+    assert!(analyze_rgba(&rgba, WIDTH as i32, HEIGHT as i32).is_err());
+    let evidence = analyze_rgba_in_region(&rgba, WIDTH as i32, HEIGHT as i32, region).unwrap();
+    assert_eq!(evidence.focus_or_selection_thickness_px, 2);
 }
 
 fn fixture_rgba() -> Vec<u8> {
