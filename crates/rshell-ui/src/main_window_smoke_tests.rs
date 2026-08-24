@@ -5,8 +5,8 @@ use rshell_core::{
 };
 
 use crate::{
-    MainWindowMsg,
-    main_window_smoke_evidence::selection_frame_confirms,
+    MainWindowMsg, SmokeTerminalEvidence,
+    main_window_smoke_evidence::{selection_frame_confirms, track_tui_transition},
     main_window_smoke_resize::prepared_smoke_resize,
     main_window_smoke_terminal_effects::{
         frame_contains_text, has_new_marker_occurrence, marker_occurrences,
@@ -95,6 +95,29 @@ fn paste_effect_requires_a_new_stable_marker_occurrence_after_command_echo() {
         marker,
         &baseline
     ));
+}
+
+#[test]
+fn tui_evidence_requires_an_alternate_screen_transition_on_one_session() {
+    let local = SessionId::new();
+    let unrelated = SessionId::new();
+    let mut terminal = SmokeTerminalEvidence::default();
+    let mut tracked = None;
+
+    track_tui_transition(&mut terminal, &mut tracked, local, false);
+    assert!(!terminal.tui_entered);
+    assert!(!terminal.tui_exited);
+
+    track_tui_transition(&mut terminal, &mut tracked, local, true);
+    assert_eq!(tracked, Some(local));
+    assert!(terminal.tui_entered);
+    assert!(!terminal.tui_exited);
+
+    track_tui_transition(&mut terminal, &mut tracked, unrelated, false);
+    assert!(!terminal.tui_exited);
+
+    track_tui_transition(&mut terminal, &mut tracked, local, false);
+    assert!(terminal.tui_exited);
 }
 
 fn smoke_frame(rows: &[(i64, &str)]) -> RenderFrame {

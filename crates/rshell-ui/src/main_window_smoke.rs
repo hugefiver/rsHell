@@ -56,6 +56,7 @@ pub(crate) struct SmokeUiState {
     pub pending_paste: Option<PendingPaste>,
     pub prepared_color: Option<PreparedColor>,
     pub pending_color: Option<PendingColor>,
+    pub tui_session: Option<SessionId>,
     pub pending_reconnect: Option<PendingReconnect>,
     pub import_expectation: Option<SmokeImportExpectation>,
     pub import_source: Option<ImportSourceKind>,

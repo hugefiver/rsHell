@@ -41,16 +41,20 @@ impl MainWindow {
             .active_tab
             .or(self.view_model.workspace.active_tab);
         let active_session = active_session(&self.view_model, active_tab);
-        let latest_frame = active_session
+        let active_frame = active_session
             .and_then(|session| self.view_model.latest_frames.get(&session))
-            .map(|frame| SmokeFrameEvidence {
-                generation: frame.generation,
-                cols: frame.size.cols,
-                rows: frame.size.rows,
-                pixel_width: frame.size.pixel_width,
-                pixel_height: frame.size.pixel_height,
-                dpi: frame.size.dpi,
-            });
+            .cloned();
+        if let (Some(session), Some(frame)) = (active_session, active_frame.as_deref()) {
+            self.observe_smoke_tui_frame(session, frame);
+        }
+        let latest_frame = active_frame.as_deref().map(|frame| SmokeFrameEvidence {
+            generation: frame.generation,
+            cols: frame.size.cols,
+            rows: frame.size.rows,
+            pixel_width: frame.size.pixel_width,
+            pixel_height: frame.size.pixel_height,
+            dpi: frame.size.dpi,
+        });
         SmokeObservation {
             window_realized: self.smoke_state.window_realized,
             editor_open: self.smoke_state.editor_open,

@@ -150,11 +150,7 @@ impl MainWindow {
     fn observe_smoke_frame(&mut self, session: SessionId, frame: &RenderFrame) {
         self.observe_smoke_terminal_effect_frame(session, frame);
         self.observe_smoke_resize_frame(session, frame);
-        if frame.alternate_screen {
-            self.smoke_state.terminal.tui_entered = true;
-        } else if self.smoke_state.terminal.tui_entered {
-            self.smoke_state.terminal.tui_exited = true;
-        }
+        self.observe_smoke_tui_frame(session, frame);
         if let Some(pending) = self.smoke_state.pending_selection.as_ref()
             && selection_frame_confirms(pending.session, session, frame)
         {
@@ -166,6 +162,29 @@ impl MainWindow {
             }
             self.smoke_state.pending_selection = None;
         }
+    }
+
+    pub(crate) fn observe_smoke_tui_frame(&mut self, session: SessionId, frame: &RenderFrame) {
+        track_tui_transition(
+            &mut self.smoke_state.terminal,
+            &mut self.smoke_state.tui_session,
+            session,
+            frame.alternate_screen,
+        );
+    }
+}
+
+pub(crate) fn track_tui_transition(
+    terminal: &mut crate::SmokeTerminalEvidence,
+    tui_session: &mut Option<SessionId>,
+    session: SessionId,
+    alternate_screen: bool,
+) {
+    if alternate_screen && tui_session.is_none_or(|tracked| tracked == session) {
+        *tui_session = Some(session);
+        terminal.tui_entered = true;
+    } else if !alternate_screen && *tui_session == Some(session) && terminal.tui_entered {
+        terminal.tui_exited = true;
     }
 }
 
