@@ -344,7 +344,8 @@ fn macos_gui_preserves_the_keychain_home_without_reading_user_ssh_config() {
     let script = include_str!("../scripts/qa/p0-smoke.ps1");
 
     assert!(script.contains("if ($platformIsMacOS) {"));
-    assert!(script.contains("$macosHome = [string]$guiEnvironment.HOME"));
+    assert!(script.contains("$macosHome = [string]$env:HOME"));
+    assert!(script.contains("$guiEnvironment.HOME = $macosHome"));
     assert!(script.contains("The macOS keychain home is unavailable."));
     assert!(script.contains("$guiEnvironment.RSHELL_P0_SSH_BIN = $ssh"));
     assert!(script.contains("$guiEnvironment.RSHELL_SSH = $macosSshWrapper"));

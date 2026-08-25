@@ -1307,11 +1307,12 @@ try {
         $guiHome = Join-Path $tempRoot "gui-home"
         if ($platformIsMacOS) {
             # SecKeychainCopyDefault resolves through the login HOME preferences.
-            $macosHome = [string]$guiEnvironment.HOME
+            $macosHome = [string]$env:HOME
             if ([string]::IsNullOrWhiteSpace($macosHome) -or
                 (-not (Test-Path -LiteralPath $macosHome -PathType Container))) {
                 throw "The macOS keychain home is unavailable."
             }
+            $guiEnvironment.HOME = $macosHome
         }
         else {
             [void](New-Item -ItemType Directory -Path (Join-Path $guiHome ".ssh") -Force)
