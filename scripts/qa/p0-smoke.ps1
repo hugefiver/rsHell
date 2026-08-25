@@ -1177,8 +1177,6 @@ try {
         Add-Action $actions ([ordered]@{ action = "wait_window_realized" })
         Set-ActionBinding -Surface "local_terminal" -Connection "local"
         Add-Action $actions ([ordered]@{ action = "new_tab" })
-        Add-Action $actions ([ordered]@{ action = "wait_frame_contains"; text = "PowerShell " })
-        Add-Action $actions ([ordered]@{ action = "send_terminal_text"; text = "`$p0Ready = -join [char[]](80,48,45,76,79,67,65,76,45,82,69,65,68,89); Write-Output `$p0Ready`r" })
         Add-Action $actions ([ordered]@{ action = "wait_frame_contains"; text = "P0-LOCAL-READY" })
         Add-Action $actions ([ordered]@{
                 action = "send_terminal_text"
@@ -1304,6 +1302,24 @@ try {
         $guiEnvironment.USERPROFILE = $guiHome
         $guiEnvironment.CARGO_HOME = $cargoHome
         if ($rustupHome) { $guiEnvironment.RUSTUP_HOME = $rustupHome }
+        $shellProfileOutput = Join-Path $artifactRoot "$stem-shell-profile-path.stdout.log"
+        [void](Invoke-CapturedChild `
+                -Name "shell-profile-path" `
+                -FilePath $pwsh `
+                -Arguments @("-NoLogo", "-NoProfile", "-NonInteractive", "-Command", '[Console]::Out.Write($PROFILE.CurrentUserCurrentHost)') `
+                -Environment $guiEnvironment `
+                -WorkingDirectory $tempRoot `
+                -StdoutPath $shellProfileOutput `
+                -StderrPath (Join-Path $artifactRoot "$stem-shell-profile-path.stderr.log") `
+                -TimeoutSeconds 30)
+        $shellProfilePath = [System.IO.Path]::GetFullPath((Get-Content -LiteralPath $shellProfileOutput -Raw).Trim())
+        $guiHomePrefix = [System.IO.Path]::GetFullPath($guiHome).TrimEnd('\', '/') + [System.IO.Path]::DirectorySeparatorChar
+        $profileComparison = if ($platformIsWindows) { [System.StringComparison]::OrdinalIgnoreCase } else { [System.StringComparison]::Ordinal }
+        if (-not $shellProfilePath.StartsWith($guiHomePrefix, $profileComparison)) {
+            throw "The isolated PowerShell profile path escaped the temporary GUI home."
+        }
+        [void](New-Item -ItemType Directory -Path (Split-Path -Parent $shellProfilePath) -Force)
+        Write-Utf8File $shellProfilePath "[Console]::WriteLine('P0-LOCAL-READY')"
         $guiReportTemp = Join-Path $tempRoot "production-p0-report.json"
         $guiPngTemp = [System.IO.Path]::ChangeExtension($guiReportTemp, ".png")
         $guiExit = Invoke-CapturedChild `
