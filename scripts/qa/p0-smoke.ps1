@@ -1324,12 +1324,7 @@ try {
             throw "The isolated PowerShell profile path escaped the temporary GUI home."
         }
         [void](New-Item -ItemType Directory -Path (Split-Path -Parent $shellProfilePath) -Force)
-        $shellProfile = @'
-Register-EngineEvent -SourceIdentifier PowerShell.OnIdle -MaxTriggerCount 1 -Action {
-    [Console]::WriteLine('P0-LOCAL-READY')
-} | Out-Null
-function global:prompt { 'P0> ' }
-'@
+        $shellProfile = "function global:prompt { 'P0-LOCAL-READY' + [Environment]::NewLine + 'P0> ' }"
         Write-Utf8File $shellProfilePath $shellProfile
         $guiReportTemp = Join-Path $tempRoot "production-p0-report.json"
         $guiPngTemp = [System.IO.Path]::ChangeExtension($guiReportTemp, ".png")

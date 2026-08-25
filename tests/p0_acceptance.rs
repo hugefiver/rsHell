@@ -292,15 +292,17 @@ fn local_shell_readiness_uses_real_io_instead_of_a_platform_prompt() {
     assert!(script.contains("-Name \"shell-profile-path\""));
     assert!(script.contains("$PROFILE.CurrentUserCurrentHost"));
     assert!(script.contains("$guiEnvironment.XDG_CONFIG_HOME = $guiXdgConfig"));
-    assert!(script.contains("PowerShell.OnIdle"));
-    assert!(script.contains("-MaxTriggerCount 1"));
-    assert!(!script.contains("$global:RshellP0Ready"));
-    assert!(script.contains("[Console]::WriteLine('P0-LOCAL-READY')"));
-    assert!(script.contains("function global:prompt { 'P0> ' }"));
+    assert!(!script.contains("PowerShell.OnIdle"));
+    assert!(!script.contains("-MaxTriggerCount 1"));
+    assert!(
+        script.contains(
+            "function global:prompt { 'P0-LOCAL-READY' + [Environment]::NewLine + 'P0> ' }"
+        )
+    );
     assert!(script.contains("text = \"P0-LOCAL-READY\""));
     let ready = script
         .find("text = \"P0-LOCAL-READY\"")
-        .expect("OnIdle ready action");
+        .expect("prompt ready action");
     let prompt = script
         .find("text = \"P0> \"")
         .expect("rendered prompt readiness action");
