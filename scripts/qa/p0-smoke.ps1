@@ -674,7 +674,9 @@ $rustupHome = if (-not [string]::IsNullOrWhiteSpace($env:RUSTUP_HOME)) {
 }
 $sshKeygen = $null
 $sshAdd = $null
+$ssh = $null
 if ($needsSsh) {
+    $ssh = (Get-Command -Name "ssh" -ErrorAction Stop).Source
     $sshKeygen = (Get-Command -Name "ssh-keygen" -ErrorAction Stop).Source
     $sshAdd = (Get-Command -Name "ssh-add" -ErrorAction Stop).Source
 }
@@ -1303,9 +1305,19 @@ try {
         $guiEnvironment = @{}
         foreach ($entry in $childEnvironment.GetEnumerator()) { $guiEnvironment[$entry.Key] = $entry.Value }
         $guiHome = Join-Path $tempRoot "gui-home"
-        [void](New-Item -ItemType Directory -Path (Join-Path $guiHome ".ssh") -Force)
-        $guiEnvironment.HOME = $guiHome
-        $guiEnvironment.USERPROFILE = $guiHome
+        if ($platformIsMacOS) {
+            # SecKeychainCopyDefault resolves through the login HOME preferences.
+            $macosHome = [string]$guiEnvironment.HOME
+            if ([string]::IsNullOrWhiteSpace($macosHome) -or
+                (-not (Test-Path -LiteralPath $macosHome -PathType Container))) {
+                throw "The macOS keychain home is unavailable."
+            }
+        }
+        else {
+            [void](New-Item -ItemType Directory -Path (Join-Path $guiHome ".ssh") -Force)
+            $guiEnvironment.HOME = $guiHome
+            $guiEnvironment.USERPROFILE = $guiHome
+        }
         if (-not $platformIsWindows) {
             $guiXdgConfig = Join-Path $guiHome ".config"
             [void](New-Item -ItemType Directory -Path $guiXdgConfig -Force)
@@ -1314,24 +1326,23 @@ try {
         $guiEnvironment.CARGO_HOME = $cargoHome
         $guiEnvironment.RSHELL_QA_SMOKE = "1"
         if ($rustupHome) { $guiEnvironment.RUSTUP_HOME = $rustupHome }
-        $shellProfileOutput = Join-Path $artifactRoot "$stem-shell-profile-path.stdout.log"
-        [void](Invoke-CapturedChild `
-                -Name "shell-profile-path" `
-                -FilePath $pwsh `
-                -Arguments @("-NoLogo", "-NoProfile", "-NonInteractive", "-Command", '[Console]::Out.Write($PROFILE.CurrentUserCurrentHost)') `
-                -Environment $guiEnvironment `
-                -WorkingDirectory $tempRoot `
-                -StdoutPath $shellProfileOutput `
-                -StderrPath (Join-Path $artifactRoot "$stem-shell-profile-path.stderr.log") `
-                -TimeoutSeconds 30)
-        $shellProfilePath = [System.IO.Path]::GetFullPath((Get-Content -LiteralPath $shellProfileOutput -Raw).Trim())
-        $guiHomePrefix = [System.IO.Path]::GetFullPath($guiHome).TrimEnd('\', '/') + [System.IO.Path]::DirectorySeparatorChar
-        $profileComparison = if ($platformIsWindows) { [System.StringComparison]::OrdinalIgnoreCase } else { [System.StringComparison]::Ordinal }
-        if (-not $shellProfilePath.StartsWith($guiHomePrefix, $profileComparison)) {
-            throw "The isolated PowerShell profile path escaped the temporary GUI home."
-        }
-        $promptFunction = "function global:prompt { 'P0-LOCAL-READY' + [Environment]::NewLine + 'P0> ' }"
         if ($platformIsWindows) {
+            $shellProfileOutput = Join-Path $artifactRoot "$stem-shell-profile-path.stdout.log"
+            [void](Invoke-CapturedChild `
+                    -Name "shell-profile-path" `
+                    -FilePath $pwsh `
+                    -Arguments @("-NoLogo", "-NoProfile", "-NonInteractive", "-Command", '[Console]::Out.Write($PROFILE.CurrentUserCurrentHost)') `
+                    -Environment $guiEnvironment `
+                    -WorkingDirectory $tempRoot `
+                    -StdoutPath $shellProfileOutput `
+                    -StderrPath (Join-Path $artifactRoot "$stem-shell-profile-path.stderr.log") `
+                    -TimeoutSeconds 30)
+            $shellProfilePath = [System.IO.Path]::GetFullPath((Get-Content -LiteralPath $shellProfileOutput -Raw).Trim())
+            $guiHomePrefix = [System.IO.Path]::GetFullPath($guiHome).TrimEnd('\', '/') + [System.IO.Path]::DirectorySeparatorChar
+            if (-not $shellProfilePath.StartsWith($guiHomePrefix, [System.StringComparison]::OrdinalIgnoreCase)) {
+                throw "The isolated PowerShell profile path escaped the temporary GUI home."
+            }
+            $promptFunction = "function global:prompt { 'P0-LOCAL-READY' + [Environment]::NewLine + 'P0> ' }"
             [void](New-Item -ItemType Directory -Path (Split-Path -Parent $shellProfilePath) -Force)
             Write-Utf8File $shellProfilePath $promptFunction
         }
@@ -1374,6 +1385,18 @@ try {
             [System.IO.File]::SetUnixFileMode($unixShellWrapper, $unixMode)
             $guiEnvironment.RSHELL_PWSH_BIN = $pwsh
             $guiEnvironment.RSHELL_SHELL = $unixShellWrapper
+            if ($platformIsMacOS) {
+                $macosSshWrapper = Join-Path $tempRoot "rshell-ssh"
+                $macosSshBody = @(
+                    '#!/bin/sh'
+                    'exec "$RSHELL_P0_SSH_BIN" -F /dev/null "$@"'
+                    ''
+                ) -join [Environment]::NewLine
+                Write-Utf8File $macosSshWrapper $macosSshBody
+                [System.IO.File]::SetUnixFileMode($macosSshWrapper, $unixMode)
+                $guiEnvironment.RSHELL_P0_SSH_BIN = $ssh
+                $guiEnvironment.RSHELL_SSH = $macosSshWrapper
+            }
         }
         $guiReportTemp = Join-Path $tempRoot "production-p0-report.json"
         $guiPngTemp = [System.IO.Path]::ChangeExtension($guiReportTemp, ".png")

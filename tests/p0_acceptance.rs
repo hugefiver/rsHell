@@ -340,6 +340,21 @@ fn local_shell_readiness_uses_real_io_instead_of_a_platform_prompt() {
 }
 
 #[test]
+fn macos_gui_preserves_the_keychain_home_without_reading_user_ssh_config() {
+    let script = include_str!("../scripts/qa/p0-smoke.ps1");
+
+    assert!(script.contains("if ($platformIsMacOS) {"));
+    assert!(script.contains("$macosHome = [string]$guiEnvironment.HOME"));
+    assert!(script.contains("The macOS keychain home is unavailable."));
+    assert!(script.contains("$guiEnvironment.RSHELL_P0_SSH_BIN = $ssh"));
+    assert!(script.contains("$guiEnvironment.RSHELL_SSH = $macosSshWrapper"));
+    assert!(script.contains("exec \"$RSHELL_P0_SSH_BIN\" -F /dev/null \"$@\""));
+    assert!(!script.contains(
+        "$guiEnvironment.HOME = $guiHome\n        $guiEnvironment.USERPROFILE = $guiHome"
+    ));
+}
+
+#[test]
 fn production_p0_timeout_logs_redacted_action_and_cleanup_boundaries() {
     let runtime = include_str!("../src/p0_smoke_runtime.rs");
     let state = include_str!("../crates/rshell-ui/src/smoke_driver_state.rs");

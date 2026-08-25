@@ -356,9 +356,11 @@ foreach ($forbidden in @('cargo\.exe', 'pwsh\.exe', 'C:\\gtk-build', 'C:\\Window
 Assert-Exactly -Text $p0 -Pattern '"\.exe"' -Expected 1 -Label "P0 Windows executable suffix" -Failures $failures
 foreach ($required in @(
         '\$platformIsWindows', '\$platformIsLinux', '\$platformIsMacOS', 'Get-Command -Name "cargo" -ErrorAction Stop',
-        'Get-Command -Name "pwsh" -ErrorAction Stop', 'Get-Command -Name "ssh-keygen" -ErrorAction Stop',
+        'Get-Command -Name "pwsh" -ErrorAction Stop', 'Get-Command -Name "ssh" -ErrorAction Stop',
+        'Get-Command -Name "ssh-keygen" -ErrorAction Stop',
         'Get-Command -Name "ssh-add" -ErrorAction Stop', 'RSHELL_SHELL', '\[System\.IO\.Path\]::GetTempPath\(\)',
-        '\[System\.IO\.Path\]::PathSeparator', 'RSHELL_GTK_ROOT'
+        '\[System\.IO\.Path\]::PathSeparator', 'RSHELL_GTK_ROOT', 'The macOS keychain home is unavailable',
+        'RSHELL_P0_SSH_BIN', '-F /dev/null'
     )) {
     Assert-Contains -Text $p0 -Pattern $required -Label "P0 cross-platform requirement '$required'" -Failures $failures
 }
