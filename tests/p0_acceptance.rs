@@ -292,6 +292,14 @@ fn local_shell_readiness_uses_real_io_instead_of_a_platform_prompt() {
     assert!(script.contains("-Name \"shell-profile-path\""));
     assert!(script.contains("$PROFILE.CurrentUserCurrentHost"));
     assert!(script.contains("$guiEnvironment.XDG_CONFIG_HOME = $guiXdgConfig"));
+    assert!(script.contains("$guiEnvironment.RSHELL_PWSH_BIN = $pwsh"));
+    assert!(script.contains("$guiEnvironment.RSHELL_PWSH_SETUP = $shellSetup"));
+    assert!(script.contains("$guiEnvironment.RSHELL_SHELL = $unixShellWrapper"));
+    assert!(script.contains(
+        "exec \"$RSHELL_PWSH_BIN\" -NoLogo -NoProfile -NoExit -Command \"$RSHELL_PWSH_SETUP\""
+    ));
+    assert!(script.contains("Remove-Module PSReadLine -ErrorAction SilentlyContinue"));
+    assert!(script.contains("[System.IO.File]::SetUnixFileMode"));
     assert!(!script.contains("PowerShell.OnIdle"));
     assert!(!script.contains("-MaxTriggerCount 1"));
     assert!(

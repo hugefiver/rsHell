@@ -1323,9 +1323,22 @@ try {
         if (-not $shellProfilePath.StartsWith($guiHomePrefix, $profileComparison)) {
             throw "The isolated PowerShell profile path escaped the temporary GUI home."
         }
-        [void](New-Item -ItemType Directory -Path (Split-Path -Parent $shellProfilePath) -Force)
-        $shellProfile = "function global:prompt { 'P0-LOCAL-READY' + [Environment]::NewLine + 'P0> ' }"
-        Write-Utf8File $shellProfilePath $shellProfile
+        $promptFunction = "function global:prompt { 'P0-LOCAL-READY' + [Environment]::NewLine + 'P0> ' }"
+        if ($platformIsWindows) {
+            [void](New-Item -ItemType Directory -Path (Split-Path -Parent $shellProfilePath) -Force)
+            Write-Utf8File $shellProfilePath $promptFunction
+        }
+        else {
+            $shellSetup = "Remove-Module PSReadLine -ErrorAction SilentlyContinue; $promptFunction"
+            $unixShellWrapper = Join-Path $tempRoot "rshell-pwsh"
+            $unixShellBody = '#!/bin/sh' + [Environment]::NewLine + 'exec "$RSHELL_PWSH_BIN" -NoLogo -NoProfile -NoExit -Command "$RSHELL_PWSH_SETUP"' + [Environment]::NewLine
+            Write-Utf8File $unixShellWrapper $unixShellBody
+            $unixMode = [System.IO.UnixFileMode]::UserRead -bor [System.IO.UnixFileMode]::UserWrite -bor [System.IO.UnixFileMode]::UserExecute
+            [System.IO.File]::SetUnixFileMode($unixShellWrapper, $unixMode)
+            $guiEnvironment.RSHELL_PWSH_BIN = $pwsh
+            $guiEnvironment.RSHELL_PWSH_SETUP = $shellSetup
+            $guiEnvironment.RSHELL_SHELL = $unixShellWrapper
+        }
         $guiReportTemp = Join-Path $tempRoot "production-p0-report.json"
         $guiPngTemp = [System.IO.Path]::ChangeExtension($guiReportTemp, ".png")
         $guiExit = Invoke-CapturedChild `
