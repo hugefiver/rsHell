@@ -11,7 +11,7 @@ use super::local_reader::ReaderEvent;
 const CHILD_POLL_INTERVAL: Duration = Duration::from_millis(10);
 const SHUTDOWN_GRACE: Duration = Duration::from_millis(250);
 const FORCE_EXIT_GRACE: Duration = Duration::from_millis(250);
-const READER_JOIN_GRACE: Duration = Duration::from_millis(250);
+const READER_JOIN_GRACE: Duration = Duration::from_millis(500);
 
 pub(super) struct LocalRuntime {
     master: Option<Box<dyn MasterPty>>,
@@ -119,57 +119,48 @@ impl LocalRuntime {
         self.reader_rx.close();
         self.writer.take();
 
-        let mut failed = false;
         let deadline = tokio::time::Instant::now() + SHUTDOWN_GRACE;
-        let mut exited = match self.child_has_exited() {
-            Ok(exited) => exited,
-            Err(_) => {
-                failed = true;
-                false
-            }
-        };
+        let mut exited = self.child_has_exited().unwrap_or(false);
         while !exited && tokio::time::Instant::now() < deadline {
             tokio::time::sleep(CHILD_POLL_INTERVAL).await;
             match self.child_has_exited() {
                 Ok(child_exited) => exited = child_exited,
-                Err(_) => {
-                    failed = true;
-                    break;
-                }
+                Err(_) => break,
             }
         }
         if !exited {
             #[cfg(unix)]
             {
-                failed |= self.signal_process_group(libc::SIGHUP).is_err();
+                let _ = self.signal_process_group(libc::SIGHUP);
             }
             if let Some(child) = self.child.as_mut() {
-                failed |= child.kill().is_err();
+                let _ = child.kill();
             }
             let deadline = tokio::time::Instant::now() + FORCE_EXIT_GRACE;
             while !exited && tokio::time::Instant::now() < deadline {
                 tokio::time::sleep(CHILD_POLL_INTERVAL).await;
                 match self.child_has_exited() {
                     Ok(child_exited) => exited = child_exited,
-                    Err(_) => {
-                        failed = true;
-                        break;
-                    }
+                    Err(_) => break,
                 }
             }
-            failed |= !exited;
         }
 
         #[cfg(unix)]
         {
-            failed |= self.signal_process_group(libc::SIGKILL).is_err();
+            let _ = self.signal_process_group(libc::SIGKILL);
         }
 
         self.master.take();
-        failed |= self.join_reader_bounded().await.is_err();
+        let reader_joined = self.join_reader_bounded().await.is_ok();
+        let child_exited = exited || self.child_has_exited().unwrap_or(false);
         self.child.take();
         self.shut_down = true;
-        if failed { Err(pty_error()) } else { Ok(()) }
+        if child_exited && reader_joined {
+            Ok(())
+        } else {
+            Err(pty_error())
+        }
     }
 
     fn handle_reader_event(
