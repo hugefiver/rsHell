@@ -289,6 +289,7 @@ fn local_shell_readiness_uses_real_io_instead_of_a_platform_prompt() {
     assert!(script.contains("Write-Output P0-LOCAL-READY"));
     assert!(script.contains("text = \"P0-LOCAL-READY\""));
     assert!(!script.contains("text = \"PS \""));
+    assert!(!script.contains("Set-PSReadLineOption"));
 }
 
 #[test]

@@ -1181,7 +1181,7 @@ try {
         Add-Action $actions ([ordered]@{ action = "wait_frame_contains"; text = "P0-LOCAL-READY" })
         Add-Action $actions ([ordered]@{
                 action = "send_terminal_text"
-                text = "Set-PSReadLineOption -HistorySaveStyle SaveNothing; [Console]::Write(([char]27).ToString() + '[31mp0-color' + ([char]27).ToString() + '[0m' + [Environment]::NewLine); Write-Output 'p0-wide-界'`r"
+                text = "[Console]::Write(([char]27).ToString() + '[31mp0-color' + ([char]27).ToString() + '[0m' + [Environment]::NewLine); Write-Output 'p0-wide-界'`r"
                 expected_color_marker = "p0-color"
             })
         Add-Action $actions ([ordered]@{ action = "send_terminal_text"; text = "`$p0Marker = -join [char[]](112,48,45,112,97,115,116,101,45,101,102,102,101,99,116); `$null = Read-Host -AsSecureString -Prompt 'p0-paste-prompt'; Write-Output `$p0Marker`r" })
