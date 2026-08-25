@@ -340,6 +340,27 @@ fn local_shell_readiness_uses_real_io_instead_of_a_platform_prompt() {
 }
 
 #[test]
+fn production_p0_timeout_logs_redacted_action_and_cleanup_boundaries() {
+    let runtime = include_str!("../src/p0_smoke_runtime.rs");
+    let state = include_str!("../crates/rshell-ui/src/smoke_driver_state.rs");
+    let failure = include_str!("../crates/rshell-ui/src/smoke_driver_failure.rs");
+
+    for marker in [
+        "P0_SMOKE gtk_timeout",
+        "P0_SMOKE cleanup_start",
+        "P0_SMOKE cleanup_complete",
+    ] {
+        assert!(
+            runtime.contains(marker),
+            "missing runtime boundary marker: {marker}"
+        );
+    }
+    assert!(state.contains("SmokeProgress::Started"));
+    assert!(state.contains("SmokeProgress::Passed"));
+    assert!(failure.contains("SmokeProgress::Failed"));
+}
+
+#[test]
 fn powershell_harness_has_a_cross_platform_tool_and_shell_contract() {
     let harness = include_str!("../scripts/qa/p0-smoke.ps1");
 

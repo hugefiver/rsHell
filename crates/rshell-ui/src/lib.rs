@@ -84,6 +84,9 @@ mod smoke_driver_completion_tests;
 mod smoke_driver_evidence;
 mod smoke_driver_failure;
 mod smoke_driver_observation;
+mod smoke_driver_progress;
+#[cfg(test)]
+mod smoke_driver_progress_tests;
 mod smoke_driver_report;
 mod smoke_driver_routing;
 mod smoke_driver_sequences;

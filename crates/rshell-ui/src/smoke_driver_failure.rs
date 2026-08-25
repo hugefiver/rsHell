@@ -2,7 +2,9 @@ use std::time::Instant;
 
 use crate::{
     SmokeAction, SmokeFailure, SmokeFieldStatus, SmokeScenarioState, SmokeStepState,
-    smoke_driver_observation::SmokeObservation, smoke_driver_state::SmokeDriver,
+    smoke_driver_observation::SmokeObservation,
+    smoke_driver_progress::{SmokeProgress, emit_progress},
+    smoke_driver_state::SmokeDriver,
 };
 
 impl SmokeDriver {
@@ -18,15 +20,19 @@ impl SmokeDriver {
                 current.index,
                 now.duration_since(current.started),
                 matches!(&current.action, SmokeAction::SetConnectionField(_)),
+                current.action.kind(),
             )
         });
+        if let Some((index, _, _, action)) = failed_step {
+            emit_progress(SmokeProgress::Failed, index, action, Some(code));
+        }
         self.report.mutate(|value| {
             value.state = SmokeScenarioState::Failed;
             value.failure = Some(SmokeFailure {
-                step: failed_step.map(|(index, _, _)| index),
+                step: failed_step.map(|(index, _, _, _)| index),
                 code,
             });
-            if let Some((index, elapsed, is_field)) = failed_step {
+            if let Some((index, elapsed, is_field, _)) = failed_step {
                 let report = &mut value.steps[index];
                 report.state = SmokeStepState::Failed;
                 report.elapsed = elapsed;

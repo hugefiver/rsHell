@@ -7,6 +7,7 @@ use crate::{
     SmokeScenarioState, SmokeStepState,
     smoke_driver_completion::{CompletionContext, action_is_complete},
     smoke_driver_observation::SmokeObservation,
+    smoke_driver_progress::{SmokeProgress, emit_progress},
     smoke_driver_routing::action_route_ready,
 };
 
@@ -78,9 +79,6 @@ impl SmokeDriver {
         }
     }
 
-    pub(crate) fn is_active(&self) -> bool {
-        !self.complete
-    }
     pub(crate) fn selected_connection(&self) -> Option<ConnectionId> {
         self.selected_connection
     }
@@ -109,14 +107,6 @@ impl SmokeDriver {
                 submits,
             });
         }
-    }
-
-    pub(crate) fn record_png_path(&self, path: std::path::PathBuf) {
-        self.report.mutate(|report| report.png_path = Some(path));
-    }
-
-    pub(crate) fn record_png_error(&self, error: &'static str) {
-        self.report.mutate(|report| report.png_error = Some(error));
     }
 
     pub(crate) fn current_binding_request(
@@ -226,11 +216,18 @@ impl SmokeDriver {
         });
         self.report
             .mutate(|value| value.steps[index].state = SmokeStepState::Running);
+        emit_progress(SmokeProgress::Started, index, action.kind(), None);
         routed.then_some(SmokeDecision::Route(action))
     }
 
     fn pass(&mut self, observed: &SmokeObservation, now: Instant) {
         let current = self.current.take().expect("current step checked");
+        emit_progress(
+            SmokeProgress::Passed,
+            current.index,
+            current.action.kind(),
+            None,
+        );
         if let Some(route) = current.auth_route.filter(|route| route.submits) {
             self.last_submitted_interaction = Some(route.interaction);
         }

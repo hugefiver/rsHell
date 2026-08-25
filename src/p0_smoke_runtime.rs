@@ -66,7 +66,9 @@ pub(crate) fn run_p0(
     let (init, report) =
         MainWindowInit::from_application(&application.application).with_smoke_driver(driver);
     let gui_result = run_gtk_application(init, Some(timeout), true);
+    eprintln!("P0_SMOKE cleanup_start");
     let p0_shutdown = runtime.block_on(application.shutdown_p0(temporary_root, secret_environment));
+    eprintln!("P0_SMOKE cleanup_complete");
     let result = p0_shutdown
         .error
         .map_or(gui_result, |error| Err(RootError::Bootstrap(error)));
@@ -112,6 +114,7 @@ fn run_gtk_application(
         if let Some(timeout) = timeout {
             let timed_out = Rc::clone(&timed_out);
             relm4::gtk::glib::timeout_add_local_once(timeout, move || {
+                eprintln!("P0_SMOKE gtk_timeout");
                 timed_out.set(true);
                 relm4::main_application().quit();
             });
