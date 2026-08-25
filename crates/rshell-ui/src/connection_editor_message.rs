@@ -1,8 +1,8 @@
 use std::{collections::BTreeSet, fmt};
 
 use rshell_core::{
-    AuthenticationKind, ConnectionId, ConnectionProfile, GroupId, TerminalProfile, TransportKind,
-    UiCommand, UiPortError,
+    AppFailureCategory, AuthenticationKind, ConnectionId, ConnectionProfile, GroupId,
+    TerminalProfile, TransportKind, UiCommand, UiPortError,
 };
 
 use crate::TerminalOverrideKey;
@@ -44,7 +44,7 @@ pub enum ConnectionEditorMsg {
     Cancel,
     CommandAccepted,
     CommandRejected(UiPortError),
-    OperationFailed(&'static str),
+    OperationFailed(AppFailureCategory, &'static str),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -135,8 +135,9 @@ impl fmt::Debug for ConnectionEditorMsg {
                 .debug_tuple("CommandRejected")
                 .field(error)
                 .finish(),
-            Self::OperationFailed(context) => formatter
+            Self::OperationFailed(category, context) => formatter
                 .debug_tuple("OperationFailed")
+                .field(category)
                 .field(context)
                 .finish(),
         }

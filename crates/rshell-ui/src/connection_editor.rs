@@ -152,9 +152,9 @@ impl SimpleComponent for ConnectionEditor {
                 self.pending = false;
                 self.reject_command_port(error);
             }
-            ConnectionEditorMsg::OperationFailed(context) => {
+            ConnectionEditorMsg::OperationFailed(category, context) => {
                 self.pending = false;
-                self.reject_operation(context);
+                self.reject_operation(category, context);
             }
         }
         self.revision = self.revision.saturating_add(1);

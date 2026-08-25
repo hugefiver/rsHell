@@ -1,4 +1,4 @@
-use rshell_core::UiPortError;
+use rshell_core::{AppFailureCategory, UiPortError};
 
 use crate::{ConnectionEditor, EditorValidationError};
 
@@ -7,7 +7,7 @@ pub(crate) enum EditorRejection {
     OverrideInput,
     Validation(EditorValidationError),
     CommandPort(UiPortError),
-    Operation,
+    Operation(AppFailureCategory),
 }
 
 pub(crate) fn rejection_line(rejection: EditorRejection) -> String {
@@ -16,7 +16,7 @@ pub(crate) fn rejection_line(rejection: EditorRejection) -> String {
         EditorRejection::Validation(error) => ("validation", validation_code(error)),
         EditorRejection::CommandPort(UiPortError::Busy) => ("command_port", "busy"),
         EditorRejection::CommandPort(UiPortError::Closed) => ("command_port", "closed"),
-        EditorRejection::Operation => ("application", "operation_failed"),
+        EditorRejection::Operation(category) => ("application", application_code(category)),
     };
     format!("P0_EDITOR source={source} code={code}")
 }
@@ -34,8 +34,8 @@ impl ConnectionEditor {
         self.record_rejection(EditorRejection::CommandPort(error), error.to_string());
     }
 
-    pub(crate) fn reject_operation(&mut self, context: &'static str) {
-        self.record_rejection(EditorRejection::Operation, context.into());
+    pub(crate) fn reject_operation(&mut self, category: AppFailureCategory, context: &'static str) {
+        self.record_rejection(EditorRejection::Operation(category), context.into());
     }
 
     fn record_rejection(&mut self, rejection: EditorRejection, display: String) {
@@ -55,5 +55,21 @@ fn validation_code(error: EditorValidationError) -> &'static str {
         EditorValidationError::IdentityRequired => "identity_required",
         EditorValidationError::SecretRequired => "secret_required",
         EditorValidationError::InvalidTerminalOverride(_) => "invalid_terminal_override",
+    }
+}
+
+fn application_code(category: AppFailureCategory) -> &'static str {
+    match category {
+        AppFailureCategory::Validation => "validation",
+        AppFailureCategory::Storage => "storage",
+        AppFailureCategory::Vault => "vault",
+        AppFailureCategory::HostKey => "host_key",
+        AppFailureCategory::Authentication => "authentication",
+        AppFailureCategory::Network => "network",
+        AppFailureCategory::Pty => "pty",
+        AppFailureCategory::Subprocess => "subprocess",
+        AppFailureCategory::Platform => "platform",
+        AppFailureCategory::Backpressure => "backpressure",
+        AppFailureCategory::Crashed => "crashed",
     }
 }

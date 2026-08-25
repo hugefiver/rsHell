@@ -196,7 +196,10 @@ impl MainWindow {
                 self.status = failure.context.into();
                 if self.editor_command_pending {
                     self.editor_command_pending = false;
-                    self.send_editor(ConnectionEditorMsg::OperationFailed(failure.context));
+                    self.send_editor(ConnectionEditorMsg::OperationFailed(
+                        failure.category,
+                        failure.context,
+                    ));
                 }
                 match self.pending_dialog.take() {
                     Some(DialogCommandSource::Settings) => {
