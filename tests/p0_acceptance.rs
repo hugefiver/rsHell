@@ -285,11 +285,16 @@ fn portable_runtime_path_regression_runs_only_on_windows() {
 #[test]
 fn local_shell_readiness_uses_real_io_instead_of_a_platform_prompt() {
     let script = include_str!("../scripts/qa/p0-smoke.ps1");
+    let input = include_str!("../crates/rshell-ui/src/main_window_smoke_input.rs");
 
     assert!(script.contains("-Name \"shell-profile-path\""));
     assert!(script.contains("$PROFILE.CurrentUserCurrentHost"));
     assert!(script.contains("$guiEnvironment.XDG_CONFIG_HOME = $guiXdgConfig"));
-    assert!(script.contains("function global:prompt { 'P0-LOCAL-READY> ' }"));
+    assert!(
+        script.contains(
+            "function global:prompt { 'P0-LOCAL-READY' + [Environment]::NewLine + 'P0> ' }"
+        )
+    );
     assert!(script.contains("text = \"P0-LOCAL-READY\""));
     assert!(!script.contains("[Console]::WriteLine('P0-LOCAL-READY')"));
     assert!(!script.contains("send_terminal_text\"; text = \"Write-Output P0-LOCAL-READY"));
@@ -297,6 +302,9 @@ fn local_shell_readiness_uses_real_io_instead_of_a_platform_prompt() {
     assert!(!script.contains("text = \"PS \""));
     assert!(!script.contains("text = \"PowerShell \""));
     assert!(!script.contains("Set-PSReadLineOption"));
+    assert!(input.contains("split_smoke_terminal_submission"));
+    assert!(input.contains("TerminalViewMsg::Key"));
+    assert!(input.contains("gdk::Key::Return"));
 }
 
 #[test]

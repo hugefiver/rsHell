@@ -2,6 +2,7 @@ use crate::{
     ConnectionEditorMsg, ConnectionSidebarMsg, ImportDialogMsg, InteractionAction,
     InteractionDialogMsg, MainWindow, PaneAction, PaneHostMsg, SessionTabBarMsg, SmokeAction,
     SmokeConnectionField, TerminalViewMsg,
+    main_window_smoke_input::{smoke_terminal_messages, split_smoke_terminal_submission},
 };
 
 impl MainWindow {
@@ -68,10 +69,13 @@ impl MainWindow {
                 text,
                 expected_color_marker,
             } => {
+                let (text, submit) = split_smoke_terminal_submission(text);
                 if let Some(marker) = expected_color_marker {
                     self.prepare_smoke_color(text.clone(), marker);
                 }
-                self.send_terminal(TerminalViewMsg::CommittedText(text))
+                for message in smoke_terminal_messages(text, submit) {
+                    self.send_terminal(message);
+                }
             }
             SmokeAction::PasteTextFromEnv {
                 env_var,
@@ -80,7 +84,9 @@ impl MainWindow {
                 let text = std::env::var(env_var).map_err(|_| "missing_secret_environment")?;
                 self.prepare_smoke_paste(text.clone(), effect_marker)?;
                 self.send_terminal(TerminalViewMsg::PasteText(text));
-                self.send_terminal(TerminalViewMsg::CommittedText("\r".into()));
+                for message in smoke_terminal_messages(String::new(), true) {
+                    self.send_terminal(message);
+                }
             }
             SmokeAction::ResizeTerminal {
                 width,

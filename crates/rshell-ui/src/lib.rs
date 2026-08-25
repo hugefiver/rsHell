@@ -49,6 +49,7 @@ mod main_window_smoke_binding_tests;
 mod main_window_smoke_capture;
 mod main_window_smoke_close;
 mod main_window_smoke_evidence;
+mod main_window_smoke_input;
 mod main_window_smoke_observation;
 mod main_window_smoke_resize;
 mod main_window_smoke_routes;
