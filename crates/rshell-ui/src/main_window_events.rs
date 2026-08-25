@@ -7,6 +7,7 @@ use crate::{
     main_window_commands::CommandSource,
     main_window_dialogs::DialogCommandSource,
     main_window_snapshots::{session_is_bound, update_session_snapshot},
+    session_diagnostics::emit_session_failure,
 };
 
 impl MainWindow {
@@ -103,6 +104,7 @@ impl MainWindow {
             }
             AppEvent::Session { session, event } => {
                 self.observe_smoke_session_event(session, &event);
+                emit_session_failure(&event);
                 if !session_is_bound(&self.view_model, session) {
                     return;
                 }

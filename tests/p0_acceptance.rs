@@ -375,9 +375,14 @@ fn production_p0_timeout_logs_redacted_action_and_cleanup_boundaries() {
     assert!(state.contains("SmokeProgress::Passed"));
     assert!(failure.contains("SmokeProgress::Failed"));
     let editor = include_str!("../crates/rshell-ui/src/connection_editor_diagnostics.rs");
+    let session = include_str!("../crates/rshell-ui/src/session_diagnostics.rs");
+    let events = include_str!("../crates/rshell-ui/src/main_window_events.rs");
     let harness = include_str!("../scripts/qa/p0-smoke.ps1");
     assert!(editor.contains("RSHELL_QA_SMOKE"));
     assert!(editor.contains("P0_EDITOR source="));
+    assert!(session.contains("RSHELL_QA_SMOKE"));
+    assert!(session.contains("P0_SESSION state="));
+    assert!(events.contains("emit_session_failure(&event)"));
     assert!(harness.contains("$guiEnvironment.RSHELL_QA_SMOKE = \"1\""));
 }
 

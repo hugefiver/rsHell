@@ -247,7 +247,7 @@ fn unix_timestamp() -> u64 {
         .map_or(0, |duration| duration.as_secs())
 }
 
-fn failure_label(failure: SessionFailure) -> &'static str {
+pub(crate) fn failure_label(failure: SessionFailure) -> &'static str {
     match failure {
         SessionFailure::Validation => "validation",
         SessionFailure::Storage => "storage",

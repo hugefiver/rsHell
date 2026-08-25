@@ -70,6 +70,9 @@ mod pane_host_render;
 mod pane_host_terminals;
 mod pane_projection;
 mod pane_view_model;
+mod session_diagnostics;
+#[cfg(test)]
+mod session_diagnostics_tests;
 mod session_tab_bar;
 mod settings_view_model;
 mod settings_window;
