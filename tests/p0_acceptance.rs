@@ -298,6 +298,16 @@ fn local_shell_readiness_uses_real_io_instead_of_a_platform_prompt() {
     assert!(script.contains("[Console]::WriteLine('P0-LOCAL-READY')"));
     assert!(script.contains("function global:prompt { 'P0> ' }"));
     assert!(script.contains("text = \"P0-LOCAL-READY\""));
+    let ready = script
+        .find("text = \"P0-LOCAL-READY\"")
+        .expect("OnIdle ready action");
+    let prompt = script
+        .find("text = \"P0> \"")
+        .expect("rendered prompt readiness action");
+    let color = script
+        .find("expected_color_marker = \"p0-color\"")
+        .expect("first ANSI color action");
+    assert!(ready < prompt && prompt < color);
     assert!(!script.contains("send_terminal_text\"; text = \"Write-Output P0-LOCAL-READY"));
     assert!(!script.contains("-join [char[]](80,48,45,76,79,67,65,76,45,82,69,65,68,89)"));
     assert!(!script.contains("text = \"PS \""));

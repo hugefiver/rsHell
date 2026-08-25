@@ -1177,6 +1177,7 @@ try {
         Set-ActionBinding -Surface "local_terminal" -Connection "local"
         Add-Action $actions ([ordered]@{ action = "new_tab" })
         Add-Action $actions ([ordered]@{ action = "wait_frame_contains"; text = "P0-LOCAL-READY" })
+        Add-Action $actions ([ordered]@{ action = "wait_frame_contains"; text = "P0> " })
         Add-Action $actions ([ordered]@{
                 action = "send_terminal_text"
                 text = "[Console]::Write(([char]27).ToString() + '[31mp0-color' + ([char]27).ToString() + '[0m' + [Environment]::NewLine); Write-Output 'p0-wide-界'`r"
