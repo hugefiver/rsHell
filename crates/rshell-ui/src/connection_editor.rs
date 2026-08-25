@@ -127,7 +127,7 @@ impl SimpleComponent for ConnectionEditor {
             }
             ConnectionEditorMsg::Save => {
                 if let Some(error) = self.override_input_error {
-                    self.error = Some(error.into());
+                    self.reject_override_input(error);
                 } else if let Some(result) = self.prepare_save() {
                     match result {
                         Ok(command) => {
@@ -136,7 +136,7 @@ impl SimpleComponent for ConnectionEditor {
                             let _ =
                                 sender.output(ConnectionEditorOutput::Command(Box::new(command)));
                         }
-                        Err(error) => self.error = Some(error.to_string()),
+                        Err(error) => self.reject_validation(error),
                     }
                 }
             }
@@ -150,11 +150,11 @@ impl SimpleComponent for ConnectionEditor {
             }
             ConnectionEditorMsg::CommandRejected(error) => {
                 self.pending = false;
-                self.error = Some(error.to_string());
+                self.reject_command_port(error);
             }
             ConnectionEditorMsg::OperationFailed(context) => {
                 self.pending = false;
-                self.error = Some(context.into());
+                self.reject_operation(context);
             }
         }
         self.revision = self.revision.saturating_add(1);

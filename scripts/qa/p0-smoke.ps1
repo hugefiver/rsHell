@@ -1312,6 +1312,7 @@ try {
             $guiEnvironment.XDG_CONFIG_HOME = $guiXdgConfig
         }
         $guiEnvironment.CARGO_HOME = $cargoHome
+        $guiEnvironment.RSHELL_QA_SMOKE = "1"
         if ($rustupHome) { $guiEnvironment.RUSTUP_HOME = $rustupHome }
         $shellProfileOutput = Join-Path $artifactRoot "$stem-shell-profile-path.stdout.log"
         [void](Invoke-CapturedChild `

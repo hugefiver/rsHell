@@ -3,6 +3,9 @@
 mod command_port;
 mod connection_editor;
 mod connection_editor_bindings;
+mod connection_editor_diagnostics;
+#[cfg(test)]
+mod connection_editor_diagnostics_tests;
 mod connection_editor_message;
 mod connection_editor_override_bindings;
 mod connection_editor_override_render;
