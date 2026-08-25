@@ -11,7 +11,7 @@ use crate::{
 
 pub(crate) fn send_active_terminal(
     model: &PaneHostModel,
-    terminals: &BTreeMap<SessionId, Controller<TerminalView>>,
+    terminals: &mut BTreeMap<SessionId, Controller<TerminalView>>,
     message: TerminalViewMsg,
     sender: &ComponentSender<crate::PaneHost>,
 ) {
@@ -31,7 +31,17 @@ pub(crate) fn send_active_terminal(
         let _ = sender.output(PaneHostOutput::Error("active terminal unavailable"));
         return;
     };
-    terminal.emit(message);
+    if !send_terminal_message(terminal, message) {
+        terminals.remove(&session);
+        let _ = sender.output(PaneHostOutput::Error("active terminal unavailable"));
+    }
+}
+
+pub(crate) fn send_terminal_message(
+    terminal: &Controller<TerminalView>,
+    message: TerminalViewMsg,
+) -> bool {
+    terminal.sender().send(message).is_ok()
 }
 
 pub(crate) fn sync_terminals(
@@ -58,14 +68,19 @@ pub(crate) fn sync_terminals(
         let Some(session) = pane.session() else {
             continue;
         };
-        if terminals.contains_key(&session) {
-            if let Some(frame) = pane.frame()
-                && let Some(terminal) = terminals.get(&session)
-            {
-                terminal.emit(TerminalViewMsg::ApplyFrame(frame.clone()));
-                model.observe_frame(frame);
+        if let Some(terminal) = terminals.get(&session) {
+            let delivered = pane.frame().is_none_or(|frame| {
+                let delivered =
+                    send_terminal_message(terminal, TerminalViewMsg::ApplyFrame(frame.clone()));
+                if delivered {
+                    model.observe_frame(frame);
+                }
+                delivered
+            });
+            if delivered {
+                continue;
             }
-            continue;
+            terminals.remove(&session);
         }
         let Some(profile) = pane.resolved_profile(model.view_model()) else {
             continue;
@@ -79,8 +94,9 @@ pub(crate) fn sync_terminals(
             .forward(sender.input_sender(), move |output| {
                 crate::PaneHostMsg::Terminal(session, output)
             });
-        if let Some(frame) = pane.frame() {
-            controller.emit(TerminalViewMsg::ApplyFrame(frame.clone()));
+        if let Some(frame) = pane.frame()
+            && send_terminal_message(&controller, TerminalViewMsg::ApplyFrame(frame.clone()))
+        {
             model.observe_frame(frame);
         }
         terminals.insert(session, controller);

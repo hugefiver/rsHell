@@ -186,6 +186,19 @@ fn production_ui_has_no_blocking_or_unbounded_runtime_primitives() {
     }
 }
 
+#[test]
+fn terminal_child_delivery_handles_disconnected_controllers() {
+    let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+    for file in [src.join("pane_host.rs"), src.join("pane_host_terminals.rs")] {
+        let source = fs::read_to_string(&file).expect("read pane terminal delivery source");
+        assert!(
+            !source.contains("terminal.emit("),
+            "{} must handle a disconnected TerminalView sender without panicking",
+            file.display()
+        );
+    }
+}
+
 fn dependency_names(manifest: &str) -> Vec<&str> {
     let mut in_dependencies = false;
     let mut names = Vec::new();

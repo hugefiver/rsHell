@@ -1,9 +1,7 @@
 use std::collections::BTreeMap;
 
 use gtk::{gdk, prelude::*};
-use relm4::{
-    ComponentController, ComponentParts, ComponentSender, Controller, SimpleComponent, gtk,
-};
+use relm4::{ComponentParts, ComponentSender, Controller, SimpleComponent, gtk};
 use rshell_core::{
     AppViewModel, ConnectionId, PaneId, SessionId, SessionUiEvent, TabId, UiCommand, UiPortError,
 };
@@ -12,7 +10,9 @@ use rshell_platform::ClipboardPolicy;
 use crate::{
     PaneAction, PaneHostInit, PaneHostModel, TerminalView, TerminalViewMsg, TerminalViewOutput,
     pane_host_render::render_projection,
-    pane_host_terminals::{detach_terminals, send_active_terminal, sync_terminals},
+    pane_host_terminals::{
+        detach_terminals, send_active_terminal, send_terminal_message, sync_terminals,
+    },
 };
 
 #[derive(Debug)]
@@ -118,17 +118,25 @@ impl SimpleComponent for PaneHost {
             PaneHostMsg::Action { pane, action } => self.handle_action(pane, action, &sender),
             PaneHostMsg::Connect { connection } => self.connect_active(connection, &sender),
             PaneHostMsg::ActiveTerminal(message) => {
-                send_active_terminal(&self.model, &self.terminals, message, &sender)
+                send_active_terminal(&self.model, &mut self.terminals, message, &sender)
             }
             PaneHostMsg::SessionEvent { session, event } => {
                 if self.model.apply_session_event(session, event.clone()) {
                     sync_terminals(&mut self.model, &mut self.terminals, &sender);
-                    if let Some(terminal) = self.terminals.get(&session) {
-                        match event {
-                            SessionUiEvent::Frame(frame) => {
-                                terminal.emit(TerminalViewMsg::ApplyFrame(frame));
-                            }
-                            event => terminal.emit(TerminalViewMsg::SessionEvent(event)),
+                    if !matches!(event, SessionUiEvent::Frame(_))
+                        && let Some(terminal) = self.terminals.get(&session)
+                        && !send_terminal_message(
+                            terminal,
+                            TerminalViewMsg::SessionEvent(event.clone()),
+                        )
+                    {
+                        self.terminals.remove(&session);
+                        sync_terminals(&mut self.model, &mut self.terminals, &sender);
+                        if let Some(replacement) = self.terminals.get(&session) {
+                            let _ = send_terminal_message(
+                                replacement,
+                                TerminalViewMsg::SessionEvent(event),
+                            );
                         }
                     }
                 }
