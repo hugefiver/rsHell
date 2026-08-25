@@ -3,6 +3,8 @@ use rshell_core::{
     UiCommand,
 };
 
+pub(crate) const P0_TUI_ACTIVE_TITLE: &str = "rshell-p0-tui-active";
+
 use crate::{
     MainWindow, SmokeCellRangeEvidence, SmokeClipboardEvidence, SmokeSearchEvidence,
     SmokeSelectionEvidence,
@@ -169,9 +171,14 @@ impl MainWindow {
             &mut self.smoke_state.terminal,
             &mut self.smoke_state.tui_session,
             session,
-            frame.alternate_screen,
+            tui_frame_is_active(frame),
         );
     }
+}
+
+pub(crate) fn tui_frame_is_active(frame: &RenderFrame) -> bool {
+    // Older ConPTY builds can consume DEC screen switches while preserving OSC titles.
+    frame.alternate_screen || frame.title == P0_TUI_ACTIVE_TITLE
 }
 
 pub(crate) fn track_tui_transition(

@@ -6,7 +6,9 @@ use rshell_core::{
 
 use crate::{
     MainWindowMsg, SmokeTerminalEvidence,
-    main_window_smoke_evidence::{selection_frame_confirms, track_tui_transition},
+    main_window_smoke_evidence::{
+        P0_TUI_ACTIVE_TITLE, selection_frame_confirms, track_tui_transition, tui_frame_is_active,
+    },
     main_window_smoke_resize::prepared_smoke_resize,
     main_window_smoke_terminal_effects::{
         frame_contains_text, has_new_marker_occurrence, marker_occurrences,
@@ -118,6 +120,16 @@ fn tui_evidence_requires_an_alternate_screen_transition_on_one_session() {
 
     track_tui_transition(&mut terminal, &mut tracked, local, false);
     assert!(terminal.tui_exited);
+}
+
+#[test]
+fn tui_evidence_accepts_the_fixture_title_when_conpty_consumes_screen_switches() {
+    let mut frame = smoke_frame(&[(7, "P0-TUI-ENTERED")]);
+    frame.title = P0_TUI_ACTIVE_TITLE.into();
+    assert!(tui_frame_is_active(&frame));
+
+    frame.title = "rshell-p0-tui-exited".into();
+    assert!(!tui_frame_is_active(&frame));
 }
 
 fn smoke_frame(rows: &[(i64, &str)]) -> RenderFrame {
