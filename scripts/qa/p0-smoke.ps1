@@ -1329,15 +1329,23 @@ try {
             Write-Utf8File $shellProfilePath $promptFunction
         }
         else {
-            $shellSetupPath = Join-Path $tempRoot "rshell-pwsh-setup.ps1"
-            Write-Utf8File $shellSetupPath ("Import-Module PSReadLine -ErrorAction Stop" + [Environment]::NewLine + $promptFunction + [Environment]::NewLine)
             $unixShellWrapper = Join-Path $tempRoot "rshell-pwsh"
-            $unixShellBody = '#!/bin/sh' + [Environment]::NewLine + 'exec "$RSHELL_PWSH_BIN" -NoLogo -NoProfile -NoExit -File "$RSHELL_PWSH_SETUP_FILE"' + [Environment]::NewLine
+            $unixShellBody = @(
+                '#!/bin/sh'
+                "printf '%s\n' 'P0-LOCAL-READY'"
+                'while :; do'
+                "  printf '%s' 'P0> '"
+                '  if ! IFS= read -r p0_line; then'
+                '    exit 0'
+                '  fi'
+                '  "$RSHELL_PWSH_BIN" -NoLogo -NoProfile -Command "$p0_line"'
+                'done'
+                ''
+            ) -join [Environment]::NewLine
             Write-Utf8File $unixShellWrapper $unixShellBody
             $unixMode = [System.IO.UnixFileMode]::UserRead -bor [System.IO.UnixFileMode]::UserWrite -bor [System.IO.UnixFileMode]::UserExecute
             [System.IO.File]::SetUnixFileMode($unixShellWrapper, $unixMode)
             $guiEnvironment.RSHELL_PWSH_BIN = $pwsh
-            $guiEnvironment.RSHELL_PWSH_SETUP_FILE = $shellSetupPath
             $guiEnvironment.RSHELL_SHELL = $unixShellWrapper
         }
         $guiReportTemp = Join-Path $tempRoot "production-p0-report.json"
