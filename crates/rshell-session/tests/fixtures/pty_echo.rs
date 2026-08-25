@@ -61,6 +61,7 @@ fn main() -> io::Result<()> {
             .arg(duration)
             .spawn()?;
         writeln!(stdout, "DESCENDANT:{}", child.id())?;
+        writeln!(stdout, "DESCENDANT_READY")?;
     }
     stdout.flush()?;
     drop(stdout);
