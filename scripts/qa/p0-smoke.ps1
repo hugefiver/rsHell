@@ -1300,6 +1300,11 @@ try {
         [void](New-Item -ItemType Directory -Path (Join-Path $guiHome ".ssh") -Force)
         $guiEnvironment.HOME = $guiHome
         $guiEnvironment.USERPROFILE = $guiHome
+        if (-not $platformIsWindows) {
+            $guiXdgConfig = Join-Path $guiHome ".config"
+            [void](New-Item -ItemType Directory -Path $guiXdgConfig -Force)
+            $guiEnvironment.XDG_CONFIG_HOME = $guiXdgConfig
+        }
         $guiEnvironment.CARGO_HOME = $cargoHome
         if ($rustupHome) { $guiEnvironment.RUSTUP_HOME = $rustupHome }
         $shellProfileOutput = Join-Path $artifactRoot "$stem-shell-profile-path.stdout.log"
@@ -1319,7 +1324,7 @@ try {
             throw "The isolated PowerShell profile path escaped the temporary GUI home."
         }
         [void](New-Item -ItemType Directory -Path (Split-Path -Parent $shellProfilePath) -Force)
-        Write-Utf8File $shellProfilePath "[Console]::WriteLine('P0-LOCAL-READY')"
+        Write-Utf8File $shellProfilePath "function global:prompt { 'P0-LOCAL-READY> ' }"
         $guiReportTemp = Join-Path $tempRoot "production-p0-report.json"
         $guiPngTemp = [System.IO.Path]::ChangeExtension($guiReportTemp, ".png")
         $guiExit = Invoke-CapturedChild `

@@ -288,8 +288,10 @@ fn local_shell_readiness_uses_real_io_instead_of_a_platform_prompt() {
 
     assert!(script.contains("-Name \"shell-profile-path\""));
     assert!(script.contains("$PROFILE.CurrentUserCurrentHost"));
-    assert!(script.contains("[Console]::WriteLine('P0-LOCAL-READY')"));
+    assert!(script.contains("$guiEnvironment.XDG_CONFIG_HOME = $guiXdgConfig"));
+    assert!(script.contains("function global:prompt { 'P0-LOCAL-READY> ' }"));
     assert!(script.contains("text = \"P0-LOCAL-READY\""));
+    assert!(!script.contains("[Console]::WriteLine('P0-LOCAL-READY')"));
     assert!(!script.contains("send_terminal_text\"; text = \"Write-Output P0-LOCAL-READY"));
     assert!(!script.contains("-join [char[]](80,48,45,76,79,67,65,76,45,82,69,65,68,89)"));
     assert!(!script.contains("text = \"PS \""));
