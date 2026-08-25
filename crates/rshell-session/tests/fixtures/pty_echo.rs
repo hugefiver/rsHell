@@ -4,12 +4,18 @@ use std::{
     fs,
     io::{self, BufRead, Write},
     path::PathBuf,
-    process, thread,
+    process::{self, Command},
+    thread,
     time::Duration,
 };
 
 fn main() -> io::Result<()> {
     let args: Vec<OsString> = env::args_os().skip(1).collect();
+    if let Some(duration) = option_value(&args, "--hold-open-ms") {
+        let duration = duration.to_string_lossy().parse::<u64>().unwrap_or(3_000);
+        thread::sleep(Duration::from_millis(duration));
+        return Ok(());
+    }
     let mut stdout = io::stdout().lock();
     writeln!(stdout, "PID:{}", process::id())?;
     for (index, arg) in args.iter().enumerate() {
@@ -49,6 +55,13 @@ fn main() -> io::Result<()> {
         writeln!(stdout, "INITIAL_SIZE:{cols}x{rows}")?;
     }
     writeln!(stdout, "READY")?;
+    if let Some(duration) = option_value(&args, "--spawn-inheriting-child-ms") {
+        let child = Command::new(env::current_exe()?)
+            .arg("--hold-open-ms")
+            .arg(duration)
+            .spawn()?;
+        writeln!(stdout, "DESCENDANT:{}", child.id())?;
+    }
     stdout.flush()?;
     drop(stdout);
 

@@ -10,6 +10,8 @@ use super::local_reader::ReaderEvent;
 
 const CHILD_POLL_INTERVAL: Duration = Duration::from_millis(10);
 const SHUTDOWN_GRACE: Duration = Duration::from_millis(250);
+const FORCE_EXIT_GRACE: Duration = Duration::from_millis(250);
+const READER_JOIN_GRACE: Duration = Duration::from_millis(250);
 
 pub(super) struct LocalRuntime {
     master: Option<Box<dyn MasterPty>>,
@@ -130,13 +132,26 @@ impl LocalRuntime {
                 }
             }
         }
-        if !exited && let Some(child) = self.child.as_mut() {
-            failed |= child.kill().is_err();
-            failed |= child.wait().is_err();
+        if !exited {
+            if let Some(child) = self.child.as_mut() {
+                failed |= child.kill().is_err();
+            }
+            let deadline = tokio::time::Instant::now() + FORCE_EXIT_GRACE;
+            while !exited && tokio::time::Instant::now() < deadline {
+                tokio::time::sleep(CHILD_POLL_INTERVAL).await;
+                match self.child_has_exited() {
+                    Ok(child_exited) => exited = child_exited,
+                    Err(_) => {
+                        failed = true;
+                        break;
+                    }
+                }
+            }
+            failed |= !exited;
         }
 
         self.master.take();
-        failed |= self.join_reader().is_err();
+        failed |= self.join_reader_bounded().await.is_err();
         self.child.take();
         self.shut_down = true;
         if failed { Err(pty_error()) } else { Ok(()) }
@@ -187,6 +202,20 @@ impl LocalRuntime {
         }
         Ok(())
     }
+
+    async fn join_reader_bounded(&mut self) -> Result<(), TransportError> {
+        let Some(thread) = self.reader_thread.take() else {
+            return Ok(());
+        };
+        let deadline = tokio::time::Instant::now() + READER_JOIN_GRACE;
+        while !thread.is_finished() && tokio::time::Instant::now() < deadline {
+            tokio::time::sleep(CHILD_POLL_INTERVAL).await;
+        }
+        if !thread.is_finished() {
+            return Err(pty_error());
+        }
+        thread.join().map_err(|_| pty_error())
+    }
 }
 
 impl Drop for LocalRuntime {
@@ -197,10 +226,18 @@ impl Drop for LocalRuntime {
             && !matches!(child.try_wait(), Ok(Some(_)))
         {
             let _ = child.kill();
-            let _ = child.wait();
+            let deadline = std::time::Instant::now() + FORCE_EXIT_GRACE;
+            while std::time::Instant::now() < deadline {
+                if matches!(child.try_wait(), Ok(Some(_))) {
+                    break;
+                }
+                std::thread::sleep(CHILD_POLL_INTERVAL);
+            }
         }
         self.master.take();
-        if let Some(thread) = self.reader_thread.take() {
+        if let Some(thread) = self.reader_thread.take()
+            && thread.is_finished()
+        {
             let _ = thread.join();
         }
     }

@@ -283,6 +283,31 @@ async fn dropping_a_connected_transport_reaps_the_child() {
     assert!(!process_is_active(pid), "dropped child {pid} is active");
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn shutdown_is_bounded_when_a_descendant_inherits_the_pty() {
+    let mut transport = LocalPtyTransport::launch(command(["--spawn-inheriting-child-ms", "3000"]));
+    connect(&mut transport, &TransportRequest::new(size(80, 24))).await;
+    let output = read_until(&mut transport, b"DESCENDANT:").await;
+    assert!(contains(&output, b"DESCENDANT:"));
+
+    let shutdown = tokio::spawn(async move { transport.shutdown().await });
+    let result = tokio::time::timeout(Duration::from_secs(1), shutdown)
+        .await
+        .expect("shutdown must not wait for an inherited PTY descendant")
+        .expect("shutdown task must not panic");
+    #[cfg(unix)]
+    assert_eq!(
+        result
+            .expect_err("the still-open descendant must be reported")
+            .failure(),
+        SessionFailure::Pty
+    );
+    #[cfg(windows)]
+    if let Err(error) = result {
+        assert_eq!(error.failure(), SessionFailure::Pty);
+    }
+}
+
 fn contains(haystack: &[u8], needle: &[u8]) -> bool {
     haystack
         .windows(needle.len())
