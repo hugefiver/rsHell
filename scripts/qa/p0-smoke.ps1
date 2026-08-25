@@ -1177,6 +1177,7 @@ try {
         Add-Action $actions ([ordered]@{ action = "wait_window_realized" })
         Set-ActionBinding -Surface "local_terminal" -Connection "local"
         Add-Action $actions ([ordered]@{ action = "new_tab" })
+        Add-Action $actions ([ordered]@{ action = "wait_frame_contains"; text = "PowerShell " })
         Add-Action $actions ([ordered]@{ action = "send_terminal_text"; text = "`$p0Ready = -join [char[]](80,48,45,76,79,67,65,76,45,82,69,65,68,89); Write-Output `$p0Ready`r" })
         Add-Action $actions ([ordered]@{ action = "wait_frame_contains"; text = "P0-LOCAL-READY" })
         Add-Action $actions ([ordered]@{

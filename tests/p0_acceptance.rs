@@ -286,9 +286,18 @@ fn portable_runtime_path_regression_runs_only_on_windows() {
 fn local_shell_readiness_uses_real_io_instead_of_a_platform_prompt() {
     let script = include_str!("../scripts/qa/p0-smoke.ps1");
 
-    assert!(script.contains("-join [char[]](80,48,45,76,79,67,65,76,45,82,69,65,68,89)"));
+    let banner = script
+        .find("text = \"PowerShell \"")
+        .expect("the shell banner gate");
+    let command = script
+        .find("-join [char[]](80,48,45,76,79,67,65,76,45,82,69,65,68,89)")
+        .expect("the executed readiness command");
+    let output = script[command..]
+        .find("text = \"P0-LOCAL-READY\"")
+        .map(|offset| command + offset)
+        .expect("the readiness output gate");
+    assert!(banner < command && command < output);
     assert!(!script.contains("text = \"Write-Output P0-LOCAL-READY"));
-    assert!(script.contains("text = \"P0-LOCAL-READY\""));
     assert!(!script.contains("text = \"PS \""));
     assert!(!script.contains("Set-PSReadLineOption"));
 }
