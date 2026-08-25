@@ -273,6 +273,16 @@ fn hosted_native_credentials_and_macos_gtk_evidence_are_fail_closed() {
 }
 
 #[test]
+fn portable_runtime_path_regression_runs_only_on_windows() {
+    let script = include_str!("../scripts/qa/p0-smoke.ps1");
+
+    assert!(
+        script.contains("if ($case.Name -eq \"portable_paths\" -and (-not $platformIsWindows))")
+    );
+    assert!(script.contains("continue"));
+}
+
+#[test]
 fn powershell_harness_has_a_cross_platform_tool_and_shell_contract() {
     let harness = include_str!("../scripts/qa/p0-smoke.ps1");
 
@@ -375,14 +385,17 @@ fn agent_cleanup_is_required_before_add_and_survives_a_lost_reply() {
         .find("-Name \"agent-add-parent\"")
         .expect("agent add phase");
     assert!(required < add, "cleanup obligation must precede ssh-add");
-    assert!(harness.contains("agent_add_lost_reply"));
-    let reconciled = harness
-        .find("$agentAddedByLostReply = $true")
-        .expect("lost-reply recovery must record the observed agent mutation");
-    let conditional = harness
-        .find("if (-not $agentAddedByLostReply)")
-        .expect("a reconciled lost reply must suppress duplicate ssh-add mutation");
-    assert!(reconciled < conditional && conditional < add);
+    let lost_reply = harness
+        .find("agent_add_lost_reply")
+        .expect("lost-reply mutation probe");
+    let cleanup = harness
+        .find("agent_add_lost_reply_cleanup")
+        .expect("lost-reply mutation cleanup");
+    assert!(required < add && add < lost_reply && lost_reply < cleanup);
+    assert!(
+        harness.contains("The lost-reply agent key was not removed before completing cleanup.")
+    );
+    assert!(!harness.contains("$agentAddedByLostReply"));
     assert!(
         !harness.contains("$agentAdded -and"),
         "cleanup cannot depend on observing ssh-add success"

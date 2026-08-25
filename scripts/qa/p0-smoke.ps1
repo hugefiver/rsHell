@@ -836,7 +836,10 @@ try {
             @{ Name = "portable_paths"; Package = "rshell-platform"; Tests = @("environment::tests::portable_runtime_paths_are_prepended_once") }
         )
         foreach ($case in $regressionCases) {
-            if ($platformIsMacOS -and $case.Name -eq "actor_panic_gtk_survival") {
+            if ($case.Name -eq "portable_paths" -and (-not $platformIsWindows)) {
+                continue
+            }
+            elseif ($platformIsMacOS -and $case.Name -eq "actor_panic_gtk_survival") {
                 Invoke-MainThreadGtkRegression
             }
             else {
@@ -935,41 +938,15 @@ try {
                     cleanup_required = $true
                 }) | ConvertTo-Json)
         $agentCleanupRequired = $true
-        $agentAddedByLostReply = $false
-        if ($Mode -eq "All") {
-            $lostReplyScript = Join-Path $tempRoot "agent-add-lost-reply.ps1"
-            Write-Utf8File $lostReplyScript @"
-& '$($sshAdd.Replace("'", "''"))' '$($agentPrivateKey.Replace("'", "''"))'
-if (`$LASTEXITCODE -ne 0) { exit `$LASTEXITCODE }
-exit 91
-"@
-            $lostReplyExit = Invoke-CapturedChild `
-                -Name "agent_add_lost_reply" `
-                -FilePath $pwsh `
-                -Arguments @("-NoProfile", "-File", $lostReplyScript) `
+        [void](Invoke-CapturedChild `
+                -Name "agent-add-parent" `
+                -FilePath $sshAdd `
+                -Arguments @($agentPrivateKey) `
                 -Environment $baseEnvironment `
                 -WorkingDirectory $tempRoot `
-                -StdoutPath (Join-Path $artifactRoot "$stem-agent-lost-reply.stdout.log") `
-                -StderrPath (Join-Path $artifactRoot "$stem-agent-lost-reply.stderr.log") `
-                -TimeoutSeconds 30 `
-                -AllowFailure $true
-            if ($lostReplyExit -ne 91 -or -not (Compare-Object $agentBaseline (Get-AgentIdentitySnapshot $sshAdd))) {
-                throw "The deterministic agent_add_lost_reply probe did not mutate before losing its reply."
-            }
-            $agentAddedByLostReply = $true
-            Add-Phase "agent_add_lost_reply"
-        }
-        if (-not $agentAddedByLostReply) {
-            [void](Invoke-CapturedChild `
-                    -Name "agent-add-parent" `
-                    -FilePath $sshAdd `
-                    -Arguments @($agentPrivateKey) `
-                    -Environment $baseEnvironment `
-                    -WorkingDirectory $tempRoot `
-                    -StdoutPath (Join-Path $artifactRoot "$stem-agent-add.stdout.log") `
-                    -StderrPath (Join-Path $artifactRoot "$stem-agent-add.stderr.log") `
-                    -TimeoutSeconds 15)
-        }
+                -StdoutPath (Join-Path $artifactRoot "$stem-agent-add.stdout.log") `
+                -StderrPath (Join-Path $artifactRoot "$stem-agent-add.stderr.log") `
+                -TimeoutSeconds 15)
         $agentExpectedWithQa = Get-AgentIdentitySnapshot $sshAdd
         $agentEnvironment = @{}
         foreach ($entry in $baseEnvironment.GetEnumerator()) { $agentEnvironment[$entry.Key] = $entry.Value }
@@ -1450,6 +1427,40 @@ finally {
                 if ($null -eq $failure) { $failure = "The parent-ledger system OpenSSH identity was not removed exactly." }
             }
             else {
+                if ($Mode -eq "All" -and $null -eq $failure) {
+                    $lostReplyScript = Join-Path $tempRoot "agent-add-lost-reply.ps1"
+                    Write-Utf8File $lostReplyScript @"
+& '$($sshAdd.Replace("'", "''"))' '$($agentPrivateKey.Replace("'", "''"))'
+if (`$LASTEXITCODE -ne 0) { exit `$LASTEXITCODE }
+exit 91
+"@
+                    $lostReplyExit = Invoke-CapturedChild `
+                        -Name "agent_add_lost_reply" `
+                        -FilePath $pwsh `
+                        -Arguments @("-NoProfile", "-File", $lostReplyScript) `
+                        -Environment $baseEnvironment `
+                        -WorkingDirectory $tempRoot `
+                        -StdoutPath (Join-Path $artifactRoot "$stem-agent-lost-reply.stdout.log") `
+                        -StderrPath (Join-Path $artifactRoot "$stem-agent-lost-reply.stderr.log") `
+                        -TimeoutSeconds 30 `
+                        -AllowFailure $true
+                    if ($lostReplyExit -ne 91 -or -not (Compare-Object $agentBaseline (Get-AgentIdentitySnapshot $sshAdd))) {
+                        throw "The deterministic agent_add_lost_reply probe did not mutate before losing its reply."
+                    }
+                    [void](Invoke-CapturedChild `
+                            -Name "agent_add_lost_reply_cleanup" `
+                            -FilePath $sshAdd `
+                            -Arguments @("-d", $agentPrivateKey) `
+                            -Environment $baseEnvironment `
+                            -WorkingDirectory $tempRoot `
+                            -StdoutPath (Join-Path $artifactRoot "$stem-agent-lost-reply-cleanup.stdout.log") `
+                            -StderrPath (Join-Path $artifactRoot "$stem-agent-lost-reply-cleanup.stderr.log") `
+                            -TimeoutSeconds 15)
+                    if (Compare-Object $agentBaseline (Get-AgentIdentitySnapshot $sshAdd)) {
+                        throw "The lost-reply agent key was not removed before completing cleanup."
+                    }
+                    Add-Phase "agent_add_lost_reply"
+                }
                 Add-Phase "system_agent_cleanup"
             }
         }
