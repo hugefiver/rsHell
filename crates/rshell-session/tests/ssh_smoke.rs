@@ -34,7 +34,7 @@ const SYSTEM_OPENSSH_TIMEOUT: Duration = Duration::from_secs(30);
 const BACKPRESSURE_BYTES: usize = 10 * 1024;
 const BACKPRESSURE_MARKER: &[u8] = b"\r\nSMOKE_BURST_COMPLETE\r\n";
 const WRONG_PASSWORD: &str = "incorrect-password";
-const FIXTURE_WAIT_TIMEOUT: Duration = Duration::from_secs(180);
+const FIXTURE_WAIT_TIMEOUT: Duration = Duration::from_secs(300);
 const FIXTURE_POLL_INTERVAL: Duration = Duration::from_millis(50);
 static TEMP_FILE_SEQUENCE: AtomicUsize = AtomicUsize::new(0);
 
@@ -477,6 +477,11 @@ fn server_snapshot_debug_redacts_captured_authentication_data() {
         );
     }
     assert!(output.contains("[REDACTED]"));
+}
+
+#[test]
+fn fixture_wait_budget_outlives_the_parent_gtk_smoke_budget() {
+    assert!(FIXTURE_WAIT_TIMEOUT > Duration::from_secs(240));
 }
 
 #[tokio::test]

@@ -298,6 +298,15 @@ fn local_shell_readiness_uses_real_io_instead_of_a_platform_prompt() {
     assert!(script.contains("printf '%s' 'P0> '"));
     assert!(script.contains("IFS= read -r p0_line"));
     assert!(script.contains("\"$RSHELL_PWSH_BIN\" -NoLogo -NoProfile -Command \"$p0_line\""));
+    assert!(script.contains("$pastePromptCommand = if ($platformIsWindows)"));
+    assert!(script.contains("RSHELL_P0_SECURE_PASTE"));
+    assert!(script.contains("if ! stty -echo; then"));
+    assert!(script.contains("IFS= read -r p0_secret"));
+    assert!(script.contains("if ! stty echo; then"));
+    assert!(script.contains("unset p0_secret"));
+    assert!(script.contains("printf '\\n%s\\n' 'p0-paste-effect'"));
+    assert!(script.contains("$pasteValue = \"Write-Output p0-paste-$runId\""));
+    assert!(!script.contains("$pasteValue = \"Write-Output p0-paste-$runId`r\""));
     assert!(!script.contains("RSHELL_PWSH_SETUP_FILE"));
     assert!(!script.contains("Import-Module PSReadLine"));
     assert!(!script.contains("Remove-Module PSReadLine"));

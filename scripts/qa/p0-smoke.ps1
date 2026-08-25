@@ -746,7 +746,7 @@ $passwordValue = "p0-password-$runId"
 $passphraseValue = "p0-passphrase-$runId"
 $kbiVisibleValue = "user-visible"
 $kbiCodeValue = "one-time-code"
-$pasteValue = "Write-Output p0-paste-$runId`r"
+$pasteValue = "Write-Output p0-paste-$runId"
 $vaultFailureSecretValue = "p0-vault-failure-$runId"
 $secretNames = @($passwordName, $passphraseName, $kbiVisibleName, $kbiCodeName, $pasteName, $vaultFailureSecretName)
 $secretEnvironment = @{
@@ -1171,6 +1171,12 @@ try {
         Write-Utf8File $openSshImport "Host p0-cancel`n  HostName cancel.example.test`n  User operator`n"
         $legacyImport = Join-Path (Join-Path (Join-Path (Join-Path $repoRoot "tests") "fixtures") "smoke") "legacy.json"
         $quotedTuiFixture = $tuiFixture.Replace("'", "''")
+        $pastePromptCommand = if ($platformIsWindows) {
+            "`$p0Marker = -join [char[]](112,48,45,112,97,115,116,101,45,101,102,102,101,99,116); `$null = Read-Host -AsSecureString -Prompt 'p0-paste-prompt'; Write-Output `$p0Marker`r"
+        }
+        else {
+            "RSHELL_P0_SECURE_PASTE`r"
+        }
         $actions = [System.Collections.Generic.List[object]]::new()
         Set-ActionBinding -Surface "gtk"
         Add-Action $actions ([ordered]@{ action = "wait_window_realized" })
@@ -1183,7 +1189,7 @@ try {
                 text = "[Console]::Write(([char]27).ToString() + '[31mp0-color' + ([char]27).ToString() + '[0m' + [Environment]::NewLine); Write-Output 'p0-wide-界'`r"
                 expected_color_marker = "p0-color"
             })
-        Add-Action $actions ([ordered]@{ action = "send_terminal_text"; text = "`$p0Marker = -join [char[]](112,48,45,112,97,115,116,101,45,101,102,102,101,99,116); `$null = Read-Host -AsSecureString -Prompt 'p0-paste-prompt'; Write-Output `$p0Marker`r" })
+        Add-Action $actions ([ordered]@{ action = "send_terminal_text"; text = $pastePromptCommand })
         Add-Action $actions ([ordered]@{ action = "wait_frame_contains"; text = "p0-paste-prompt" })
         Add-Action $actions ([ordered]@{ action = "paste_text_from_env"; env_var = $pasteName; effect_marker = "p0-paste-effect" })
         Add-Action $actions ([ordered]@{ action = "resize_terminal"; width = 960; height = 640; scale = 1.0 })
@@ -1338,7 +1344,27 @@ try {
                 '  if ! IFS= read -r p0_line; then'
                 '    exit 0'
                 '  fi'
-                '  "$RSHELL_PWSH_BIN" -NoLogo -NoProfile -Command "$p0_line"'
+                '  case "$p0_line" in'
+                "    'RSHELL_P0_SECURE_PASTE')"
+                "      trap 'stty echo 2>/dev/null || true' 0 1 2 15"
+                '      if ! stty -echo; then'
+                '        exit 1'
+                '      fi'
+                "      printf '%s' 'p0-paste-prompt: '"
+                '      if ! IFS= read -r p0_secret; then'
+                '        exit 1'
+                '      fi'
+                '      if ! stty echo; then'
+                '        exit 1'
+                '      fi'
+                '      trap - 0 1 2 15'
+                "      printf '\n%s\n' 'p0-paste-effect'"
+                '      unset p0_secret'
+                '      ;;'
+                '    *)'
+                '      "$RSHELL_PWSH_BIN" -NoLogo -NoProfile -Command "$p0_line"'
+                '      ;;'
+                '  esac'
                 'done'
                 ''
             ) -join [Environment]::NewLine
