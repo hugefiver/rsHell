@@ -186,6 +186,7 @@ fn hosted_workflows_fail_closed_and_package_smoke_uses_a_deterministic_shell() {
     let ci = include_str!("../.github/workflows/ci.yml");
     let release = include_str!("../.github/workflows/release.yml");
     let package = include_str!("../scripts/qa/assert-package.ps1");
+    let harness = include_str!("../scripts/qa/p0-smoke.ps1");
     let bootstrap = include_str!("../src/bootstrap.rs");
 
     for command in [
@@ -205,11 +206,12 @@ fn hosted_workflows_fail_closed_and_package_smoke_uses_a_deterministic_shell() {
     assert!(ci.contains("$missingBaselineStatus -and $missingBaselineStartupMode"));
     assert!(ci.contains("$missingBaselineStatus -xor $missingBaselineStartupMode"));
     assert!(!ci.contains("$env:RSHELL_SHELL = $workspaceShell.Source"));
-    assert!(ci.contains("Run bounded SSH surface smoke"));
-    assert!(ci.contains("pwsh -NoProfile -File scripts/qa/p0-smoke.ps1 -Mode Ssh"));
+    assert!(!ci.contains("Run bounded SSH surface smoke"));
+    assert!(!ci.contains("pwsh -NoProfile -File scripts/qa/p0-smoke.ps1 -Mode Ssh"));
     assert!(!ci.contains(
         "cargo test --locked -p rshell-session --test ssh_smoke system_openssh_agent_authenticates_against_local_server -- --ignored --exact --nocapture"
     ));
+    assert!(!harness.contains("$agentEnvironment.RSHELL_QA_SYSTEM_AGENT_PUBLIC_KEY_PATH"));
     assert!(bootstrap.contains("ShellOverride::deterministic()"));
     assert!(package.contains("Get-Command -Name \"pwsh\" -ErrorAction Stop"));
     assert!(package.contains("$startInfo.Environment[\"RSHELL_SHELL\"] = $pwsh.Source"));
@@ -291,7 +293,8 @@ fn local_shell_readiness_uses_real_io_instead_of_a_platform_prompt() {
     assert!(script.contains("$PROFILE.CurrentUserCurrentHost"));
     assert!(script.contains("$guiEnvironment.XDG_CONFIG_HOME = $guiXdgConfig"));
     assert!(script.contains("PowerShell.OnIdle"));
-    assert!(script.contains("$global:RshellP0Ready"));
+    assert!(script.contains("-MaxTriggerCount 1"));
+    assert!(!script.contains("$global:RshellP0Ready"));
     assert!(script.contains("[Console]::WriteLine('P0-LOCAL-READY')"));
     assert!(script.contains("function global:prompt { 'P0> ' }"));
     assert!(script.contains("text = \"P0-LOCAL-READY\""));

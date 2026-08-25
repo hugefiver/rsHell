@@ -285,10 +285,8 @@ Assert-StepHasNoYamlCondition -Step $openSshToolsStep -Name "Confirm system Open
 Assert-StepLine -Step $openSshToolsStep -Line '$ssh = Get-Command ssh -ErrorAction Stop' -Name "Confirm system OpenSSH tools" -Failures $failures
 Assert-StepLine -Step $openSshToolsStep -Line '$sshKeygen = Get-Command ssh-keygen -ErrorAction Stop' -Name "Confirm system OpenSSH tools" -Failures $failures
 
-$boundedSshStep = Assert-NamedStep -Text $ci -Name "Run bounded SSH surface smoke" -Failures $failures
-Assert-StepHasNoYamlCondition -Step $boundedSshStep -Name "Run bounded SSH surface smoke" -Failures $failures
-Assert-StepLine -Step $boundedSshStep -Line 'pwsh -NoProfile -File scripts/qa/p0-smoke.ps1 -Mode Ssh' -Name "Run bounded SSH surface smoke" -Failures $failures
-Assert-StepLineCount -Step $boundedSshStep -Line $failureCheck -Expected 1 -Name "Run bounded SSH surface smoke" -Failures $failures
+Assert-Absent -Text $ci -Pattern 'Run bounded SSH surface smoke' -Label "CI duplicate SSH smoke step" -Failures $failures
+Assert-Absent -Text $ci -Pattern 'p0-smoke\.ps1 -Mode Ssh' -Label "CI duplicate SSH smoke invocation" -Failures $failures
 Assert-Absent -Text $ci -Pattern 'cargo test --locked -p rshell-session --test ssh_smoke system_openssh_agent_authenticates_against_local_server' -Label "CI unbounded system-agent smoke" -Failures $failures
 
 foreach ($modeAllStep in @(

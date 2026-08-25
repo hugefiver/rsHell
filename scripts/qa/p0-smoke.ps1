@@ -951,7 +951,6 @@ try {
         $agentEnvironment = @{}
         foreach ($entry in $baseEnvironment.GetEnumerator()) { $agentEnvironment[$entry.Key] = $entry.Value }
         $agentEnvironment.RSHELL_QA_OBSERVATION_SYSTEM_AGENT_PATH = $directObservation.system_agent
-        $agentEnvironment.RSHELL_QA_SYSTEM_AGENT_PUBLIC_KEY_PATH = $agentPublicKey
         [void](Invoke-CapturedChild `
                 -Name "ssh-system-agent" `
                 -FilePath $cargo `
@@ -1325,12 +1324,8 @@ try {
         }
         [void](New-Item -ItemType Directory -Path (Split-Path -Parent $shellProfilePath) -Force)
         $shellProfile = @'
-$global:RshellP0Ready = $false
-Register-EngineEvent -SourceIdentifier PowerShell.OnIdle -Action {
-    if (-not $global:RshellP0Ready) {
-        $global:RshellP0Ready = $true
-        [Console]::WriteLine('P0-LOCAL-READY')
-    }
+Register-EngineEvent -SourceIdentifier PowerShell.OnIdle -MaxTriggerCount 1 -Action {
+    [Console]::WriteLine('P0-LOCAL-READY')
 } | Out-Null
 function global:prompt { 'P0> ' }
 '@
