@@ -1177,7 +1177,8 @@ try {
         Add-Action $actions ([ordered]@{ action = "wait_window_realized" })
         Set-ActionBinding -Surface "local_terminal" -Connection "local"
         Add-Action $actions ([ordered]@{ action = "new_tab" })
-        Add-Action $actions ([ordered]@{ action = "wait_frame_contains"; text = "PS " })
+        Add-Action $actions ([ordered]@{ action = "send_terminal_text"; text = "Write-Output P0-LOCAL-READY`r" })
+        Add-Action $actions ([ordered]@{ action = "wait_frame_contains"; text = "P0-LOCAL-READY" })
         Add-Action $actions ([ordered]@{
                 action = "send_terminal_text"
                 text = "Set-PSReadLineOption -HistorySaveStyle SaveNothing; [Console]::Write(([char]27).ToString() + '[31mp0-color' + ([char]27).ToString() + '[0m' + [Environment]::NewLine); Write-Output 'p0-wide-界'`r"
@@ -1199,7 +1200,6 @@ try {
         # The fixture intentionally leaves the console in cooked mode, so Enter commits the quit key.
         Add-Action $actions ([ordered]@{ action = "send_terminal_text"; text = "q`r" })
         Add-Action $actions ([ordered]@{ action = "wait_frame_contains"; text = "P0-TUI-EXITED" })
-        Add-Action $actions ([ordered]@{ action = "wait_frame_contains"; text = "PS " })
         Add-Action $actions ([ordered]@{ action = "send_terminal_text"; text = "Write-Output P0-TUI-POST-EXIT-FRAME`r" })
         Add-Action $actions ([ordered]@{ action = "wait_frame_contains"; text = "P0-TUI-POST-EXIT-FRAME" })
 

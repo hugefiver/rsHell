@@ -283,6 +283,15 @@ fn portable_runtime_path_regression_runs_only_on_windows() {
 }
 
 #[test]
+fn local_shell_readiness_uses_real_io_instead_of_a_platform_prompt() {
+    let script = include_str!("../scripts/qa/p0-smoke.ps1");
+
+    assert!(script.contains("Write-Output P0-LOCAL-READY"));
+    assert!(script.contains("text = \"P0-LOCAL-READY\""));
+    assert!(!script.contains("text = \"PS \""));
+}
+
+#[test]
 fn powershell_harness_has_a_cross_platform_tool_and_shell_contract() {
     let harness = include_str!("../scripts/qa/p0-smoke.ps1");
 
@@ -455,15 +464,11 @@ fn mode_all_declares_every_task20_regression_case() {
 }
 
 #[test]
-fn powershell_tui_exit_waits_for_a_post_alternate_screen_prompt_frame() {
+fn powershell_tui_exit_waits_for_a_fresh_post_alternate_screen_frame() {
     let harness = include_str!("../scripts/qa/p0-smoke.ps1");
     let tui_exit_wait = harness
         .find("P0-TUI-EXITED")
         .expect("Mode All must wait for the TUI exit marker");
-    assert!(
-        harness[tui_exit_wait..].contains("text = \"PS \""),
-        "the PowerShell scenario must observe a post-TUI prompt frame before changing panes"
-    );
     let post_exit_marker = "P0-TUI-POST-EXIT-FRAME";
     let post_exit_tail = &harness[tui_exit_wait..];
     let post_exit_send = post_exit_tail
