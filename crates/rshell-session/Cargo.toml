@@ -7,6 +7,7 @@ license = "MIT"
 [dependencies]
 async-channel = "2.5"
 async-trait = "0.1"
+libc = "0.2"
 # WHY: upstream 0.9's Windows INHERIT_CURSOR DSR can deadlock; this API-compatible fork removes it.
 portable-pty = { package = "portable-pty-psmux", version = "=0.9.6" }
 regex = "1.11"

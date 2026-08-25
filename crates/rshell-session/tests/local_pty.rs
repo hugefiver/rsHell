@@ -308,6 +308,11 @@ async fn shutdown_is_bounded_when_a_descendant_inherits_the_pty() {
         !process_is_active(direct_pid),
         "direct child {direct_pid} is active after bounded shutdown"
     );
+    #[cfg(unix)]
+    assert!(
+        !process_is_active(descendant_pid),
+        "fixture descendant {descendant_pid} is active after bounded shutdown"
+    );
 }
 
 fn contains(haystack: &[u8], needle: &[u8]) -> bool {

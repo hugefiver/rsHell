@@ -15,6 +15,8 @@ const READER_JOIN_GRACE: Duration = Duration::from_millis(250);
 
 pub(super) struct LocalRuntime {
     master: Option<Box<dyn MasterPty>>,
+    #[cfg(unix)]
+    process_group: Option<i32>,
     writer: Option<Box<dyn Write + Send>>,
     child: Option<Box<dyn Child + Send + Sync>>,
     reader_rx: mpsc::Receiver<ReaderEvent>,
@@ -33,8 +35,12 @@ impl LocalRuntime {
         reader_rx: mpsc::Receiver<ReaderEvent>,
         reader_thread: JoinHandle<()>,
     ) -> Self {
+        #[cfg(unix)]
+        let process_group = master.process_group_leader();
         Self {
             master: Some(master),
+            #[cfg(unix)]
+            process_group,
             writer: Some(writer),
             child: Some(child),
             reader_rx,
@@ -133,6 +139,10 @@ impl LocalRuntime {
             }
         }
         if !exited {
+            #[cfg(unix)]
+            {
+                failed |= self.signal_process_group(libc::SIGHUP).is_err();
+            }
             if let Some(child) = self.child.as_mut() {
                 failed |= child.kill().is_err();
             }
@@ -148,6 +158,11 @@ impl LocalRuntime {
                 }
             }
             failed |= !exited;
+        }
+
+        #[cfg(unix)]
+        {
+            failed |= self.signal_process_group(libc::SIGKILL).is_err();
         }
 
         self.master.take();
@@ -216,12 +231,27 @@ impl LocalRuntime {
         }
         thread.join().map_err(|_| pty_error())
     }
+
+    #[cfg(unix)]
+    fn signal_process_group(&self, signal: libc::c_int) -> Result<(), TransportError> {
+        let Some(process_group) = self.process_group.filter(|group| *group > 1) else {
+            return Ok(());
+        };
+        let result = unsafe { libc::kill(-process_group, signal) };
+        if result == 0 || std::io::Error::last_os_error().raw_os_error() == Some(libc::ESRCH) {
+            Ok(())
+        } else {
+            Err(pty_error())
+        }
+    }
 }
 
 impl Drop for LocalRuntime {
     fn drop(&mut self) {
         self.reader_rx.close();
         self.writer.take();
+        #[cfg(unix)]
+        let _ = self.signal_process_group(libc::SIGHUP);
         if let Some(child) = self.child.as_mut()
             && !matches!(child.try_wait(), Ok(Some(_)))
         {
@@ -234,6 +264,8 @@ impl Drop for LocalRuntime {
                 std::thread::sleep(CHILD_POLL_INTERVAL);
             }
         }
+        #[cfg(unix)]
+        let _ = self.signal_process_group(libc::SIGKILL);
         self.master.take();
         if let Some(thread) = self.reader_thread.take()
             && thread.is_finished()

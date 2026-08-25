@@ -3635,6 +3635,7 @@ dependencies = [
  "async-channel",
  "async-trait",
  "criterion",
+ "libc",
  "portable-pty-psmux",
  "regex",
  "rshell-core",
