@@ -11,7 +11,12 @@ use super::local_reader::ReaderEvent;
 const CHILD_POLL_INTERVAL: Duration = Duration::from_millis(10);
 const SHUTDOWN_GRACE: Duration = Duration::from_millis(250);
 const FORCE_EXIT_GRACE: Duration = Duration::from_millis(250);
-const READER_JOIN_GRACE: Duration = Duration::from_millis(500);
+const READER_CLOSE_GRACE: Duration = Duration::from_millis(100);
+const READER_DRAIN_LIMIT: usize = 32;
+#[cfg(unix)]
+const READER_JOIN_GRACE: Duration = Duration::from_secs(1);
+#[cfg(windows)]
+const READER_JOIN_GRACE: Duration = Duration::from_millis(600);
 
 pub(super) struct LocalRuntime {
     master: Option<Box<dyn MasterPty>>,
@@ -116,12 +121,12 @@ impl LocalRuntime {
         if self.shut_down {
             return Ok(());
         }
-        self.reader_rx.close();
         self.writer.take();
 
         let deadline = tokio::time::Instant::now() + SHUTDOWN_GRACE;
         let mut exited = self.child_has_exited().unwrap_or(false);
         while !exited && tokio::time::Instant::now() < deadline {
+            self.discard_reader_events();
             tokio::time::sleep(CHILD_POLL_INTERVAL).await;
             match self.child_has_exited() {
                 Ok(child_exited) => exited = child_exited,
@@ -138,6 +143,7 @@ impl LocalRuntime {
             }
             let deadline = tokio::time::Instant::now() + FORCE_EXIT_GRACE;
             while !exited && tokio::time::Instant::now() < deadline {
+                self.discard_reader_events();
                 tokio::time::sleep(CHILD_POLL_INTERVAL).await;
                 match self.child_has_exited() {
                     Ok(child_exited) => exited = child_exited,
@@ -215,12 +221,31 @@ impl LocalRuntime {
         };
         let deadline = tokio::time::Instant::now() + READER_JOIN_GRACE;
         while !thread.is_finished() && tokio::time::Instant::now() < deadline {
+            self.discard_reader_events();
             tokio::time::sleep(CHILD_POLL_INTERVAL).await;
         }
-        if !thread.is_finished() {
-            return Err(pty_error());
+        if thread.is_finished() {
+            self.reader_rx.close();
+            return thread.join().map_err(|_| pty_error());
         }
-        thread.join().map_err(|_| pty_error())
+
+        self.reader_rx.close();
+        let close_deadline = tokio::time::Instant::now() + READER_CLOSE_GRACE;
+        while !thread.is_finished() && tokio::time::Instant::now() < close_deadline {
+            tokio::time::sleep(CHILD_POLL_INTERVAL).await;
+        }
+        if thread.is_finished() {
+            let _ = thread.join();
+        }
+        Err(pty_error())
+    }
+
+    fn discard_reader_events(&mut self) {
+        for _ in 0..READER_DRAIN_LIMIT {
+            if self.reader_rx.try_recv().is_err() {
+                break;
+            }
+        }
     }
 
     #[cfg(unix)]

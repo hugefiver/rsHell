@@ -315,6 +315,51 @@ async fn shutdown_is_bounded_when_a_descendant_inherits_the_pty() {
     );
 }
 
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn shutdown_converges_when_a_detached_pty_holder_closes_within_actor_budget() {
+    let mut transport =
+        LocalPtyTransport::launch(command(["--spawn-detached-inheriting-child-ms", "1100"]));
+    connect(&mut transport, &TransportRequest::new(size(80, 24))).await;
+    let output = read_until(&mut transport, b"DETACHED_DESCENDANT_READY").await;
+    let descendant_pid = line_value(&output, b"DETACHED_DESCENDANT:");
+    assert!(process_is_active(descendant_pid));
+
+    let result = tokio::time::timeout(Duration::from_millis(1750), transport.shutdown())
+        .await
+        .expect("shutdown must remain below the session actor deadline");
+    let descendant_active = process_is_active(descendant_pid);
+    if descendant_active {
+        wait_for_process_exit(descendant_pid, Duration::from_secs(1)).await;
+    }
+    assert!(
+        !descendant_active,
+        "shutdown returned while detached PTY holder {descendant_pid} was active"
+    );
+    result.expect("a detached PTY holder that closes within budget must converge");
+}
+
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn receiver_close_cannot_turn_a_live_detached_emitter_into_success() {
+    let mut transport = LocalPtyTransport::launch(command(["--spawn-detached-emitter-ms", "3000"]));
+    connect(&mut transport, &TransportRequest::new(size(80, 24))).await;
+    let output = read_until(&mut transport, b"DETACHED_EMITTER_READY").await;
+    let descendant_pid = line_value(&output, b"DETACHED_EMITTER:");
+    assert!(process_is_active(descendant_pid));
+
+    let result = tokio::time::timeout(Duration::from_millis(1750), transport.shutdown())
+        .await
+        .expect("shutdown must remain below the session actor deadline");
+    assert_eq!(
+        result
+            .expect_err("receiver closure is not natural PTY convergence")
+            .failure(),
+        SessionFailure::Pty
+    );
+    wait_for_process_exit(descendant_pid, Duration::from_secs(3)).await;
+}
+
 fn contains(haystack: &[u8], needle: &[u8]) -> bool {
     haystack
         .windows(needle.len())
@@ -334,6 +379,15 @@ fn line_value(output: &[u8], prefix: &[u8]) -> u32 {
         .expect("fixture value is UTF-8")
         .parse()
         .expect("fixture value is a process id")
+}
+
+#[cfg(unix)]
+async fn wait_for_process_exit(pid: u32, timeout: Duration) {
+    let deadline = tokio::time::Instant::now() + timeout;
+    while process_is_active(pid) && tokio::time::Instant::now() < deadline {
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    assert!(!process_is_active(pid), "fixture descendant {pid} leaked");
 }
 
 fn unique_temp_path(prefix: &str) -> PathBuf {

@@ -11,6 +11,28 @@ use std::{
 
 fn main() -> io::Result<()> {
     let args: Vec<OsString> = env::args_os().skip(1).collect();
+    if let Some(delay) = option_value(&args, "--emit-then-hold-ms") {
+        let delay = delay.to_string_lossy().parse::<u64>().unwrap_or(600);
+        let total = option_value(&args, "--hold-open-ms")
+            .and_then(|value| value.to_string_lossy().parse::<u64>().ok())
+            .unwrap_or(1_100);
+        thread::sleep(Duration::from_millis(delay));
+        writeln!(io::stdout().lock(), "DETACHED_CHILD_OUTPUT")?;
+        thread::sleep(Duration::from_millis(total.saturating_sub(delay)));
+        return Ok(());
+    }
+    if let Some(duration) = option_value(&args, "--emit-until-ms") {
+        let duration = duration.to_string_lossy().parse::<u64>().unwrap_or(3_000);
+        let deadline = std::time::Instant::now() + Duration::from_millis(duration);
+        while std::time::Instant::now() < deadline {
+            let mut output = io::stdout().lock();
+            writeln!(output, "DETACHED_STREAM")?;
+            output.flush()?;
+            drop(output);
+            thread::sleep(Duration::from_millis(10));
+        }
+        return Ok(());
+    }
     if let Some(duration) = option_value(&args, "--hold-open-ms") {
         let duration = duration.to_string_lossy().parse::<u64>().unwrap_or(3_000);
         thread::sleep(Duration::from_millis(duration));
@@ -62,6 +84,48 @@ fn main() -> io::Result<()> {
             .spawn()?;
         writeln!(stdout, "DESCENDANT:{}", child.id())?;
         writeln!(stdout, "DESCENDANT_READY")?;
+    }
+    #[cfg(unix)]
+    if let Some(duration) = option_value(&args, "--spawn-detached-inheriting-child-ms") {
+        use std::os::unix::process::CommandExt;
+
+        let mut command = Command::new(env::current_exe()?);
+        command
+            .arg("--emit-then-hold-ms")
+            .arg("600")
+            .arg("--hold-open-ms")
+            .arg(duration);
+        unsafe {
+            command.pre_exec(|| {
+                if libc::setsid() == -1 {
+                    Err(io::Error::last_os_error())
+                } else {
+                    Ok(())
+                }
+            });
+        }
+        let child = command.spawn()?;
+        writeln!(stdout, "DETACHED_DESCENDANT:{}", child.id())?;
+        writeln!(stdout, "DETACHED_DESCENDANT_READY")?;
+    }
+    #[cfg(unix)]
+    if let Some(duration) = option_value(&args, "--spawn-detached-emitter-ms") {
+        use std::os::unix::process::CommandExt;
+
+        let mut command = Command::new(env::current_exe()?);
+        command.arg("--emit-until-ms").arg(duration);
+        unsafe {
+            command.pre_exec(|| {
+                if libc::setsid() == -1 {
+                    Err(io::Error::last_os_error())
+                } else {
+                    Ok(())
+                }
+            });
+        }
+        let child = command.spawn()?;
+        writeln!(stdout, "DETACHED_EMITTER:{}", child.id())?;
+        writeln!(stdout, "DETACHED_EMITTER_READY")?;
     }
     stdout.flush()?;
     drop(stdout);
