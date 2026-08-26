@@ -1,112 +1,120 @@
 # rsHell
 
-跨平台 SSH 终端管理器与 GUI 终端模拟器，使用 Rust + GTK4 构建。命名灵感来自 Xshell。
+rsHell 是使用 Rust、GTK4 与 Relm4 构建的跨平台 SSH 终端管理器。P0 提供 Windows Terminal Dark / Fluent 风格的原生桌面界面、本地终端、两种 SSH transport、严格主机密钥确认、系统凭据库、标签页与分屏，以及旧配置导入。
 
-## 特性
+## P0 功能
 
-- **本地终端** — 内置本地 Shell 会话，支持多标签页
-- **SSH 连接管理** — 保存、分组、快速连接远程服务器
-- **双 SSH 后端** — 支持系统 OpenSSH 和 WezTerm 原生 SSH
-- **终端模拟** — 基于 wezterm-term，支持 6000 行回滚缓冲区
-- **分屏布局** — 支持单屏、水平分屏、垂直分屏、三分屏、四宫格
-- **跨平台** — 支持 Linux、macOS、Windows
-- **Fluent UI 暗色主题** — 现代化深色界面
+- 本地 shell 与完整终端模拟：ANSI 样式、Unicode、滚动缓冲、搜索、选择、复制粘贴和尺寸调整。
+- 连接目录：创建、编辑、复制、移动、删除和搜索连接；支持嵌套分组与 tags。
+- 工作区：多标签页、水平/垂直分屏、关闭、重连和明确的会话状态/错误页面。
+- 两种 SSH transport：
 
-## 截图
+  | 能力 | System OpenSSH | Native SSH |
+  |---|---:|---:|
+  | SSH agent | 是 | 否 |
+  | 私钥 | 是 | 是 |
+  | 密码 | 交由系统 OpenSSH | 是 |
+  | Keyboard-interactive | 交由系统 OpenSSH | 是 |
+  | 主机密钥确认 | OpenSSH strict/ask | 应用内 strict confirmation |
 
-<!-- TODO: 添加截图 -->
+- Native SSH 的密码、加密私钥 passphrase 与 keyboard-interactive 回答由应用安全交互界面提交；秘密不会写入 SQLite。
+- 首次未知主机密钥必须显示算法与 SHA-256 fingerprint 并由用户确认；已变更密钥 fail closed。Native SSH 使用应用私有 `known_hosts`，不会修改用户的 OpenSSH 文件。
+- 旧 JSON 与 OpenSSH config 先进行静态 preview，再以选中项原子导入；不会执行 `ProxyCommand` 或其他配置命令。
+- Fluent 暗色界面使用编译进二进制的产品图标，不依赖宿主 GTK icon theme。
 
-## 安装
+## 数据与安全
 
-### 从 Release 下载
+- 连接、分组、tags、终端 profiles 和设置保存在平台应用 state 目录中的 `rshell.sqlite3`。
+- 密码和私钥 passphrase 只保存在系统凭据库：Linux Secret Service、macOS Keychain 或 Windows Credential Manager。
+- Native SSH 的应用私有主机密钥文件位于平台 config 目录中的 `known_hosts`。
+- SQLite 写入使用事务；跨 SQLite/系统凭据库的更新通过持久化 credential journal 恢复。启动时会先 reconcile 未完成操作。
+- QA 会扫描 SQLite、WAL/SHM、报告和日志，拒绝任何 scenario secret 泄漏。
 
-前往 [Releases](https://github.com/hugefiver/rshell/releases) 页面下载对应平台的预编译二进制文件：
+平台目录由 `directories::ProjectDirs` 以应用标识 `io.github.hugefiver.rshell` 解析，具体位置遵循各操作系统的标准应用目录。
+
+## 安装与运行
+
+从 [Releases](https://github.com/hugefiver/rshell/releases) 下载对应包：
 
 - `linux-x86_64`
 - `macos-arm64`
 - `windows-x86_64`
 
-### 从源码构建
+Windows release 包含运行所需的 GTK runtime。Linux 和 macOS 需要系统 GTK4。
 
-#### 前置依赖
+启动：
 
-- Rust 工具链 (edition 2024)
-- GTK4 开发库
-  - **Linux**: 通过包管理器安装 `libgtk-4-dev` 或同等包
-  - **macOS**: `brew install gtk4`
-  - **Windows**: 需要 [gvsbuild](https://github.com/wingtk/gvsbuild) 构建 GTK4，以及通过 vcpkg 安装 OpenSSL 和 libssh2
-
-#### 构建
-
-```bash
-git clone https://github.com/hugefiver/rshell.git
-cd rshell
-cargo build --release
+```text
+rshell
 ```
 
-构建产物位于 `target/release/rshell`。
+可通过 `RSHELL_SHELL` 指定本地 shell 的完整程序路径。
 
-## 使用
+## 从源码构建
 
-```bash
-# 直接启动
-./rshell
+通用依赖：
 
-# 指定默认 Shell（可选）
-RSHELL_SHELL=/bin/zsh ./rshell
+- Rust stable（edition 2024）
+- PowerShell 7（运行 QA 脚本）
+- System OpenSSH：`ssh`、`ssh-keygen` 和 `ssh-agent`
+- GTK4 与 `pkg-config`
+
+平台说明：
+
+- Linux：安装 `libgtk-4-dev`、`pkg-config`；真实凭据 QA 还需要 D-Bus、Secret Service（例如 `gnome-keyring`）和 `secret-tool`。
+- macOS：`brew install gtk4 pkg-config`；凭据使用临时测试 Keychain，产品使用用户 Keychain。
+- Windows：使用 [gvsbuild](https://github.com/wingtk/gvsbuild) 构建 GTK4，并将 GTK 的 `bin`、`lib` 和 `lib/pkgconfig` 分别加入 `PATH`、`LIB` 和 `PKG_CONFIG_PATH`。不需要 OpenSSL、vcpkg 或旧 C SSH 库。
+
+Windows 示例：
+
+```powershell
+$gtkRoot = "C:\gtk-build\gtk\x64\release"
+$env:PKG_CONFIG_PATH = "$gtkRoot\lib\pkgconfig"
+$env:LIB = "$gtkRoot\lib"
+$env:PATH = "$gtkRoot\bin;$env:PATH"
+cargo build --release --workspace --locked
 ```
 
-### 连接管理
+Linux/macOS 在 GTK4 可由 `pkg-config` 发现后执行：
 
-1. 点击侧边栏的 **+** 按钮添加新连接
-2. 填写主机名、端口、用户名等信息
-3. 选择 SSH 后端（系统 OpenSSH 或 WezTerm SSH）
-4. 连接将自动保存至本地配置文件
-
-### 快捷操作
-
-- 通过菜单栏新建本地标签页或 SSH 会话
-- 侧边栏切换连接列表显示/隐藏
-- 支持多种分屏布局切换
-
-## 配置
-
-连接配置保存在：
-
-| 平台    | 路径                                          |
-| ------- | --------------------------------------------- |
-| Linux   | `~/.config/rshell/connections.json`           |
-| macOS   | `~/Library/Application Support/rshell/connections.json` |
-| Windows | `%LOCALAPPDATA%\rshell\connections.json`      |
-
-## 开发
-
-```bash
-# 检查编译
-cargo check
-
-# 运行测试
-cargo test --lib
-
-# 代码检查
-cargo clippy -- -D warnings
-
-# 运行
-cargo run
+```text
+cargo build --release --workspace --locked
 ```
 
-## 项目结构
+## 开发与验证
 
+完整自动质量门：
+
+```text
+cargo fmt --all -- --check
+cargo check --workspace --all-targets --all-features --locked
+cargo test --workspace --all-features --locked
+cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
 ```
-src/
-├── main.rs          # 入口：RelmApp → RshellApp
-├── lib.rs           # 模块声明
-├── app.rs           # 主界面组件（relm4 SimpleComponent）
-├── terminal.rs      # PTY 会话管理、终端模拟
-├── connection.rs    # 连接配置的存储与持久化
-├── ssh.rs           # SSH 命令构建器
-└── theme.rs         # 全局 CSS 主题加载
+
+真实 P0 surface（会使用 GTK、PTY、System OpenSSH、真实系统凭据库与临时 QA 资源）：
+
+```powershell
+pwsh -NoProfile -File scripts/qa/p0-smoke.ps1 -Mode All
+pwsh -NoProfile -File scripts/qa/assert-no-secrets.ps1 -ArtifactRoot artifacts/p0-smoke
 ```
+
+Smoke 报告、JUnit 与截图写入 `artifacts/p0-smoke/`。脚本对 timeout、失败的服务准备、未清理的进程/凭据/journal 和缺失证据 fail closed。
+
+## 架构
+
+```text
+src/                    composition root、bootstrap、cleanup 与 P0 smoke
+crates/rshell-core/     连接领域、workspace、协议与 application ports
+crates/rshell-platform/ 平台目录、权限、进程、shell 与 clipboard
+crates/rshell-session/  终端引擎、session actor、PTY 与 SSH transports
+crates/rshell-storage/  SQLite、系统凭据库 journal 与 importers
+crates/rshell-ui/       GTK4/Relm4 Fluent UI 与 TerminalView
+resources/              编译期 CSS 与产品 SVG 图标
+scripts/qa/             P0 smoke、secret、workflow 与 package contracts
+```
+
+CI 在 Linux x86_64、macOS arm64 与 Windows x86_64 上运行 workspace gates、真实 SSH/vault/GTK smoke。Release workflow 还构建并验证三个平台包的架构、runtime、启动报告与禁止的旧依赖标记。
 
 ## 许可证
 
