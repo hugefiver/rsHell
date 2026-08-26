@@ -210,6 +210,29 @@ async fn changed_key_fails_closed_without_prompt_or_live_mutation() {
 }
 
 #[tokio::test]
+async fn zero_port_host_key_decision_is_retained_without_default_port_rewriting() {
+    let temp = TempDir::new().unwrap();
+    let verifier = verifier(&temp);
+    let key = key_a();
+    accept_unknown(&verifier, &key, "zero-port.test", 0).await;
+
+    let contents = fs::read_to_string(verifier.path()).unwrap();
+    assert!(contents.contains("[zero-port.test]:0 "));
+
+    let (broker, mut requests) = interaction_channel();
+    verifier
+        .verify("zero-port.test", 0, &key, &broker)
+        .await
+        .expect("accepted zero-port decision must remain known");
+    assert!(
+        tokio::time::timeout(Duration::from_millis(20), requests.recv())
+            .await
+            .is_err(),
+        "retained zero-port decisions must not prompt again"
+    );
+}
+
+#[tokio::test]
 async fn non_file_known_hosts_destination_fails_verification_without_prompt_or_mutation() {
     let temp = TempDir::new().unwrap();
     let verifier = verifier(&temp);

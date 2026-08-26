@@ -142,6 +142,6 @@ impl fmt::Debug for KnownHostsVerifier {
     }
 }
 
-fn valid_endpoint(host: &str, port: u16) -> bool {
-    port != 0 && !host.is_empty() && !host.chars().any(char::is_whitespace)
+fn valid_endpoint(host: &str, _port: u16) -> bool {
+    !host.is_empty() && !host.chars().any(char::is_whitespace)
 }

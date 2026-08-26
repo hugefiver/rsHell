@@ -9,6 +9,7 @@ use std::{collections::VecDeque, future::Future, sync::Arc, time::Duration};
 use async_trait::async_trait;
 use rshell_core::{ConnectionProfile, SessionFailure, TerminalSize};
 use russh::{Channel, client};
+use tokio::net::TcpStream;
 
 use crate::{
     AuthPlan, InteractionBroker, KnownHostsVerifier, SessionTransport, TransportCapabilities,
@@ -71,13 +72,22 @@ impl NativeSshTransport {
             return Err(TransportError::new(SessionFailure::Validation));
         }
         validate_request(request)?;
-        let auth = self
-            .auth
-            .take()
-            .ok_or_else(|| TransportError::new(SessionFailure::Validation))?;
+        if self.auth.is_none() {
+            return Err(TransportError::new(SessionFailure::Validation));
+        }
+        let target = (self.profile.host.as_str(), self.profile.port);
+        let stream = TcpStream::connect(target)
+            .await
+            .map_err(|_| TransportError::new(SessionFailure::Network))?;
+        stream
+            .set_nodelay(true)
+            .map_err(|_| TransportError::new(SessionFailure::Network))?;
+        let peer = stream
+            .peer_addr()
+            .map_err(|_| TransportError::new(SessionFailure::Network))?;
         let handler = StrictClientHandler::new(
-            self.profile.host.clone(),
-            self.profile.port,
+            peer.ip().to_string(),
+            peer.port(),
             self.verifier.clone(),
             interactions.clone(),
         );
@@ -85,10 +95,13 @@ impl NativeSshTransport {
             nodelay: true,
             ..Default::default()
         });
-        let target = (self.profile.host.as_str(), self.profile.port);
-        let mut handle = client::connect(config, target, handler)
+        let mut handle = client::connect_stream(config, stream, handler)
             .await
             .map_err(TransportError::from)?;
+        let Some(auth) = self.auth.take() else {
+            disconnect_quietly(&handle).await;
+            return Err(TransportError::new(SessionFailure::Validation));
+        };
 
         if let Err(error) =
             auth::authenticate(&mut handle, &self.profile.username, auth, &interactions).await

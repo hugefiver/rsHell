@@ -197,6 +197,76 @@ async fn password_auth_confirms_unknown_key_then_echoes_and_resizes_pty() {
 }
 
 #[tokio::test]
+async fn localhost_alias_uses_the_connected_peer_for_host_key_lookup() {
+    let server = TestSshServer::start(ServerAuth::Password).await;
+    let temp = TempDir::new().unwrap();
+    let verifier = rshell_session::KnownHostsVerifier::new(temp.path().join("known_hosts"))
+        .with_timeout(Duration::from_secs(2));
+
+    let mut alias_profile = profile(server.address(), AuthenticationKind::Password);
+    alias_profile.host = "localhost".to_owned();
+    let (alias_profile, alias_auth) = vault_plan(alias_profile, PASSWORD);
+    let mut alias_transport =
+        NativeSshTransport::new(alias_profile, alias_auth, verifier.clone()).unwrap();
+    let request = TransportRequest::new(size(80, 24));
+    let (result, prompts) = connect_accepting_host(&mut alias_transport, &request).await;
+    result.expect("localhost alias authentication");
+    let InteractionRequest::HostKey(prompt) = prompts.first().expect("peer host-key prompt") else {
+        panic!("expected host-key prompt");
+    };
+    assert_eq!(prompt.host, server.address().ip().to_string());
+    assert_eq!(prompt.port, server.address().port());
+    alias_transport.shutdown().await.unwrap();
+
+    let (ip_profile, ip_auth) = vault_plan(
+        profile(server.address(), AuthenticationKind::Password),
+        PASSWORD,
+    );
+    let mut ip_transport = NativeSshTransport::new(ip_profile, ip_auth, verifier).unwrap();
+    let (result, prompts) = drive_connect(&mut ip_transport, &request, |request| {
+        panic!("peer identity should already be known: {request:?}")
+    })
+    .await;
+    result.expect("peer IP authentication after alias acceptance");
+    assert!(prompts.is_empty());
+    ip_transport.shutdown().await.unwrap();
+
+    let snapshot = server.shutdown().await;
+    assert_eq!(snapshot.successful_authentications, 2);
+}
+
+#[tokio::test]
+async fn rejected_host_key_does_not_consume_password_authentication() {
+    let server = TestSshServer::start(ServerAuth::Password).await;
+    let temp = TempDir::new().unwrap();
+    let (profile, auth) = vault_plan(
+        profile(server.address(), AuthenticationKind::Password),
+        PASSWORD,
+    );
+    let mut transport = transport(profile, auth, &temp);
+    let request = TransportRequest::new(size(80, 24));
+
+    let (rejected, _) = drive_connect(&mut transport, &request, |request| match request {
+        InteractionRequest::HostKey(_) => {
+            Some(InteractionResponse::HostKey(HostKeyDecision::Reject))
+        }
+        _ => panic!("unexpected authentication interaction: {request:?}"),
+    })
+    .await;
+    assert_eq!(
+        rejected.unwrap_err().failure(),
+        SessionFailure::HostKeyRejected
+    );
+
+    let (accepted, _) = connect_accepting_host(&mut transport, &request).await;
+    accepted.expect("password authentication must survive host-key rejection");
+    transport.shutdown().await.unwrap();
+
+    let snapshot = server.shutdown().await;
+    assert_eq!(snapshot.successful_authentications, 1);
+}
+
+#[tokio::test]
 async fn encrypted_private_key_uses_vault_passphrase_and_reuses_known_host() {
     let temp = TempDir::new().unwrap();
     let (key_path, public_key) = write_encrypted_client_key(temp.path());
@@ -285,7 +355,8 @@ async fn wrong_password_changed_key_and_reset_map_to_distinct_failures() {
         result.unwrap_err().failure(),
         SessionFailure::Authentication
     );
-    let (broker, _requests) = interaction_channel();
+    let accepted_connections = wrong_server.snapshot().accepted_connections;
+    let (broker, mut requests) = interaction_channel();
     assert_eq!(
         wrong
             .connect(&request, broker)
@@ -293,6 +364,15 @@ async fn wrong_password_changed_key_and_reset_map_to_distinct_failures() {
             .expect_err("consumed password plan must not be reusable")
             .failure(),
         SessionFailure::Validation
+    );
+    assert_eq!(
+        wrong_server.snapshot().accepted_connections,
+        accepted_connections,
+        "a consumed auth plan must fail before opening another connection"
+    );
+    assert!(
+        requests.try_recv().is_err(),
+        "a consumed auth plan must fail before host-key interaction"
     );
     wrong.shutdown().await.unwrap();
     let address = wrong_server.address();
