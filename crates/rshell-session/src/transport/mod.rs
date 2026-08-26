@@ -17,6 +17,8 @@ use crate::TransportError;
 mod local;
 mod local_reader;
 mod local_runtime;
+#[cfg(test)]
+mod local_runtime_tests;
 mod native_ssh;
 mod pty;
 mod system_ssh;

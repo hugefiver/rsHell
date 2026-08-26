@@ -19,23 +19,17 @@ fn main() -> io::Result<()> {
         thread::sleep(Duration::from_millis(delay));
         writeln!(io::stdout().lock(), "DETACHED_CHILD_OUTPUT")?;
         thread::sleep(Duration::from_millis(total.saturating_sub(delay)));
-        return Ok(());
-    }
-    if let Some(duration) = option_value(&args, "--emit-until-ms") {
-        let duration = duration.to_string_lossy().parse::<u64>().unwrap_or(3_000);
-        let deadline = std::time::Instant::now() + Duration::from_millis(duration);
-        while std::time::Instant::now() < deadline {
-            let mut output = io::stdout().lock();
-            writeln!(output, "DETACHED_STREAM")?;
-            output.flush()?;
-            drop(output);
-            thread::sleep(Duration::from_millis(10));
+        if let Some(path) = option_value(&args, "--completion-file") {
+            fs::write(PathBuf::from(path), b"complete")?;
         }
         return Ok(());
     }
     if let Some(duration) = option_value(&args, "--hold-open-ms") {
         let duration = duration.to_string_lossy().parse::<u64>().unwrap_or(3_000);
         thread::sleep(Duration::from_millis(duration));
+        if let Some(path) = option_value(&args, "--completion-file") {
+            fs::write(PathBuf::from(path), b"complete")?;
+        }
         return Ok(());
     }
     let mut stdout = io::stdout().lock();
@@ -95,6 +89,9 @@ fn main() -> io::Result<()> {
             .arg("600")
             .arg("--hold-open-ms")
             .arg(duration);
+        if let Some(path) = option_value(&args, "--detached-completion-file") {
+            command.arg("--completion-file").arg(path);
+        }
         unsafe {
             command.pre_exec(|| {
                 if libc::setsid() == -1 {
@@ -109,11 +106,14 @@ fn main() -> io::Result<()> {
         writeln!(stdout, "DETACHED_DESCENDANT_READY")?;
     }
     #[cfg(unix)]
-    if let Some(duration) = option_value(&args, "--spawn-detached-emitter-ms") {
+    if let Some(duration) = option_value(&args, "--spawn-detached-silent-child-ms") {
         use std::os::unix::process::CommandExt;
 
         let mut command = Command::new(env::current_exe()?);
-        command.arg("--emit-until-ms").arg(duration);
+        command.arg("--hold-open-ms").arg(duration);
+        if let Some(path) = option_value(&args, "--detached-completion-file") {
+            command.arg("--completion-file").arg(path);
+        }
         unsafe {
             command.pre_exec(|| {
                 if libc::setsid() == -1 {
@@ -124,8 +124,8 @@ fn main() -> io::Result<()> {
             });
         }
         let child = command.spawn()?;
-        writeln!(stdout, "DETACHED_EMITTER:{}", child.id())?;
-        writeln!(stdout, "DETACHED_EMITTER_READY")?;
+        writeln!(stdout, "DETACHED_SILENT_CHILD:{}", child.id())?;
+        writeln!(stdout, "DETACHED_SILENT_CHILD_READY")?;
     }
     stdout.flush()?;
     drop(stdout);
