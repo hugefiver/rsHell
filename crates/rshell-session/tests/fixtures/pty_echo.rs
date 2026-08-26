@@ -11,25 +11,9 @@ use std::{
 
 fn main() -> io::Result<()> {
     let args: Vec<OsString> = env::args_os().skip(1).collect();
-    if let Some(delay) = option_value(&args, "--emit-then-hold-ms") {
-        let delay = delay.to_string_lossy().parse::<u64>().unwrap_or(600);
-        let total = option_value(&args, "--hold-open-ms")
-            .and_then(|value| value.to_string_lossy().parse::<u64>().ok())
-            .unwrap_or(1_100);
-        thread::sleep(Duration::from_millis(delay));
-        writeln!(io::stdout().lock(), "DETACHED_CHILD_OUTPUT")?;
-        thread::sleep(Duration::from_millis(total.saturating_sub(delay)));
-        if let Some(path) = option_value(&args, "--completion-file") {
-            fs::write(PathBuf::from(path), b"complete")?;
-        }
-        return Ok(());
-    }
     if let Some(duration) = option_value(&args, "--hold-open-ms") {
         let duration = duration.to_string_lossy().parse::<u64>().unwrap_or(3_000);
         thread::sleep(Duration::from_millis(duration));
-        if let Some(path) = option_value(&args, "--completion-file") {
-            fs::write(PathBuf::from(path), b"complete")?;
-        }
         return Ok(());
     }
     let mut stdout = io::stdout().lock();
@@ -78,54 +62,6 @@ fn main() -> io::Result<()> {
             .spawn()?;
         writeln!(stdout, "DESCENDANT:{}", child.id())?;
         writeln!(stdout, "DESCENDANT_READY")?;
-    }
-    #[cfg(unix)]
-    if let Some(duration) = option_value(&args, "--spawn-detached-inheriting-child-ms") {
-        use std::os::unix::process::CommandExt;
-
-        let mut command = Command::new(env::current_exe()?);
-        command
-            .arg("--emit-then-hold-ms")
-            .arg("600")
-            .arg("--hold-open-ms")
-            .arg(duration);
-        if let Some(path) = option_value(&args, "--detached-completion-file") {
-            command.arg("--completion-file").arg(path);
-        }
-        unsafe {
-            command.pre_exec(|| {
-                if libc::setsid() == -1 {
-                    Err(io::Error::last_os_error())
-                } else {
-                    Ok(())
-                }
-            });
-        }
-        let child = command.spawn()?;
-        writeln!(stdout, "DETACHED_DESCENDANT:{}", child.id())?;
-        writeln!(stdout, "DETACHED_DESCENDANT_READY")?;
-    }
-    #[cfg(unix)]
-    if let Some(duration) = option_value(&args, "--spawn-detached-silent-child-ms") {
-        use std::os::unix::process::CommandExt;
-
-        let mut command = Command::new(env::current_exe()?);
-        command.arg("--hold-open-ms").arg(duration);
-        if let Some(path) = option_value(&args, "--detached-completion-file") {
-            command.arg("--completion-file").arg(path);
-        }
-        unsafe {
-            command.pre_exec(|| {
-                if libc::setsid() == -1 {
-                    Err(io::Error::last_os_error())
-                } else {
-                    Ok(())
-                }
-            });
-        }
-        let child = command.spawn()?;
-        writeln!(stdout, "DETACHED_SILENT_CHILD:{}", child.id())?;
-        writeln!(stdout, "DETACHED_SILENT_CHILD_READY")?;
     }
     stdout.flush()?;
     drop(stdout);

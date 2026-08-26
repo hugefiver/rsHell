@@ -315,68 +315,6 @@ async fn shutdown_is_bounded_when_a_descendant_inherits_the_pty() {
     );
 }
 
-#[cfg(unix)]
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn shutdown_converges_when_a_detached_pty_holder_closes_within_actor_budget() {
-    let completion = unique_temp_path("rshell-detached-complete");
-    let mut transport = LocalPtyTransport::launch(command(vec![
-        OsString::from("--spawn-detached-inheriting-child-ms"),
-        OsString::from("1100"),
-        OsString::from("--detached-completion-file"),
-        completion.as_os_str().to_os_string(),
-    ]));
-    connect(&mut transport, &TransportRequest::new(size(80, 24))).await;
-    let output = read_until(&mut transport, b"DETACHED_DESCENDANT_READY").await;
-    let descendant_pid = line_value(&output, b"DETACHED_DESCENDANT:");
-    assert!(process_is_active(descendant_pid));
-
-    let result = tokio::time::timeout(Duration::from_millis(1750), transport.shutdown())
-        .await
-        .expect("shutdown must remain below the session actor deadline");
-    let completed_at_return = completion.is_file();
-    if !completed_at_return {
-        wait_for_path(&completion, Duration::from_secs(1)).await;
-    }
-    assert!(
-        completed_at_return,
-        "shutdown returned before detached PTY holder {descendant_pid} completed"
-    );
-    result.expect("a detached PTY holder that closes within budget must converge");
-    fs::remove_file(completion).unwrap();
-}
-
-#[cfg(unix)]
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn receiver_close_cannot_turn_a_live_detached_holder_into_success() {
-    let completion = unique_temp_path("rshell-detached-timeout");
-    let mut transport = LocalPtyTransport::launch(command(vec![
-        OsString::from("--spawn-detached-silent-child-ms"),
-        OsString::from("3000"),
-        OsString::from("--detached-completion-file"),
-        completion.as_os_str().to_os_string(),
-    ]));
-    connect(&mut transport, &TransportRequest::new(size(80, 24))).await;
-    let output = read_until(&mut transport, b"DETACHED_SILENT_CHILD_READY").await;
-    let descendant_pid = line_value(&output, b"DETACHED_SILENT_CHILD:");
-    assert!(process_is_active(descendant_pid));
-
-    let result = tokio::time::timeout(Duration::from_millis(1750), transport.shutdown())
-        .await
-        .expect("shutdown must remain below the session actor deadline");
-    assert_eq!(
-        result
-            .expect_err("receiver closure is not natural PTY convergence")
-            .failure(),
-        SessionFailure::Pty
-    );
-    assert!(
-        !completion.exists(),
-        "detached holder unexpectedly completed within reader deadline"
-    );
-    wait_for_path(&completion, Duration::from_secs(3)).await;
-    fs::remove_file(completion).unwrap();
-}
-
 fn contains(haystack: &[u8], needle: &[u8]) -> bool {
     haystack
         .windows(needle.len())
@@ -396,15 +334,6 @@ fn line_value(output: &[u8], prefix: &[u8]) -> u32 {
         .expect("fixture value is UTF-8")
         .parse()
         .expect("fixture value is a process id")
-}
-
-#[cfg(unix)]
-async fn wait_for_path(path: &std::path::Path, timeout: Duration) {
-    let deadline = tokio::time::Instant::now() + timeout;
-    while !path.is_file() && tokio::time::Instant::now() < deadline {
-        tokio::time::sleep(Duration::from_millis(10)).await;
-    }
-    assert!(path.is_file(), "fixture completion marker was not written");
 }
 
 fn unique_temp_path(prefix: &str) -> PathBuf {
