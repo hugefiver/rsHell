@@ -92,6 +92,23 @@ fn fixture_converts_styles_unicode_wrap_title_cursor_and_mouse_mode() {
 }
 
 #[test]
+fn indexed_rgb_colors_and_configured_answerback_use_public_adapter_state() {
+    let mut engine = engine_with(|settings| settings.answerback = "rshell-ready".into());
+    let delta = engine.advance(b"\x1b[38;5;123;48;2;1;2;3mX\x05").unwrap();
+    assert_eq!(delta.outbound, b"rshell-ready");
+
+    let frame = engine.snapshot(viewport(0, 3), None);
+    let cell = frame
+        .rows
+        .iter()
+        .flat_map(|row| row.cells.iter())
+        .find(|cell| cell.text == "X")
+        .unwrap();
+    assert_eq!(cell.foreground, Color::Ansi(123));
+    assert_eq!(cell.background, Color::Rgb(1, 2, 3));
+}
+
+#[test]
 fn alternate_screen_is_isolated_and_restores_primary_screen() {
     let mut engine = DefaultTerminalEngine::new(&profile(1_000), size(20, 4)).unwrap();
     engine.input(b"primary").unwrap();
@@ -111,6 +128,29 @@ fn alternate_screen_is_isolated_and_restores_primary_screen() {
 
     engine.input(b"\x1b[?1002l").unwrap();
     assert!(!engine.snapshot(viewport(0, 4), None).mouse_reporting);
+}
+
+#[test]
+fn same_chunk_primary_output_before_alternate_screen_keeps_stable_row_ids() {
+    let mut engine = DefaultTerminalEngine::new(&profile(1_000), size(20, 3)).unwrap();
+    engine.input(b"anchor\r\n").unwrap();
+    let before = engine.search(&SearchQuery {
+        needle: "anchor".into(),
+        case_sensitive: true,
+        regex: false,
+    })[0];
+
+    engine
+        .input(b"one\r\ntwo\r\nthree\r\n\x1b[?1049hALT")
+        .unwrap();
+    engine.input(b"\x1b[?1049l").unwrap();
+    let after = engine.search(&SearchQuery {
+        needle: "anchor".into(),
+        case_sensitive: true,
+        regex: false,
+    })[0];
+
+    assert_eq!(after.start.stable_row, before.start.stable_row);
 }
 
 #[test]
@@ -201,6 +241,32 @@ fn long_output_exposes_clamped_viewport_bounds() {
     assert_eq!(clamped.viewport_top, bounds.bottom_top_stable_row);
     let oldest = engine.snapshot(viewport(i64::MIN, 3), None);
     assert_eq!(oldest.viewport_top, bounds.first_stable_row);
+}
+
+#[test]
+fn stable_row_ids_survive_output_after_scrollback_reaches_its_limit() {
+    let mut engine = DefaultTerminalEngine::new(&profile(100), size(24, 3)).unwrap();
+    let first = (0..150)
+        .map(|index| format!("record-{index:03}\r\n"))
+        .collect::<String>();
+    engine.input(first.as_bytes()).unwrap();
+    let before = engine.search(&SearchQuery {
+        needle: "record-100".into(),
+        case_sensitive: true,
+        regex: false,
+    })[0];
+
+    let additional = (150..160)
+        .map(|index| format!("record-{index:03}\r\n"))
+        .collect::<String>();
+    engine.input(additional.as_bytes()).unwrap();
+    let after = engine.search(&SearchQuery {
+        needle: "record-100".into(),
+        case_sensitive: true,
+        regex: false,
+    })[0];
+
+    assert_eq!(after.start.stable_row, before.start.stable_row);
 }
 
 #[test]

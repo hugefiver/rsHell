@@ -5,7 +5,7 @@ use rshell_core::{
     TerminalMouseEvent, TerminalSize, Viewport,
 };
 
-use crate::{EngineError, ViewportBounds, render, text, wezterm_adapter::WezTermAdapter};
+use crate::{EngineError, ViewportBounds, alacritty_adapter::AlacrittyAdapter, render, text};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EngineDelta {
@@ -31,7 +31,7 @@ pub trait TerminalEngine: Send {
 }
 
 pub struct DefaultTerminalEngine {
-    adapter: WezTermAdapter,
+    adapter: AlacrittyAdapter,
 }
 
 impl std::fmt::Debug for DefaultTerminalEngine {
@@ -50,7 +50,7 @@ impl DefaultTerminalEngine {
     ) -> Result<Self, EngineError> {
         validate_size(size)?;
         Ok(Self {
-            adapter: WezTermAdapter::new(settings, size),
+            adapter: AlacrittyAdapter::new(settings, size),
         })
     }
 
@@ -90,7 +90,7 @@ impl DefaultTerminalEngine {
 
 impl TerminalEngine for DefaultTerminalEngine {
     fn advance(&mut self, bytes: &[u8]) -> Result<EngineDelta, EngineError> {
-        let outbound = self.adapter.input(bytes)?;
+        let outbound = self.adapter.input(bytes);
         Ok(EngineDelta {
             outbound,
             dirty: !bytes.is_empty(),
@@ -119,7 +119,7 @@ impl TerminalEngine for DefaultTerminalEngine {
     }
 
     fn encode_mouse(&mut self, input: TerminalMouseEvent) -> Result<Vec<u8>, EngineError> {
-        if !self.adapter.mouse_reporting_allowed() || !self.adapter.terminal().is_mouse_grabbed() {
+        if !self.adapter.mouse_reporting_active() {
             return Err(EngineError::UnsupportedMouse("mouse reporting is disabled"));
         }
         self.adapter.encode_mouse(input)

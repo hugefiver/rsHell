@@ -5,6 +5,7 @@ edition = "2024"
 license = "MIT"
 
 [dependencies]
+alacritty_terminal = "=0.26.0"
 async-channel = "2.5"
 async-trait = "0.1"
 libc = "0.2"
@@ -20,7 +21,6 @@ russh = { version = "=0.62.5", default-features = false, features = ["flate2", "
 secrecy = "0.10.3"
 thiserror = "2.0"
 tokio = { version = "1", features = ["macros", "rt", "rt-multi-thread", "sync", "time"] }
-wezterm-term = { git = "https://github.com/wez/wezterm.git", package = "wezterm-term", rev = "d69264df66fdcc928c7a30c673df108984fda821" }
 
 [dev-dependencies]
 sha2 = "0.10.9"

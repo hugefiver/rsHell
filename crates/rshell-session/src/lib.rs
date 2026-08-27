@@ -1,6 +1,12 @@
 mod actor;
 mod actor_io;
 mod actor_process;
+mod alacritty_adapter;
+mod alacritty_event;
+mod alacritty_feed;
+mod alacritty_key;
+mod alacritty_mouse;
+mod alacritty_rows;
 mod auth;
 mod engine;
 mod error;
@@ -16,9 +22,6 @@ mod process;
 mod render;
 mod text;
 mod transport;
-mod wezterm_adapter;
-mod wezterm_input;
-mod wezterm_writer;
 
 pub use auth::{
     AuthPlan, AuthPlanError, KeyboardInteractiveResponseError, keyboard_interactive_request,

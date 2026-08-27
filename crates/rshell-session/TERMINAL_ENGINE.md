@@ -9,7 +9,7 @@ canary fixture deliberately contains `sha256: null`, so normal verification fail
 
 - Command: `cargo bench -p rshell-session --bench terminal_engine --locked`
 - Candidate command: `cargo bench -p rshell-session --bench terminal_engine --locked -- --record-candidate`
-- Selected sole adapter: `wezterm-term@d69264df66fdcc928c7a30c673df108984fda821`
+- Selected sole adapter: `alacritty-terminal@0.26.0`
 - Measured implementation commit: unrecorded
 - Platform and toolchain: unrecorded
 - Throughput sample 1: unrecorded MiB/s

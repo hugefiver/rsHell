@@ -1,47 +1,42 @@
 use std::sync::Arc;
 
+use alacritty_terminal::{
+    grid::Dimensions,
+    index::Column,
+    term::cell::{Cell, Flags},
+    vte::ansi::{Color as VteColor, CursorShape as VteCursorShape},
+};
 use rshell_core::{
     CellAttributes, CellPosition, Color, CursorShape, RenderCell, RenderCursor, RenderFrame,
     RenderRow, SelectionRange, Viewport,
 };
-use wezterm_term::{Intensity, Line, Underline, color::ColorAttribute};
 
-use crate::{text::selection_columns, wezterm_adapter::WezTermAdapter};
+use crate::{alacritty_adapter::AlacrittyAdapter, text::selection_columns};
 
 pub(crate) fn snapshot(
-    adapter: &WezTermAdapter,
+    adapter: &AlacrittyAdapter,
     viewport: Viewport,
     selection: Option<SelectionRange>,
 ) -> RenderFrame {
     let terminal = adapter.terminal();
-    let screen = terminal.screen();
-    let total_rows = screen.scrollback_rows();
-    let end_stable = screen.phys_to_stable_row_index(total_rows) as i64;
+    let grid = terminal.grid();
     let start = adapter.viewport_bounds().clamp_top(viewport.top_stable_row);
-    let end = start
-        .saturating_add(i64::from(viewport.rows))
-        .min(end_stable);
-    let phys_start = screen
-        .stable_row_to_phys(start as isize)
-        .unwrap_or(total_rows);
-    let phys_end = screen
-        .stable_row_to_phys(end as isize)
-        .unwrap_or(total_rows);
-    let mut rows = Vec::with_capacity(phys_end.saturating_sub(phys_start));
-    screen.with_phys_lines(phys_start..phys_end, |lines| {
-        for (offset, line) in lines.iter().enumerate() {
-            let stable_row = screen.phys_to_stable_row_index(phys_start + offset) as i64;
-            rows.push(convert_row(
-                line,
-                stable_row,
-                usize::from(adapter.size().cols),
-                selection,
-            ));
-        }
-    });
+    let mut rows = Vec::with_capacity(usize::from(viewport.rows));
+    for offset in 0..i64::from(viewport.rows) {
+        let stable_row = start.saturating_add(offset);
+        let Some(line) = adapter.backend_line(stable_row) else {
+            break;
+        };
+        rows.push(convert_row(
+            &grid[line],
+            stable_row,
+            grid.columns(),
+            selection,
+        ));
+    }
 
-    let cursor = terminal.cursor_pos();
-    let cursor_stable = screen.visible_row_to_stable_row(cursor.y) as i64;
+    let cursor = grid.cursor.point;
+    let cursor_shape = terminal.cursor_style().shape;
     RenderFrame {
         generation: 0,
         size: adapter.size(),
@@ -49,20 +44,23 @@ pub(crate) fn snapshot(
         rows: Arc::from(rows),
         cursor: Some(RenderCursor {
             position: CellPosition {
-                stable_row: cursor_stable,
-                column: cursor.x.min(usize::from(u16::MAX)) as u16,
+                stable_row: adapter.stable_row(cursor.line),
+                column: cursor.column.0.min(usize::from(u16::MAX)) as u16,
             },
-            shape: convert_cursor_shape(cursor.shape),
-            visible: cursor.visibility == Default::default(),
+            shape: convert_cursor_shape(cursor_shape),
+            visible: terminal
+                .mode()
+                .contains(alacritty_terminal::term::TermMode::SHOW_CURSOR)
+                && cursor_shape != VteCursorShape::Hidden,
         }),
-        title: terminal.get_title().into(),
-        alternate_screen: terminal.is_alt_screen_active(),
-        mouse_reporting: adapter.mouse_reporting_allowed() && terminal.is_mouse_grabbed(),
+        title: adapter.title(),
+        alternate_screen: adapter.alternate_screen(),
+        mouse_reporting: adapter.mouse_reporting_active(),
     }
 }
 
 fn convert_row(
-    line: &Line,
+    row: &alacritty_terminal::grid::Row<Cell>,
     stable_row: i64,
     columns: usize,
     selection: Option<SelectionRange>,
@@ -70,41 +68,54 @@ fn convert_row(
     let selected = selection.and_then(|range| selection_columns(range, stable_row, columns));
     let mut cells = Vec::with_capacity(columns);
     let mut column = 0;
-    for cell in line.visible_cells() {
-        let cell_column = cell.cell_index().min(columns);
-        while column < cell_column {
+    while column < columns {
+        let cell = &row[Column(column)];
+        if cell.flags.contains(Flags::WIDE_CHAR_SPACER) {
+            column += 1;
+            continue;
+        }
+        if cell.flags.contains(Flags::LEADING_WIDE_CHAR_SPACER) {
             cells.push(blank_cell(is_selected(selected.clone(), column, 1)));
             column += 1;
+            continue;
         }
-        if cell_column >= columns {
-            break;
-        }
-        let width = cell.width().max(1).min(columns - cell_column);
-        let attributes = cell.attrs();
-        cells.push(RenderCell {
-            text: cell.str().into(),
-            width: width.min(usize::from(u8::MAX)) as u8,
-            foreground: convert_color(attributes.foreground()),
-            background: convert_color(attributes.background()),
-            attributes: CellAttributes {
-                bold: attributes.intensity() == Intensity::Bold,
-                italic: attributes.italic(),
-                underline: attributes.underline() != Underline::None,
-                strike: attributes.strikethrough(),
-                reverse: attributes.reverse(),
-            },
-            selected: is_selected(selected.clone(), cell_column, width),
-        });
-        column = cell_column + width;
-    }
-    while column < columns {
-        cells.push(blank_cell(is_selected(selected.clone(), column, 1)));
-        column += 1;
+        let width = if cell.flags.contains(Flags::WIDE_CHAR) {
+            2.min(columns - column)
+        } else {
+            1
+        };
+        cells.push(convert_cell(
+            cell,
+            width,
+            is_selected(selected.clone(), column, width),
+        ));
+        column += width;
     }
     RenderRow {
         stable_row,
-        wrapped: line.last_cell_was_wrapped(),
+        wrapped: row[Column(columns - 1)].flags.contains(Flags::WRAPLINE),
         cells: Arc::from(cells),
+    }
+}
+
+fn convert_cell(cell: &Cell, width: usize, selected: bool) -> RenderCell {
+    let mut text = String::from(cell.c);
+    if let Some(zerowidth) = cell.zerowidth() {
+        text.extend(zerowidth);
+    }
+    RenderCell {
+        text,
+        width: width as u8,
+        foreground: convert_color(cell.fg),
+        background: convert_color(cell.bg),
+        attributes: CellAttributes {
+            bold: cell.flags.contains(Flags::BOLD),
+            italic: cell.flags.contains(Flags::ITALIC),
+            underline: cell.flags.intersects(Flags::ALL_UNDERLINES),
+            strike: cell.flags.contains(Flags::STRIKEOUT),
+            reverse: cell.flags.contains(Flags::INVERSE),
+        },
+        selected,
     }
 }
 
@@ -120,28 +131,24 @@ fn blank_cell(selected: bool) -> RenderCell {
 }
 
 fn is_selected(selected: Option<std::ops::Range<usize>>, column: usize, width: usize) -> bool {
-    selected
-        .map(|range| range.start < column + width && column < range.end)
-        .unwrap_or(false)
+    selected.is_some_and(|range| range.start < column + width && column < range.end)
 }
 
-fn convert_color(color: ColorAttribute) -> Color {
+fn convert_color(color: VteColor) -> Color {
     match color {
-        ColorAttribute::Default => Color::Default,
-        ColorAttribute::PaletteIndex(index) => Color::Ansi(index),
-        ColorAttribute::TrueColorWithPaletteFallback(color, _)
-        | ColorAttribute::TrueColorWithDefaultFallback(color) => Color::Rgb(
-            (color.0 * 255.0).round() as u8,
-            (color.1 * 255.0).round() as u8,
-            (color.2 * 255.0).round() as u8,
-        ),
+        VteColor::Spec(rgb) => Color::Rgb(rgb.r, rgb.g, rgb.b),
+        VteColor::Indexed(index) => Color::Ansi(index),
+        VteColor::Named(named) if (named as usize) < 16 => Color::Ansi(named as u8),
+        VteColor::Named(_) => Color::Default,
     }
 }
 
-fn convert_cursor_shape(shape: impl std::fmt::Debug) -> CursorShape {
-    match format!("{shape:?}").as_str() {
-        "BlinkingUnderline" | "SteadyUnderline" => CursorShape::Underline,
-        "BlinkingBar" | "SteadyBar" => CursorShape::Beam,
-        _ => CursorShape::Block,
+fn convert_cursor_shape(shape: VteCursorShape) -> CursorShape {
+    match shape {
+        VteCursorShape::Underline => CursorShape::Underline,
+        VteCursorShape::Beam => CursorShape::Beam,
+        VteCursorShape::Block | VteCursorShape::HollowBlock | VteCursorShape::Hidden => {
+            CursorShape::Block
+        }
     }
 }

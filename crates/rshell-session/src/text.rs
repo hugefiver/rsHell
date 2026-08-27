@@ -1,10 +1,14 @@
 use std::ops::Range;
 
+use alacritty_terminal::{
+    grid::Dimensions,
+    index::{Column, Line},
+    term::cell::Flags,
+};
 use regex::RegexBuilder;
 use rshell_core::{CellPosition, SearchMatch, SearchQuery, SelectionRange};
-use wezterm_term::Line;
 
-use crate::wezterm_adapter::WezTermAdapter;
+use crate::alacritty_adapter::AlacrittyAdapter;
 
 struct TextCell {
     column: usize,
@@ -19,7 +23,7 @@ struct TextRow {
     cells: Vec<TextCell>,
 }
 
-pub(crate) fn search(adapter: &WezTermAdapter, query: &SearchQuery) -> Vec<SearchMatch> {
+pub(crate) fn search(adapter: &AlacrittyAdapter, query: &SearchQuery) -> Vec<SearchMatch> {
     if query.needle.is_empty() {
         return Vec::new();
     }
@@ -38,16 +42,14 @@ pub(crate) fn search(adapter: &WezTermAdapter, query: &SearchQuery) -> Vec<Searc
     let mut matches = Vec::new();
     for row in all_rows(adapter) {
         for found in regex.find_iter(&row.text) {
-            let start = byte_to_column(&row, found.start(), false);
-            let end = byte_to_column(&row, found.end(), true);
             matches.push(SearchMatch {
                 start: CellPosition {
                     stable_row: row.stable_row,
-                    column: to_u16(start),
+                    column: to_u16(byte_to_column(&row, found.start(), false)),
                 },
                 end: CellPosition {
                     stable_row: row.stable_row,
-                    column: to_u16(end),
+                    column: to_u16(byte_to_column(&row, found.end(), true)),
                 },
             });
         }
@@ -55,7 +57,7 @@ pub(crate) fn search(adapter: &WezTermAdapter, query: &SearchQuery) -> Vec<Searc
     matches
 }
 
-pub(crate) fn selection_text(adapter: &WezTermAdapter, range: SelectionRange) -> String {
+pub(crate) fn selection_text(adapter: &AlacrittyAdapter, range: SelectionRange) -> String {
     let (start, end) = ordered(range.start, range.end);
     if start == end {
         return String::new();
@@ -69,8 +71,7 @@ pub(crate) fn selection_text(adapter: &WezTermAdapter, range: SelectionRange) ->
         if !result.is_empty() && !previous_wrapped {
             result.push('\n');
         }
-        let columns = selection_columns(range, row.stable_row, usize::MAX);
-        if let Some(columns) = columns {
+        if let Some(columns) = selection_columns(range, row.stable_row, usize::MAX) {
             result.push_str(&columns_text(&row, columns));
         }
         previous_wrapped = row.wrapped;
@@ -106,49 +107,56 @@ pub(crate) fn selection_columns(
     (left < right).then_some(left..right)
 }
 
-fn all_rows(adapter: &WezTermAdapter) -> Vec<TextRow> {
-    let screen = adapter.terminal().screen();
-    let mut rows = Vec::with_capacity(screen.scrollback_rows());
-    screen.for_each_phys_line(|physical, line| {
-        rows.push(project_line(
-            line,
-            screen.phys_to_stable_row_index(physical) as i64,
-        ));
-    });
-    rows
+fn all_rows(adapter: &AlacrittyAdapter) -> Vec<TextRow> {
+    let grid = adapter.terminal().grid();
+    (grid.topmost_line().0..=grid.bottommost_line().0)
+        .map(|line| {
+            let line = Line(line);
+            project_line(&grid[line], adapter.stable_row(line), grid.columns())
+        })
+        .collect()
 }
 
-fn project_line(line: &Line, stable_row: i64) -> TextRow {
+fn project_line(
+    row: &alacritty_terminal::grid::Row<alacritty_terminal::term::cell::Cell>,
+    stable_row: i64,
+    columns: usize,
+) -> TextRow {
     let mut text = String::new();
     let mut cells = Vec::new();
     let mut column = 0;
-    for cell in line.visible_cells() {
-        while column < cell.cell_index() {
-            let start = text.len();
-            text.push(' ');
-            cells.push(TextCell {
-                column,
-                width: 1,
-                byte_range: start..text.len(),
-            });
+    while column < columns {
+        let cell = &row[Column(column)];
+        if cell
+            .flags
+            .intersects(Flags::WIDE_CHAR_SPACER | Flags::LEADING_WIDE_CHAR_SPACER)
+        {
             column += 1;
+            continue;
         }
         let start = text.len();
-        text.push_str(cell.str());
-        let width = cell.width().max(1);
+        text.push(cell.c);
+        if let Some(zerowidth) = cell.zerowidth() {
+            text.extend(zerowidth);
+        }
+        let width = if cell.flags.contains(Flags::WIDE_CHAR) {
+            2.min(columns - column)
+        } else {
+            1
+        };
         cells.push(TextCell {
-            column: cell.cell_index(),
+            column,
             width,
             byte_range: start..text.len(),
         });
-        column = cell.cell_index() + width;
+        column += width;
     }
     let trimmed_len = text.trim_end_matches(' ').len();
     text.truncate(trimmed_len);
     cells.retain(|cell| cell.byte_range.start < trimmed_len);
     TextRow {
         stable_row,
-        wrapped: line.last_cell_was_wrapped(),
+        wrapped: row[Column(columns - 1)].flags.contains(Flags::WRAPLINE),
         text,
         cells,
     }

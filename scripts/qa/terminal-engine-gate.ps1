@@ -10,7 +10,7 @@ if (Test-Path -LiteralPath "variable:PSNativeCommandUseErrorActionPreference") {
 }
 
 $Header = "RSHELL_TERMINAL_ENGINE_GATE version=1"
-$Backend = "wezterm-term@d69264df66fdcc928c7a30c673df108984fda821"
+$Backend = "alacritty-terminal@0.26.0"
 $MeasurementCommand = "cargo bench -p rshell-session --bench terminal_engine --locked"
 $FieldNames = @(
     "backend",

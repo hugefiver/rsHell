@@ -12,7 +12,7 @@ use rshell_core::{
 use rshell_session::{DefaultTerminalEngine, TerminalEngine};
 use sha2::{Digest, Sha256};
 
-const BACKEND_LINE: &str = "backend=wezterm-term@d69264df66fdcc928c7a30c673df108984fda821";
+const BACKEND_LINE: &str = "backend=alacritty-terminal@0.26.0";
 const THROUGHPUT_BYTES: usize = 104857600;
 const THROUGHPUT_SAMPLES: usize = 5;
 const MINIMUM_MIB_PER_SECOND: f64 = 40.0;

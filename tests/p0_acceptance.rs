@@ -983,7 +983,7 @@ fn terminal_engine_gate_contract_is_exact() {
     assert!(threshold_decision < passing_decision);
     for field in [
         "RSHELL_TERMINAL_ENGINE_GATE version=1",
-        "backend=wezterm-term@d69264df66fdcc928c7a30c673df108984fda821",
+        "backend=alacritty-terminal@0.26.0",
         "throughput_bytes",
         "throughput_sample_1_mib_s",
         "throughput_sample_2_mib_s",
