@@ -2,6 +2,7 @@ use std::collections::HashSet;
 
 use super::{
     AppSettings, KeyBinding, KeyCode, TerminalOverrides, TerminalProfile, TerminalSettingsV1,
+    parse_terminal_key_action,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -11,6 +12,7 @@ pub enum SettingsValidationCode {
     NonFinite,
     InvalidChord,
     DuplicateBinding,
+    InvalidAction,
     UnknownProfile,
 }
 
@@ -116,8 +118,8 @@ pub fn validate_app_settings(
 fn validate_bindings(bindings: &[KeyBinding]) -> Result<(), SettingsValidationError> {
     let mut chords = HashSet::new();
     for binding in bindings {
-        nonblank("key_bindings.action", &binding.action)?;
         let code = chord_code(&binding.code)?;
+        parse_terminal_key_action(&binding.action)?;
         let chord = (
             code,
             binding.modifiers.shift,

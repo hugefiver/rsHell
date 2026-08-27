@@ -9,8 +9,8 @@ use secrecy::SecretString;
 use tokio::sync::{broadcast, mpsc, watch};
 
 use crate::{
-    DefaultTerminalEngine, EngineError, SessionError, TerminalEngine, TransportFactory,
-    TransportRequest,
+    DefaultTerminalEngine, EngineError, PresentationPolicy, SessionError, TerminalEngine,
+    TransportFactory, TransportRequest,
 };
 
 pub const COMMAND_CAPACITY: usize = 128;
@@ -25,6 +25,7 @@ pub enum SessionCommand {
     Search(SearchQuery),
     Select(SelectionRange),
     CopySelection,
+    ClearScrollback,
     Respond(InteractionId, InteractionResponse),
     Reconnect,
     Shutdown,
@@ -41,6 +42,7 @@ impl fmt::Debug for SessionCommand {
             Self::Search(query) => formatter.debug_tuple("Search").field(query).finish(),
             Self::Select(range) => formatter.debug_tuple("Select").field(range).finish(),
             Self::CopySelection => formatter.write_str("CopySelection"),
+            Self::ClearScrollback => formatter.write_str("ClearScrollback"),
             Self::Respond(id, response) => formatter
                 .debug_tuple("Respond")
                 .field(id)
@@ -116,6 +118,7 @@ pub struct SessionLaunch {
     pub(crate) request: TransportRequest,
     pub(crate) engine: Box<dyn TerminalEngine>,
     pub(crate) factory: Option<Arc<dyn TransportFactory>>,
+    pub(crate) presentation_policy: PresentationPolicy,
 }
 
 impl SessionLaunch {
@@ -124,6 +127,7 @@ impl SessionLaunch {
             request,
             engine,
             factory: None,
+            presentation_policy: PresentationPolicy::default(),
         }
     }
 
@@ -132,7 +136,12 @@ impl SessionLaunch {
         profile: &ResolvedTerminalProfile,
     ) -> Result<Self, EngineError> {
         let engine = DefaultTerminalEngine::new(profile, request.initial_size())?;
-        Ok(Self::new(request, Box::new(engine)))
+        Ok(
+            Self::new(request, Box::new(engine)).with_presentation_policy(PresentationPolicy {
+                scroll_on_output: profile.scroll_on_output,
+                scroll_on_keypress: profile.scroll_on_keypress,
+            }),
+        )
     }
 
     pub fn request(&self) -> &TransportRequest {
@@ -141,6 +150,11 @@ impl SessionLaunch {
 
     pub fn with_factory(mut self, factory: Arc<dyn TransportFactory>) -> Self {
         self.factory = Some(factory);
+        self
+    }
+
+    pub fn with_presentation_policy(mut self, policy: PresentationPolicy) -> Self {
+        self.presentation_policy = policy;
         self
     }
 }

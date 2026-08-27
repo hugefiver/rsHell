@@ -7,7 +7,10 @@ use rshell_core::{
 use rshell_storage::{
     CrashPoint, CredentialCoordinator, MemoryCredentialVault, MemoryVaultFault, SqliteRepository,
     VaultError, VaultOperation,
-    ports::{CredentialPortAdapter, ImportPortAdapter, RepositoryPortAdapter},
+    ports::{
+        CredentialPortAdapter, ImportCleanupError, ImportPortAdapter, ImportPreviewCleanup,
+        RepositoryPortAdapter,
+    },
 };
 use tempfile::NamedTempFile;
 
@@ -117,6 +120,104 @@ async fn import_preview_expiry_is_deterministic_on_tick_and_every_call() {
         adapter.cancel(preview.id).await,
         Err(ImportError::PreviewExpired)
     );
+}
+
+#[tokio::test(start_paused = true)]
+async fn periodic_cleanup_expires_secret_preview_without_another_port_call() {
+    let (repository, vault, coordinator) = storage();
+    let adapter = Arc::new(ImportPortAdapter::new(repository, coordinator));
+    let cleanup = ImportPreviewCleanup::start_with_interval(&adapter, Duration::from_secs(60))
+        .expect("valid cleanup interval");
+    tokio::task::yield_now().await;
+    let file = NamedTempFile::new().unwrap();
+    std::fs::write(
+        file.path(),
+        r#"{"folders":[],"connections":[{"id":"55555555-5555-4555-8555-555555555555","name":"preview","host":"preview.example","password":"idle-secret","backend":"wez_term_ssh"}]}"#,
+    )
+    .unwrap();
+    let preview = adapter
+        .preview(ImportSourceKind::LegacyRshellJson, file.path())
+        .await
+        .unwrap();
+
+    tokio::time::advance(Duration::from_secs(14 * 60 + 59)).await;
+    assert_eq!(adapter.pending_count(), 1);
+    tokio::time::advance(Duration::from_secs(1)).await;
+    tokio::task::yield_now().await;
+
+    assert_eq!(adapter.pending_count(), 0);
+    assert_eq!(vault.call_counts().put, 0);
+    assert_eq!(
+        adapter.cancel(preview.id).await,
+        Err(ImportError::PreviewExpired)
+    );
+    cleanup.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn periodic_cleanup_rejects_a_zero_interval() {
+    let (repository, _vault, coordinator) = storage();
+    let adapter = Arc::new(ImportPortAdapter::new(repository, coordinator));
+
+    assert!(matches!(
+        ImportPreviewCleanup::start_with_interval(&adapter, Duration::ZERO),
+        Err(ImportCleanupError::InvalidInterval)
+    ));
+}
+
+#[tokio::test(start_paused = true)]
+async fn periodic_cleanup_shutdown_stops_future_ticks() {
+    let (repository, _vault, coordinator) = storage();
+    let adapter = Arc::new(ImportPortAdapter::new(repository, coordinator));
+    let cleanup = ImportPreviewCleanup::start_with_interval(&adapter, Duration::from_secs(60))
+        .expect("valid cleanup interval");
+    cleanup.shutdown().await.unwrap();
+    let file = NamedTempFile::new().unwrap();
+    std::fs::write(file.path(), "Host test\n  HostName example.test\n").unwrap();
+    adapter
+        .preview(ImportSourceKind::OpenSshConfig, file.path())
+        .await
+        .unwrap();
+
+    tokio::time::advance(Duration::from_secs(15 * 60)).await;
+    tokio::task::yield_now().await;
+
+    assert_eq!(adapter.pending_count(), 1);
+}
+
+#[tokio::test(start_paused = true)]
+async fn dropping_periodic_cleanup_cancels_and_aborts_its_task() {
+    let (repository, _vault, coordinator) = storage();
+    let adapter = Arc::new(ImportPortAdapter::new(repository, coordinator));
+    let cleanup = ImportPreviewCleanup::start_with_interval(&adapter, Duration::from_secs(60))
+        .expect("valid cleanup interval");
+    drop(cleanup);
+    let file = NamedTempFile::new().unwrap();
+    std::fs::write(file.path(), "Host test\n  HostName example.test\n").unwrap();
+    adapter
+        .preview(ImportSourceKind::OpenSshConfig, file.path())
+        .await
+        .unwrap();
+
+    tokio::time::advance(Duration::from_secs(15 * 60)).await;
+    tokio::task::yield_now().await;
+
+    assert_eq!(adapter.pending_count(), 1);
+}
+
+#[tokio::test]
+async fn periodic_cleanup_weak_task_does_not_keep_adapter_alive() {
+    let (repository, _vault, coordinator) = storage();
+    let adapter = Arc::new(ImportPortAdapter::new(repository, coordinator));
+    let cleanup = ImportPreviewCleanup::start_with_interval(&adapter, Duration::from_secs(60))
+        .expect("valid cleanup interval");
+    let weak = Arc::downgrade(&adapter);
+    tokio::task::yield_now().await;
+
+    drop(adapter);
+
+    assert!(weak.upgrade().is_none());
+    cleanup.shutdown().await.unwrap();
 }
 
 #[tokio::test]

@@ -6,7 +6,11 @@ members = [
     "crates/rshell-storage",
     "crates/rshell-ui",
 ]
+exclude = ["third_party/portable-pty-psmux"]
 resolver = "3"
+
+[patch.crates-io]
+portable-pty-psmux = { path = "third_party/portable-pty-psmux" }
 
 [package]
 name = "rshell"

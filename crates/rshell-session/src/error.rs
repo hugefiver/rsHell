@@ -9,6 +9,8 @@ pub enum EngineError {
     UnsupportedInput(&'static str),
     #[error("terminal mouse input is unsupported: {0}")]
     UnsupportedMouse(&'static str),
+    #[error("terminal presentation generation is exhausted")]
+    PresentationGenerationExhausted,
 }
 
 #[derive(Debug, Clone, Copy, Error, PartialEq, Eq)]

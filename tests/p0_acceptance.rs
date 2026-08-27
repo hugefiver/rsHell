@@ -1,5 +1,6 @@
 use std::collections::BTreeSet;
 
+use std::path::Path;
 use std::process::Command;
 
 const REQUIRED_REPORT_FIELDS: [&str; 11] = [
@@ -43,6 +44,215 @@ const REQUIRED_ACTIONS: [&str; 25] = [
     "cancel_import",
     "close_all",
 ];
+
+#[cfg(windows)]
+#[test]
+fn windows_pty_uses_creation_time_job_list_attribute() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let metadata = Command::new("cargo")
+        .args(["metadata", "--locked", "--format-version", "1"])
+        .current_dir(root)
+        .output()
+        .expect("run cargo metadata for selected PTY package");
+    assert!(
+        metadata.status.success(),
+        "cargo metadata failed: {}",
+        String::from_utf8_lossy(&metadata.stderr)
+    );
+    let metadata: serde_json::Value =
+        serde_json::from_slice(&metadata.stdout).expect("parse cargo metadata");
+    let packages = metadata["packages"].as_array().expect("metadata packages");
+    let selected = packages
+        .iter()
+        .filter(|package| package["name"] == "portable-pty-psmux")
+        .collect::<Vec<_>>();
+    assert_eq!(selected.len(), 1, "exactly one PTY package must resolve");
+    assert_eq!(selected[0]["version"], "0.9.6");
+    let manifest = Path::new(
+        selected[0]["manifest_path"]
+            .as_str()
+            .expect("selected PTY manifest path"),
+    );
+    assert_eq!(
+        manifest,
+        root.join("third_party/portable-pty-psmux/Cargo.toml"),
+        "the selected package must be the narrow vendored 0.9.6 source"
+    );
+
+    let root_manifest = std::fs::read_to_string(root.join("Cargo.toml")).unwrap();
+    assert!(root_manifest.contains("exclude = [\"third_party/portable-pty-psmux\"]"));
+    assert!(
+        root_manifest
+            .contains("portable-pty-psmux = { path = \"third_party/portable-pty-psmux\" }")
+    );
+    let session_manifest =
+        std::fs::read_to_string(root.join("crates/rshell-session/Cargo.toml")).unwrap();
+    assert!(session_manifest.contains("version = \"=0.9.6\""));
+
+    let vendor = root.join("third_party/portable-pty-psmux");
+    let mut vendored_files = Vec::new();
+    collect_relative_files(&vendor, &vendor, &mut vendored_files);
+    assert_eq!(
+        vendored_files.into_iter().collect::<BTreeSet<_>>(),
+        [
+            "Cargo.toml",
+            "LICENSE.md",
+            "README.md",
+            "README.rshell-patch.md",
+            "examples/bash.rs",
+            "examples/narrow.rs",
+            "examples/whoami.rs",
+            "examples/whoami_async.rs",
+            "src/cmdbuilder.rs",
+            "src/lib.rs",
+            "src/serial.rs",
+            "src/unix.rs",
+            "src/win/conpty.rs",
+            "src/win/mod.rs",
+            "src/win/procthreadattr.rs",
+            "src/win/psuedocon.rs",
+        ]
+        .into_iter()
+        .map(str::to_owned)
+        .collect(),
+        "only the selected package files and patch provenance may be vendored"
+    );
+    let provenance = std::fs::read_to_string(vendor.join("README.rshell-patch.md")).unwrap();
+    assert!(
+        provenance.contains("793e46fb3212b514f6eb694e26a64aeaca64b47a2d66b810351b44628e307a0e")
+    );
+    for path in [
+        "src/lib.rs",
+        "src/win/procthreadattr.rs",
+        "src/win/psuedocon.rs",
+        "src/win/conpty.rs",
+    ] {
+        assert!(
+            provenance.contains(path),
+            "missing patch provenance for {path}"
+        );
+    }
+
+    let attributes = std::fs::read_to_string(vendor.join("src/win/procthreadattr.rs")).unwrap();
+    assert!(attributes.contains("job_handles: Option<Box<[HANDLE; 1]>>"));
+    assert!(attributes.contains("PROC_THREAD_ATTRIBUTE_JOB_LIST: usize = 0x0002000D"));
+    assert_ordered(
+        &attributes,
+        &[
+            "self.job_handles = Some(Box::new([job.as_raw_handle() as HANDLE]))",
+            "let handles = self.job_handles.as_mut()",
+            "handles.as_mut_ptr().cast()",
+            "UpdateProcThreadAttribute",
+        ],
+    );
+    assert!(!attributes.contains("let mut handle ="));
+    assert!(!attributes.contains("addr_of_mut!(handle)"));
+    assert_ordered(
+        &attributes,
+        &["DeleteProcThreadAttributeList", "job_handles"],
+    );
+
+    let spawn = std::fs::read_to_string(vendor.join("src/win/psuedocon.rs")).unwrap();
+    assert_eq!(spawn.matches("CreateProcessW(").count(), 1);
+    assert_ordered(
+        &spawn,
+        &[
+            "attrs.set_pty",
+            "attrs.set_job",
+            "CreateProcessW(",
+            "drop(attrs)",
+        ],
+    );
+    assert!(spawn.contains("PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE"));
+    assert!(attributes.contains("PROC_THREAD_ATTRIBUTE_JOB_LIST"));
+
+    let conpty = std::fs::read_to_string(vendor.join("src/win/conpty.rs")).unwrap();
+    assert!(conpty.contains("spawn_command_inner(cmd, None)"));
+    assert!(conpty.contains("spawn_command_inner(cmd, Some(job))"));
+    assert!(conpty.contains("spawn_command_inner(cmd, job)"));
+    let rshell_spawn =
+        std::fs::read_to_string(root.join("crates/rshell-session/src/transport/pty.rs")).unwrap();
+    assert!(!rshell_spawn.contains("AssignProcessToJobObject"));
+    assert_ordered(
+        &rshell_spawn,
+        &[
+            "WindowsProcessJob::new",
+            "native_pty_system()",
+            "spawn_command_in_job",
+            "LocalRuntime::new",
+        ],
+    );
+    let job =
+        std::fs::read_to_string(root.join("crates/rshell-platform/src/process_tree/windows.rs"))
+            .unwrap();
+    for required in [
+        "CreateJobObjectW",
+        "SetInformationJobObject",
+        "JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE",
+        "IsProcessInJob",
+        "TerminateJobObject",
+    ] {
+        assert!(
+            job.contains(required),
+            "missing Windows Job API: {required}"
+        );
+    }
+    assert!(!job.contains("AssignProcessToJobObject"));
+    assert!(!job.contains("BREAKAWAY"));
+    assert!(!job.contains("impl Clone"));
+    let lifecycle = std::fs::read_to_string(
+        root.join("crates/rshell-session/src/transport/local_runtime/lifecycle.rs"),
+    )
+    .unwrap();
+    assert_ordered(
+        &lifecycle,
+        &["terminate_process_tree()", "join_reader_bounded()"],
+    );
+}
+
+#[test]
+fn p0_cleanup_names_direct_child_evidence_without_claiming_tree_proof() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let cleanup = std::fs::read_to_string(root.join("src/p0_smoke_cleanup.rs")).unwrap();
+    assert!(cleanup.contains("direct_session_child_count"));
+    assert!(cleanup.contains("direct_session_children_are_stopped"));
+    assert!(!cleanup.contains("pub(crate) session_child_count"));
+    assert!(!cleanup.contains("fn session_children_are_stopped"));
+
+    let contract = std::fs::read_to_string(root.join("src/p0_smoke_contract.rs")).unwrap();
+    assert!(contract.contains("direct_child_count_zero"));
+    let qa = std::fs::read_to_string(root.join("src/p0_smoke_evidence.rs")).unwrap();
+    assert!(qa.contains("DirectChildCountZero"));
+    assert!(!qa.contains("\"child_count_zero\""));
+}
+
+#[cfg(windows)]
+fn assert_ordered(source: &str, needles: &[&str]) {
+    let mut offset = 0;
+    for needle in needles {
+        let position = source[offset..]
+            .find(needle)
+            .unwrap_or_else(|| panic!("missing ordered source marker: {needle}"));
+        offset += position + needle.len();
+    }
+}
+
+#[cfg(windows)]
+fn collect_relative_files(root: &Path, directory: &Path, files: &mut Vec<String>) {
+    for entry in std::fs::read_dir(directory).unwrap() {
+        let path = entry.unwrap().path();
+        if path.is_dir() {
+            collect_relative_files(root, &path, files);
+        } else {
+            files.push(
+                path.strip_prefix(root)
+                    .unwrap()
+                    .to_string_lossy()
+                    .replace('\\', "/"),
+            );
+        }
+    }
+}
 
 #[test]
 fn static_p0_fixture_covers_each_exact_ui_action_name() {
@@ -449,6 +659,39 @@ fn harness_finalizes_artifacts_only_after_cleanup_and_secret_scan() {
 }
 
 #[test]
+fn smoke_report_finalizer_keeps_absolute_paths_out_of_json() {
+    let harness = include_str!("../scripts/qa/p0-smoke.ps1");
+    let name = "$artifactPngName";
+    let name_projection = harness
+        .find("$artifactPngName = [System.IO.Path]::GetFileName($artifactPng)")
+        .expect("finalizer must derive a PNG artifact leaf name");
+    let validation = harness
+        .find("[System.IO.Path]::IsPathRooted($artifactPngName)")
+        .expect("finalizer must validate the PNG artifact leaf name");
+    let png_assignment = harness
+        .find("$pendingReport.png_path = $artifactPngName")
+        .expect("finalizer must serialize the validated PNG artifact leaf name");
+    let requested_assignment = harness
+        .find("$pendingReport.requested_png_path = $artifactPngName")
+        .expect("finalizer must serialize the validated requested PNG artifact leaf name");
+    let json_finalization = harness
+        .find("$finalJson = $pendingReport | ConvertTo-Json -Depth 20")
+        .expect("finalizer must serialize the final report");
+
+    assert!(name_projection < validation);
+    assert!(validation < png_assignment && png_assignment < requested_assignment);
+    assert!(requested_assignment < json_finalization);
+    for field in ["png_path", "requested_png_path"] {
+        assert!(
+            harness
+                .lines()
+                .all(|line| line.trim() != format!("$pendingReport.{field} = $artifactPng"))
+        );
+    }
+    assert!(harness.contains(name));
+}
+
+#[test]
 fn completed_children_are_retired_before_pid_reuse_checks() {
     let harness = include_str!("../scripts/qa/p0-smoke.ps1");
     let retire = harness
@@ -639,6 +882,142 @@ fn regression_harness_rejects_zero_multiple_and_failed_exact_test_results() {
         ),
         "the harness must fail specifically because discovery found zero exact tests: {output}"
     );
+}
+
+#[test]
+fn terminal_engine_gate_contract_is_exact() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let session = root.join("crates/rshell-session");
+    let manifest = std::fs::read_to_string(session.join("Cargo.toml")).unwrap();
+    assert!(manifest.contains("name = \"terminal_engine\""));
+    assert!(manifest.contains("sha2 = \"0.10.9\""));
+    assert!(!manifest.contains("name = \"throughput\""));
+    assert!(!session.join("benches/throughput.rs").exists());
+
+    let bench = std::fs::read_to_string(session.join("benches/terminal_engine.rs"))
+        .expect("the exact terminal-engine measurement executable must exist");
+    let script = std::fs::read_to_string(root.join("scripts/qa/terminal-engine-gate.ps1"))
+        .expect("the fail-closed terminal-engine gate must exist");
+    let fixture = std::fs::read_to_string(session.join("tests/fixtures/vt/canary.json"))
+        .expect("the terminal-engine canary fixture must exist");
+    let record = std::fs::read_to_string(session.join("TERMINAL_ENGINE.md"))
+        .expect("the terminal-engine decision record must exist");
+
+    let mut fixture: serde_json::Value = serde_json::from_str(&fixture).unwrap();
+    let fixture_digest = fixture["sha256"].clone();
+    match &fixture_digest {
+        serde_json::Value::Null => {}
+        serde_json::Value::String(digest) => assert!(
+            digest.len() == 64
+                && digest
+                    .bytes()
+                    .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte)),
+            "a recorded fixture digest must be 64 lowercase hex characters"
+        ),
+        value => panic!("fixture digest must be null or a string, got {value:?}"),
+    }
+    fixture["sha256"] = serde_json::Value::Null;
+    assert_eq!(
+        fixture,
+        serde_json::json!({
+            "version": 1,
+            "throughput_bytes": 104857600,
+            "throughput_samples": 5,
+            "minimum_mib_per_second": 40.0,
+            "frame_cols": 120,
+            "frame_rows": 40,
+            "maximum_frame_p95_ms": 16.0,
+            "scrollback_rows": 1000,
+            "line_format": "scrollback-{index:04}",
+            "input_separator": "CRLF",
+            "input_trailing_crlf": true,
+            "canonicalization": "trim ASCII spaces from each rendered row and join rows with LF",
+            "sha256": null
+        })
+    );
+
+    for exact in [
+        "104857600",
+        "5",
+        "40.0",
+        "120",
+        "40",
+        "1000",
+        "16.0",
+        "--record-candidate",
+        "decision=CANDIDATE",
+        "decision=GO",
+    ] {
+        assert!(bench.contains(exact), "bench is missing `{exact}`");
+    }
+    for field in [
+        "RSHELL_TERMINAL_ENGINE_GATE version=1",
+        "backend=wezterm-term@d69264df66fdcc928c7a30c673df108984fda821",
+        "throughput_bytes",
+        "throughput_sample_1_mib_s",
+        "throughput_sample_2_mib_s",
+        "throughput_sample_3_mib_s",
+        "throughput_sample_4_mib_s",
+        "throughput_sample_5_mib_s",
+        "throughput_median_mib_s",
+        "frame_120x40_observations",
+        "frame_120x40_p95_ms",
+        "scrollback_rows",
+        "scrollback_sha256",
+        "decision",
+    ] {
+        assert!(bench.contains(field), "bench is missing `{field}`");
+        let script_field = field.strip_prefix("backend=").unwrap_or(field);
+        assert!(
+            script.contains(script_field),
+            "gate script is missing `{script_field}`"
+        );
+    }
+    assert!(script.contains("cargo bench -p rshell-session --bench terminal_engine --locked"));
+    match fixture_digest {
+        serde_json::Value::Null => {
+            assert!(record.contains("Decision: **NO-GO (unrecorded)**"));
+            assert!(record.contains("sha256: null"));
+            assert!(!record.contains("Decision: **GO**"));
+        }
+        serde_json::Value::String(digest) => {
+            assert!(record.contains("Decision: **GO**"));
+            assert!(record.contains(&digest));
+            assert!(!record.contains("Decision: **NO-GO (unrecorded)**"));
+        }
+        _ => unreachable!(),
+    }
+    assert!(!record.contains("TODO"));
+    assert!(!record.contains("TBD"));
+
+    for probe in [
+        "duplicate",
+        "missing",
+        "missing-equals",
+        "malformed",
+        "nan",
+        "infinity",
+        "negative",
+        "candidate",
+        "null",
+    ] {
+        let output = Command::new("pwsh")
+            .args([
+                "-NoProfile",
+                "-File",
+                "scripts/qa/terminal-engine-gate.ps1",
+                "-RegressionProbe",
+                probe,
+            ])
+            .current_dir(root)
+            .output()
+            .expect("PowerShell must launch the terminal-engine parser probe");
+        assert!(
+            output.status.success(),
+            "terminal-engine parser probe {probe} failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
 }
 
 fn invoke_harness_probe(argument: &str, value: &str) -> std::process::Output {

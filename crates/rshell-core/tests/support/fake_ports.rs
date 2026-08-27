@@ -1,5 +1,6 @@
 use std::{
-    collections::{BTreeMap, BTreeSet},
+    collections::{BTreeMap, BTreeSet, hash_map::DefaultHasher},
+    hash::{Hash, Hasher},
     path::Path,
     sync::{Arc, Mutex},
 };
@@ -34,7 +35,9 @@ struct State {
     launch_failure: bool,
     credential_reads: usize,
     credential_get_error: Option<CredentialOperationError>,
-    expected_secret: Option<String>,
+    pending_secret: Option<SecretString>,
+    last_credential_fingerprint: Option<u64>,
+    ssh_secret_fingerprints: Vec<Option<u64>>,
     secret_received: bool,
     ssh_secret_present: Option<bool>,
     pending_previews: BTreeSet<ImportPreviewId>,
@@ -68,7 +71,9 @@ impl RecordingPorts {
                 launch_failure: false,
                 credential_reads: 0,
                 credential_get_error: None,
-                expected_secret: None,
+                pending_secret: None,
+                last_credential_fingerprint: None,
+                ssh_secret_fingerprints: Vec::new(),
                 secret_received: false,
                 ssh_secret_present: None,
                 pending_previews: BTreeSet::new(),
@@ -136,7 +141,11 @@ impl RecordingPorts {
     }
 
     pub fn expect_secret(&self, value: &str) {
-        self.state.lock().unwrap().expected_secret = Some(value.to_owned());
+        self.set_secret(SecretString::from(value.to_owned()));
+    }
+
+    pub fn set_secret(&self, secret: SecretString) {
+        self.state.lock().unwrap().pending_secret = Some(secret);
     }
 
     pub fn credential_get_error(&self, error: CredentialOperationError) {
@@ -149,6 +158,14 @@ impl RecordingPorts {
 
     pub fn secret_received(&self) -> bool {
         self.state.lock().unwrap().secret_received
+    }
+
+    pub fn second_launch_received_replacement_secret(&self) -> bool {
+        let state = self.state.lock().unwrap();
+        let [Some(first), Some(second)] = state.ssh_secret_fingerprints.as_slice() else {
+            return false;
+        };
+        first != second
     }
 
     pub fn ssh_secret_present(&self) -> Option<bool> {
@@ -375,7 +392,9 @@ impl CredentialPort for RecordingPorts {
         if let Some(error) = state.credential_get_error.clone() {
             return Err(error);
         }
-        Ok(state.expected_secret.clone().map(SecretString::from))
+        let secret = state.pending_secret.take();
+        state.last_credential_fingerprint = secret.as_ref().map(secret_fingerprint);
+        Ok(secret)
     }
 }
 
@@ -421,6 +440,9 @@ impl ImportPort for RecordingPorts {
     async fn cancel(&self, preview: ImportPreviewId) -> Result<(), ImportError> {
         let mut state = self.state.lock().unwrap();
         state.calls.push("imports.cancel".into());
+        if let Some(error) = state.import_error.clone() {
+            return Err(error);
+        }
         state.pending_previews.remove(&preview);
         state.cancelled_previews.push(preview);
         Ok(())
@@ -450,17 +472,14 @@ impl SessionPort for RecordingPorts {
         _initial_size: TerminalSize,
         secret: Option<SecretString>,
     ) -> Result<SessionBinding, SessionFailure> {
-        let expected = self.state.lock().unwrap().expected_secret.clone();
-        let received = match (secret.as_ref(), expected.as_deref()) {
-            (Some(secret), Some(expected)) => secret.expose_secret() == expected,
-            (None, None) => true,
-            _ => false,
-        };
+        let received = secret.as_ref().map(secret_fingerprint);
         {
             let mut state = self.state.lock().unwrap();
             state.calls.push("session.launch_ssh".into());
-            state.secret_received = received;
+            state.secret_received =
+                received.is_some() && received == state.last_credential_fingerprint;
             state.ssh_secret_present = Some(secret.is_some());
+            state.ssh_secret_fingerprints.push(received);
         }
         self.launch()
     }
@@ -496,6 +515,12 @@ impl SessionPort for RecordingPorts {
         state.live_sessions.clear();
         state.shutdown_all_failure.map_or(Ok(()), Err)
     }
+}
+
+fn secret_fingerprint(secret: &SecretString) -> u64 {
+    let mut hasher = DefaultHasher::new();
+    secret.expose_secret().hash(&mut hasher);
+    hasher.finish()
 }
 
 pub fn bootstrap_state() -> AppBootstrapState {

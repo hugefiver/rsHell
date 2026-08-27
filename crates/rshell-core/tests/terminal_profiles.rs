@@ -1,11 +1,12 @@
 use rshell_core::{
-    SettingsValidationCode,
+    SettingsValidationCode, TerminalKeyAction, TerminalSendSequence,
     connection::{ConnectionProfile, TerminalOverrides},
+    parse_terminal_key_action,
     terminal::{
         AppSettings, ColorScheme, KeyBinding, KeyCode, KeyModifiers, TerminalProfile,
         TerminalSettingsV1,
     },
-    validate_terminal_overrides,
+    validate_terminal_overrides, validate_terminal_settings,
 };
 
 #[test]
@@ -129,4 +130,93 @@ fn default_profile_settings_and_connection_path_are_stable() {
     assert_eq!(app_settings.default_terminal_profile, profile.id);
     assert_eq!(connection.terminal_profile_id, None);
     assert_eq!(connection.terminal_overrides, TerminalOverrides::default());
+}
+
+#[test]
+fn key_actions_are_closed_and_validated() {
+    let accepted = [
+        (
+            "send:\u{1b}[3~",
+            TerminalKeyAction::Send(TerminalSendSequence::Vt220Delete),
+        ),
+        (
+            "send:\u{7f}",
+            TerminalKeyAction::Send(TerminalSendSequence::Delete127),
+        ),
+        (
+            "send:\u{8}",
+            TerminalKeyAction::Send(TerminalSendSequence::Backspace8),
+        ),
+        ("clear_scrollback", TerminalKeyAction::ClearScrollback),
+        ("new_tab", TerminalKeyAction::NewTab),
+        ("split_vertical", TerminalKeyAction::SplitVertical),
+    ];
+    for (encoded, expected) in accepted {
+        assert_eq!(parse_terminal_key_action(encoded).unwrap(), expected);
+        let settings = settings_with_action(encoded);
+        validate_terminal_settings(&settings).expect("closed action validates");
+    }
+
+    for invalid in [
+        "",
+        " ",
+        "send:",
+        "send:printable",
+        "send:\0",
+        "send:\u{1b}[A",
+        "send:\u{1b}[3~extra",
+        "split_horizontal",
+        "copy",
+        "arbitrary_action",
+    ] {
+        assert_eq!(
+            parse_terminal_key_action(invalid).unwrap_err().code,
+            SettingsValidationCode::InvalidAction,
+            "{invalid:?} must be rejected"
+        );
+        assert_eq!(
+            validate_terminal_settings(&settings_with_action(invalid))
+                .unwrap_err()
+                .code,
+            SettingsValidationCode::InvalidAction,
+            "{invalid:?} must fail persisted settings validation"
+        );
+    }
+}
+
+#[test]
+fn profile_and_connection_bindings_shadow_app_bindings_by_exact_chord() {
+    let shadowed = binding(KeyCode::F(2), KeyModifiers::default(), "clear_scrollback");
+    let profile_only = binding(KeyCode::F(3), KeyModifiers::default(), "new_tab");
+    let app_shadowed = binding(KeyCode::F(2), KeyModifiers::default(), "split_vertical");
+    let app_only = binding(KeyCode::F(4), KeyModifiers::default(), "split_vertical");
+    let settings = TerminalSettingsV1 {
+        key_bindings: vec![profile_only],
+        ..TerminalSettingsV1::default()
+    };
+    let overrides = TerminalOverrides {
+        key_bindings: Some(vec![shadowed.clone()]),
+        ..TerminalOverrides::default()
+    };
+
+    let resolved = settings
+        .resolve(&overrides)
+        .with_app_key_bindings(&[app_shadowed, app_only.clone()]);
+
+    assert_eq!(resolved.key_bindings, vec![shadowed, app_only]);
+}
+
+fn settings_with_action(action: &str) -> TerminalSettingsV1 {
+    TerminalSettingsV1 {
+        key_bindings: vec![binding(KeyCode::F(2), KeyModifiers::default(), action)],
+        ..TerminalSettingsV1::default()
+    }
+}
+
+fn binding(code: KeyCode, modifiers: KeyModifiers, action: &str) -> KeyBinding {
+    KeyBinding {
+        code,
+        modifiers,
+        action: action.to_owned(),
+    }
 }

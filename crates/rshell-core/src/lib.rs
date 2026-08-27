@@ -33,8 +33,9 @@ pub use render::{
 };
 pub use terminal::{
     AppSettings, ColorScheme, KeyBinding, KeyCode, KeyModifiers, ResolvedTerminalProfile,
-    SettingsValidationCode, SettingsValidationError, TerminalOverrides, TerminalProfile,
-    TerminalSettingsV1, TerminalSettingsVersion, validate_app_settings,
-    validate_terminal_overrides, validate_terminal_profile, validate_terminal_settings,
+    SettingsValidationCode, SettingsValidationError, TerminalKeyAction, TerminalOverrides,
+    TerminalProfile, TerminalSendSequence, TerminalSettingsV1, TerminalSettingsVersion,
+    parse_terminal_key_action, validate_app_settings, validate_terminal_overrides,
+    validate_terminal_profile, validate_terminal_settings,
 };
 pub use workspace::{PaneTree, SplitAxis, TabId, TabState, WorkspaceError, WorkspaceState};

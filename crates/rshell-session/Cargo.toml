@@ -23,7 +23,7 @@ tokio = { version = "1", features = ["macros", "rt", "rt-multi-thread", "sync", 
 wezterm-term = { git = "https://github.com/wez/wezterm.git", package = "wezterm-term", rev = "d69264df66fdcc928c7a30c673df108984fda821" }
 
 [dev-dependencies]
-criterion = "0.7"
+sha2 = "0.10.9"
 tempfile = "3.23"
 tokio = { version = "1", features = ["net", "test-util"] }
 
@@ -46,5 +46,5 @@ test = false
 bench = false
 
 [[bench]]
-name = "throughput"
+name = "terminal_engine"
 harness = false

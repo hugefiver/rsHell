@@ -88,6 +88,30 @@ fn retry_always_repreviews_remembered_source_and_active_preview_cancels_once() {
     );
 }
 
+#[test]
+fn expired_preview_clears_dialog_state() {
+    let preview = ImportPreviewView {
+        id: ImportPreviewId::new(),
+        source: ImportSourceKind::LegacyRshellJson,
+        groups: Vec::new(),
+        candidates: vec![candidate("preview", true, Vec::new())],
+        warnings: Vec::new(),
+    };
+    let mut vm = ImportViewModel::from(preview);
+    assert!(vm.begin_commit().is_some());
+
+    vm.expired();
+
+    assert!(vm.preview_id().is_none());
+    assert!(!vm.is_pending());
+    assert!(vm.commit_command().is_none());
+    assert!(vm.cancel_command().is_none());
+    assert_eq!(
+        vm.error(),
+        Some("Import preview expired; preview the file again")
+    );
+}
+
 fn candidate(
     name: &str,
     selectable: bool,

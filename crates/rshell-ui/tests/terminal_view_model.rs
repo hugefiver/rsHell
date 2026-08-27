@@ -2,9 +2,10 @@ use std::sync::Arc;
 
 use gtk::gdk::{Key, ModifierType};
 use rshell_core::{
-    CellAttributes, CellPosition, Color, CursorShape, MouseButton, MouseEventKind, RenderCell,
-    RenderCursor, RenderFrame, RenderRow, SearchMatch, SessionId, SessionUiCommand, SessionUiEvent,
-    TerminalSize, UiCommand,
+    CellAttributes, CellPosition, Color, CursorShape, KeyBinding, KeyCode, KeyModifiers,
+    MouseButton, MouseEventKind, PaneId, RenderCell, RenderCursor, RenderFrame, RenderRow,
+    SearchMatch, SessionId, SessionUiCommand, SessionUiEvent, SplitAxis, TerminalInput,
+    TerminalOverrides, TerminalSendSequence, TerminalSettingsV1, TerminalSize, UiCommand,
 };
 use rshell_ui::{FontMetrics, PointerEvent, TerminalClipboardAction, TerminalViewModel, ViewRect};
 
@@ -29,6 +30,27 @@ fn stale_and_equal_frames_are_dropped_and_dirty_rows_track_stable_content() {
     let update = model.apply_frame(frame(6, false, &["same", "after"], Some((1, 0))));
     assert_eq!(update.dirty_rows(), &[1]);
     assert_eq!(model.frame().unwrap().generation, 6);
+}
+
+#[test]
+fn fixed_backend_seqno_frames_are_accepted_when_actor_generation_advances() {
+    let mut model = model();
+
+    assert!(
+        model
+            .apply_frame(frame(1, false, &["same"], None))
+            .accepted()
+    );
+    assert!(
+        model
+            .apply_frame(frame(2, false, &["same"], None))
+            .accepted()
+    );
+    assert!(
+        model
+            .apply_frame(frame(3, false, &["same"], None))
+            .accepted()
+    );
 }
 
 #[test]
@@ -236,6 +258,138 @@ fn copy_waits_for_session_copy_event_before_requesting_gtk_write() {
         .contains("selected text")
     );
     assert_eq!(model.take_clipboard_action(), None);
+}
+
+#[test]
+fn configured_binding_routes_through_ui_command() {
+    let pane = PaneId::new();
+    let session = SessionId::new();
+    let bindings = [
+        (
+            KeyCode::F(2),
+            format!("send:{}", TerminalSendSequence::Vt220Delete.as_str()),
+        ),
+        (KeyCode::F(3), "clear_scrollback".to_owned()),
+        (KeyCode::F(4), "new_tab".to_owned()),
+        (KeyCode::F(5), "split_vertical".to_owned()),
+    ];
+    let profile = TerminalSettingsV1 {
+        key_bindings: bindings
+            .into_iter()
+            .map(|(code, action)| KeyBinding {
+                code,
+                modifiers: KeyModifiers::default(),
+                action,
+            })
+            .collect(),
+        ..TerminalSettingsV1::default()
+    }
+    .resolve(&TerminalOverrides::default());
+    let mut model = TerminalViewModel::with_profile(
+        pane,
+        session,
+        profile,
+        FontMetrics::new(9.0, 18.0).unwrap(),
+    );
+
+    let send = model.key(Key::F2, ModifierType::empty()).unwrap().unwrap();
+    assert!(matches!(
+        send,
+        UiCommand::Session {
+            session: target,
+            command: SessionUiCommand::Input(TerminalInput::CommittedText(value)),
+        } if target == session && value == TerminalSendSequence::Vt220Delete.as_str()
+    ));
+    let clear = model.key(Key::F3, ModifierType::empty()).unwrap().unwrap();
+    assert!(matches!(
+        clear,
+        UiCommand::Session {
+            session: target,
+            command: SessionUiCommand::ClearScrollback,
+        } if target == session
+    ));
+    assert!(matches!(
+        model.key(Key::F4, ModifierType::empty()).unwrap().unwrap(),
+        UiCommand::NewLocalTab
+    ));
+    assert!(matches!(
+        model.key(Key::F5, ModifierType::empty()).unwrap().unwrap(),
+        UiCommand::Split {
+            pane: target,
+            axis: SplitAxis::Vertical,
+        } if target == pane
+    ));
+}
+
+#[test]
+fn reserved_builtins_precede_configured_bindings() {
+    let reserved = [
+        ('c', KeyCode::Character('c')),
+        ('v', KeyCode::Character('v')),
+        ('f', KeyCode::Character('f')),
+    ];
+    let profile = TerminalSettingsV1 {
+        key_bindings: reserved
+            .iter()
+            .cloned()
+            .map(|(_, code)| KeyBinding {
+                code,
+                modifiers: KeyModifiers {
+                    shift: true,
+                    control: true,
+                    ..KeyModifiers::default()
+                },
+                action: "new_tab".to_owned(),
+            })
+            .collect(),
+        ..TerminalSettingsV1::default()
+    }
+    .resolve(&TerminalOverrides::default());
+    let mut model = TerminalViewModel::with_profile(
+        PaneId::new(),
+        SessionId::new(),
+        profile,
+        FontMetrics::new(9.0, 18.0).unwrap(),
+    );
+    let state = ModifierType::CONTROL_MASK | ModifierType::SHIFT_MASK;
+
+    for (character, _) in reserved {
+        assert!(
+            model
+                .key(Key::from_name(character.to_string()).unwrap(), state)
+                .unwrap()
+                .is_none(),
+            "reserved Ctrl+Shift+{character} must not execute configured new_tab"
+        );
+    }
+    assert!(model.search_is_open());
+}
+
+#[test]
+fn disabled_profile_mouse_policy_keeps_wheel_local() {
+    let profile = TerminalSettingsV1 {
+        mouse_reporting: false,
+        ..TerminalSettingsV1::default()
+    }
+    .resolve(&TerminalOverrides::default());
+    let mut model = TerminalViewModel::with_profile(
+        PaneId::new(),
+        SessionId::new(),
+        profile,
+        FontMetrics::new(9.0, 18.0).unwrap(),
+    );
+    model.apply_frame(frame(1, true, &["row"], None));
+
+    assert!(matches!(
+        model
+            .mouse(PointerEvent::scroll(0.0, 0.0, 1.0, -3))
+            .unwrap()
+            .unwrap(),
+        UiCommand::Session {
+            command: SessionUiCommand::Scroll(-3),
+            ..
+        }
+    ));
 }
 
 fn model() -> TerminalViewModel {

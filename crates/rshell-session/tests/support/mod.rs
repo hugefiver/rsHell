@@ -18,8 +18,9 @@ use rshell_core::{
 use rshell_session::{
     EngineDelta, EngineError, InteractionBroker, SessionLaunch, SessionTransport, TerminalEngine,
     TransportCapabilities, TransportError, TransportEvent, TransportFactory, TransportRequest,
+    ViewportBounds,
 };
-use tokio::sync::Semaphore;
+use tokio::sync::{Semaphore, mpsc};
 
 type RecordedWrites = Arc<Mutex<Vec<(usize, Vec<u8>)>>>;
 
@@ -62,6 +63,7 @@ impl WriteBlocker {
 
 pub enum NextBehavior {
     Events(VecDeque<TransportEvent>),
+    Controlled(mpsc::UnboundedReceiver<TransportEvent>),
     Burst {
         next: usize,
         end: usize,
@@ -71,6 +73,17 @@ pub enum NextBehavior {
     },
     Panic,
     Pending,
+}
+
+#[derive(Clone)]
+pub struct EventStream {
+    sender: mpsc::UnboundedSender<TransportEvent>,
+}
+
+impl EventStream {
+    pub fn send(&self, event: TransportEvent) {
+        self.sender.send(event).expect("actor event stream open");
+    }
 }
 
 pub struct TransportScript {
@@ -97,6 +110,19 @@ impl TransportScript {
             write_blocker: None,
             shutdown_failure: None,
         }
+    }
+
+    pub fn controlled() -> (Self, EventStream) {
+        let (sender, receiver) = mpsc::unbounded_channel();
+        (
+            Self {
+                next: NextBehavior::Controlled(receiver),
+                interactions: VecDeque::new(),
+                write_blocker: None,
+                shutdown_failure: None,
+            },
+            EventStream { sender },
+        )
     }
 
     pub fn burst(end: usize) -> Self {
@@ -251,6 +277,10 @@ impl SessionTransport for FakeTransport {
                 Some(event) => Ok(event),
                 None => pending().await,
             },
+            NextBehavior::Controlled(events) => match events.recv().await {
+                Some(event) => Ok(event),
+                None => pending().await,
+            },
             NextBehavior::Burst {
                 next,
                 end,
@@ -320,6 +350,7 @@ struct EngineState {
     bytes: Vec<u8>,
     renders: usize,
     generation: u64,
+    fixed_generation: bool,
     size: TerminalSize,
     log: Arc<Mutex<Vec<String>>>,
 }
@@ -330,10 +361,22 @@ pub struct FakeEngine {
 
 impl FakeEngine {
     pub fn new(log: Arc<Mutex<Vec<String>>>) -> (Self, EngineProbe) {
+        Self::with_generation(log, false)
+    }
+
+    pub fn fixed_generation(log: Arc<Mutex<Vec<String>>>) -> (Self, EngineProbe) {
+        Self::with_generation(log, true)
+    }
+
+    fn with_generation(
+        log: Arc<Mutex<Vec<String>>>,
+        fixed_generation: bool,
+    ) -> (Self, EngineProbe) {
         let state = Arc::new(Mutex::new(EngineState {
             bytes: Vec::new(),
             renders: 0,
             generation: 0,
+            fixed_generation,
             size: size(),
             log,
         }));
@@ -369,7 +412,9 @@ impl TerminalEngine for FakeEngine {
     ) -> Result<Arc<RenderFrame>, EngineError> {
         let mut state = lock(&self.state);
         state.renders += 1;
-        state.generation += 1;
+        if !state.fixed_generation {
+            state.generation += 1;
+        }
         let text = String::from_utf8_lossy(&state.bytes)
             .lines()
             .next_back()
@@ -415,8 +460,22 @@ impl TerminalEngine for FakeEngine {
         .into_bytes())
     }
 
+    fn clear_scrollback(&mut self) -> Result<(), EngineError> {
+        let mut state = lock(&self.state);
+        state.bytes.clear();
+        lock(&state.log).push("engine:clear_scrollback".to_owned());
+        Ok(())
+    }
+
     fn scroll(&mut self, _delta_rows: i32) -> Result<(), EngineError> {
         Ok(())
+    }
+
+    fn viewport_bounds(&self) -> ViewportBounds {
+        ViewportBounds {
+            first_stable_row: 0,
+            bottom_top_stable_row: 0,
+        }
     }
 
     fn search(&self, _query: &SearchQuery) -> Result<Vec<SearchMatch>, EngineError> {
@@ -430,6 +489,14 @@ impl TerminalEngine for FakeEngine {
 
 pub fn launch(probe: &FactoryProbe) -> (SessionLaunch, EngineProbe) {
     let (engine, engine_probe) = FakeEngine::new(probe.shared_log());
+    (
+        SessionLaunch::new(TransportRequest::new(size()), Box::new(engine)),
+        engine_probe,
+    )
+}
+
+pub fn launch_fixed_generation(probe: &FactoryProbe) -> (SessionLaunch, EngineProbe) {
+    let (engine, engine_probe) = FakeEngine::fixed_generation(probe.shared_log());
     (
         SessionLaunch::new(TransportRequest::new(size()), Box::new(engine)),
         engine_probe,

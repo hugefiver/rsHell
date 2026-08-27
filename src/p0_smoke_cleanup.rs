@@ -9,7 +9,7 @@ pub(crate) struct P0CleanupEvidence {
     pub(crate) application_shutdown_clean: Option<bool>,
     pub(crate) repository_shutdown_clean: Option<bool>,
     pub(crate) actor_count: Option<usize>,
-    pub(crate) session_child_count: Option<usize>,
+    pub(crate) direct_session_child_count: Option<usize>,
     pub(crate) credential_profiles_deleted: Option<usize>,
     pub(crate) credential_profiles_remaining: Option<usize>,
     pub(crate) temporary_vault_references_checked: Option<usize>,
@@ -28,7 +28,7 @@ impl P0CleanupEvidence {
             application_shutdown_clean: None,
             repository_shutdown_clean: None,
             actor_count: None,
-            session_child_count: None,
+            direct_session_child_count: None,
             credential_profiles_deleted: None,
             credential_profiles_remaining: None,
             temporary_vault_references_checked: None,
@@ -54,8 +54,8 @@ impl P0CleanupEvidence {
         self.repository_shutdown_clean == Some(true)
     }
 
-    pub(crate) fn session_children_are_stopped(&self) -> bool {
-        self.session_child_count == Some(0)
+    pub(crate) fn direct_session_children_are_stopped(&self) -> bool {
+        self.direct_session_child_count == Some(0)
     }
 
     pub(crate) fn vault_references_are_absent(&self) -> bool {

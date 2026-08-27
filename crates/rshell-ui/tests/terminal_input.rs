@@ -1,5 +1,8 @@
 use gtk::gdk::{Key, ModifierType};
-use rshell_core::{KeyCode, KeyModifiers, SessionUiCommand, TerminalInput, UiCommand};
+use rshell_core::{
+    KeyCode, KeyModifiers, PaneId, SessionUiCommand, TerminalInput, TerminalOverrides,
+    TerminalSettingsV1, UiCommand,
+};
 use rshell_ui::{FontMetrics, TerminalViewModel, TerminalViewMsg, map_gdk_key};
 
 #[test]
@@ -107,6 +110,80 @@ fn committed_text_and_normalized_paste_are_redacted() {
         "PasteText([REDACTED])"
     );
     assert!(model.paste("before\0after").is_err());
+}
+
+#[test]
+fn physical_alt_side_respects_resolved_profile() {
+    let left_disabled = alt_model(false, true);
+    assert_alt_sides(left_disabled, false, true);
+
+    let right_disabled = alt_model(true, false);
+    assert_alt_sides(right_disabled, true, false);
+
+    let mut defaults = alt_model(true, true);
+    let command = defaults
+        .key_pressed(Key::from_name("x").unwrap(), ModifierType::ALT_MASK)
+        .unwrap()
+        .expect("default aggregate Alt maps to terminal input");
+    assert!(input_modifiers(&command).alt);
+}
+
+fn alt_model(left_alt_as_meta: bool, right_alt_as_meta: bool) -> TerminalViewModel {
+    let profile = TerminalSettingsV1 {
+        left_alt_as_meta,
+        right_alt_as_meta,
+        ..TerminalSettingsV1::default()
+    }
+    .resolve(&TerminalOverrides::default());
+    TerminalViewModel::with_profile(
+        PaneId::new(),
+        rshell_core::SessionId::new(),
+        profile,
+        FontMetrics::new(9.0, 18.0).unwrap(),
+    )
+}
+
+fn assert_alt_sides(mut model: TerminalViewModel, left_meta: bool, right_meta: bool) {
+    assert!(
+        model
+            .key_pressed(Key::Alt_L, ModifierType::ALT_MASK)
+            .unwrap()
+            .is_none()
+    );
+    let left = model
+        .key_pressed(Key::from_name("x").unwrap(), ModifierType::ALT_MASK)
+        .unwrap()
+        .expect("left Alt key command");
+    assert_eq!(input_modifiers(&left).alt, left_meta);
+    model.key_released(Key::Alt_L);
+
+    assert!(
+        model
+            .key_pressed(Key::Alt_R, ModifierType::ALT_MASK)
+            .unwrap()
+            .is_none()
+    );
+    let right = model
+        .key_pressed(Key::from_name("x").unwrap(), ModifierType::ALT_MASK)
+        .unwrap()
+        .expect("right Alt key command");
+    assert_eq!(input_modifiers(&right).alt, right_meta);
+    model.focus_lost();
+    let reset = model
+        .key_pressed(Key::from_name("x").unwrap(), ModifierType::ALT_MASK)
+        .unwrap()
+        .expect("focus-reset key command");
+    assert!(!input_modifiers(&reset).alt);
+}
+
+fn input_modifiers(command: &UiCommand) -> KeyModifiers {
+    match command {
+        UiCommand::Session {
+            command: SessionUiCommand::Input(TerminalInput::Key { modifiers, .. }),
+            ..
+        } => *modifiers,
+        _ => panic!("expected terminal key input"),
+    }
 }
 
 fn assert_session_input(command: &UiCommand) {

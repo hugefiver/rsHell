@@ -1,3 +1,5 @@
+use std::path::Path;
+
 use rshell_ui::{SmokeReport, SmokeScenarioState, SmokeStepState};
 use serde::Serialize;
 
@@ -51,11 +53,30 @@ impl P0SmokeReport {
                     .iter()
                     .all(|step| step.state == SmokeStepState::Passed)
         });
-        let state = if statuses.all_passed() && runner_error.is_none() && all_steps_passed {
+        let mut state = if statuses.all_passed() && runner_error.is_none() && all_steps_passed {
             "passed"
         } else {
             "failed"
         };
+        let (requested_png_path, png_path, png_error) =
+            report.map_or((None, None, None), |value| {
+                match (
+                    value
+                        .requested_png_path
+                        .as_deref()
+                        .map(artifact_name)
+                        .transpose(),
+                    value.png_path.as_deref().map(artifact_name).transpose(),
+                ) {
+                    (Ok(requested_png_path), Ok(png_path)) => {
+                        (requested_png_path, png_path, value.png_error)
+                    }
+                    _ => (None, None, Some("artifact_path_invalid")),
+                }
+            });
+        if png_error == Some("artifact_path_invalid") {
+            state = "failed";
+        }
         Self {
             version: report.map_or(1, |value| value.version),
             run_nonce: report.map(|value| value.run_nonce.clone()),
@@ -63,13 +84,9 @@ impl P0SmokeReport {
             ui_state: report.map(|value| scenario_state(value.state)),
             runner_error: runner_error.map(RootError::code),
             elapsed_ms: report.map_or(0, |value| value.elapsed.as_millis()),
-            requested_png_path: report
-                .and_then(|value| value.requested_png_path.as_ref())
-                .map(|path| display_path(path)),
-            png_path: report
-                .and_then(|value| value.png_path.as_ref())
-                .map(|path| display_path(path)),
-            png_error: report.and_then(|value| value.png_error),
+            requested_png_path,
+            png_path,
+            png_error,
             cleanup_evidence: cleanup_evidence.cloned(),
             visual: report
                 .and_then(|value| value.counters.visual.as_ref())
@@ -132,12 +149,148 @@ const fn scenario_state(value: SmokeScenarioState) -> &'static str {
     }
 }
 
-fn display_path(path: &std::path::Path) -> String {
-    path.display().to_string()
+fn artifact_name(path: &Path) -> Result<String, &'static str> {
+    let text = path.to_str().ok_or("artifact_path_invalid")?;
+    if text.is_empty() || text.ends_with('/') || text.ends_with('\\') {
+        return Err("artifact_path_invalid");
+    }
+    let leaf = text
+        .rsplit(['/', '\\'])
+        .next()
+        .ok_or("artifact_path_invalid")?;
+    if leaf.is_empty()
+        || matches!(leaf, "." | "..")
+        || leaf
+            .chars()
+            .any(|character| matches!(character, '/' | '\\' | ':'))
+        || Path::new(leaf).is_absolute()
+        || Path::new(leaf).components().count() != 1
+    {
+        return Err("artifact_path_invalid");
+    }
+    Ok(leaf.to_owned())
 }
 
 #[cfg(test)]
 mod tests {
+    use std::{path::PathBuf, time::Duration};
+
+    use rshell_ui::{
+        SmokeActionKind, SmokeCounters, SmokeReport, SmokeScenarioState, SmokeStepReport,
+        SmokeStepState,
+    };
+
+    fn passed_statuses() -> super::SurfaceStatuses {
+        let status = || super::SurfaceStatus::from_evidence(Vec::new(), Vec::new());
+        super::SurfaceStatuses {
+            gtk: status(),
+            local_terminal: status(),
+            native_password: status(),
+            native_key: status(),
+            native_keyboard_interactive: status(),
+            system_agent: status(),
+            host_key: status(),
+            vault: status(),
+            imports: status(),
+            tabs_splits: status(),
+            cleanup: status(),
+        }
+    }
+
+    fn report_with_png_paths(
+        requested_png_path: PathBuf,
+        png_path: PathBuf,
+    ) -> super::P0SmokeReport {
+        let ui = SmokeReport {
+            version: 1,
+            run_nonce: "unit".into(),
+            state: SmokeScenarioState::Passed,
+            elapsed: Duration::ZERO,
+            steps: vec![SmokeStepReport {
+                index: 0,
+                action: SmokeActionKind::CloseAll,
+                surface: Some("cleanup".into()),
+                connection: None,
+                binding: None,
+                state: SmokeStepState::Passed,
+                elapsed: Duration::ZERO,
+                evidence: SmokeCounters::default(),
+                field_status: None,
+            }],
+            counters: SmokeCounters::default(),
+            failure: None,
+            requested_png_path: Some(requested_png_path),
+            png_path: Some(png_path),
+            png_error: None,
+        };
+        super::P0SmokeReport::from_run(Some(&ui), None, None, passed_statuses())
+    }
+
+    #[test]
+    fn absolute_paths_serialize_as_stable_artifact_names() {
+        for absolute_path in [
+            r"C:\Users\alice\work\artifacts\private.png",
+            "/home/alice/work/artifacts/private.png",
+        ] {
+            let report =
+                report_with_png_paths(PathBuf::from(absolute_path), PathBuf::from(absolute_path));
+            let serialized = serde_json::to_value(&report).unwrap();
+            let json = serde_json::to_string(&report).unwrap();
+
+            assert!(serialized["requested_png_path"] == "private.png");
+            assert!(serialized["png_path"] == "private.png");
+            for forbidden in [
+                r"C:\\Users\\alice",
+                "/home/alice",
+                env!("CARGO_MANIFEST_DIR"),
+                "..",
+            ] {
+                assert!(!json.contains(forbidden));
+            }
+            for path in ["requested_png_path", "png_path"] {
+                let name = serialized[path].as_str().unwrap();
+                assert!(!name.contains(['/', '\\', ':']));
+            }
+        }
+    }
+
+    #[test]
+    fn invalid_artifact_paths_fail_closed() {
+        for invalid_path in [
+            PathBuf::new(),
+            PathBuf::from("trailing/"),
+            PathBuf::from("trailing\\"),
+            PathBuf::from("/"),
+            PathBuf::from("."),
+            PathBuf::from(".."),
+            PathBuf::from("C:"),
+        ] {
+            let report = report_with_png_paths(invalid_path, PathBuf::from("private.png"));
+            let serialized = serde_json::to_value(&report).unwrap();
+
+            assert!(serialized["requested_png_path"].is_null());
+            assert!(serialized["png_path"].is_null());
+            assert_eq!(serialized["png_error"], "artifact_path_invalid");
+            assert!(!report.is_complete());
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn non_utf8_artifact_path_fails_closed() {
+        use std::os::unix::ffi::OsStringExt;
+
+        let invalid_path =
+            PathBuf::from(std::ffi::OsString::from_vec(b"private-\xff.png".to_vec()));
+        let report = report_with_png_paths(invalid_path, PathBuf::from("private.png"));
+        let serialized = serde_json::to_value(&report).unwrap();
+
+        assert!(serialized["requested_png_path"].is_null());
+        assert!(serialized["png_path"].is_null());
+        assert_eq!(serialized["png_error"], "artifact_path_invalid");
+        assert!(!report.is_complete());
+    }
+
     #[test]
     fn scenario_parse_failure_serializes_each_fixed_surface_as_failed() {
         let report = serde_json::to_value(super::P0SmokeReport::scenario_failure()).unwrap();
@@ -160,13 +313,6 @@ mod tests {
 
     #[test]
     fn passed_surfaces_cannot_hide_skipped_or_pending_steps() {
-        use std::time::Duration;
-
-        use rshell_ui::{
-            SmokeActionKind, SmokeCounters, SmokeReport, SmokeScenarioState, SmokeStepReport,
-            SmokeStepState,
-        };
-
         let status = || super::SurfaceStatus::from_evidence(Vec::new(), Vec::new());
         let statuses = super::SurfaceStatuses {
             gtk: status(),
@@ -212,8 +358,6 @@ mod tests {
 
     #[test]
     fn visual_facts_are_serialized_once_at_the_report_root() {
-        use std::time::Duration;
-
         use rshell_ui::{
             SmokeCounters, SmokeReport, SmokeScenarioState, SmokeVisualEvidence, SmokeVisualFacts,
         };

@@ -38,7 +38,11 @@ impl CommandLoop {
                 self.emit(AppEvent::CatalogChanged(result.catalog)).await;
                 self.emit(AppEvent::ImportCompleted(result.report)).await;
             }
-            Err(error) => self.fail(import_failure(error)).await,
+            Err(error) => {
+                let failure = import_failure(error.clone());
+                self.reconcile_expired_preview(preview, error);
+                self.fail(failure).await;
+            }
         }
     }
 
@@ -53,7 +57,11 @@ impl CommandLoop {
                 self.publish_view();
                 self.emit(AppEvent::ImportCancelled(preview)).await;
             }
-            Err(error) => self.fail(import_failure(error)).await,
+            Err(error) => {
+                let failure = import_failure(error.clone());
+                self.reconcile_expired_preview(preview, error);
+                self.fail(failure).await;
+            }
         }
     }
 
@@ -69,6 +77,13 @@ impl CommandLoop {
         }
         self.view_model.pending_imports.clear();
         self.publish_view();
+    }
+
+    fn reconcile_expired_preview(&mut self, preview: ImportPreviewId, error: ImportError) {
+        if error == ImportError::PreviewExpired {
+            self.view_model.pending_imports.remove(&preview);
+            self.publish_view();
+        }
     }
 }
 

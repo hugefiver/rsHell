@@ -1683,8 +1683,15 @@ try {
     }
 
     if ($null -ne $pendingReport.PSObject.Properties["png_path"]) {
-        $pendingReport.png_path = $artifactPng
-        $pendingReport.requested_png_path = $artifactPng
+        $artifactPngName = [System.IO.Path]::GetFileName($artifactPng)
+        if ([string]::IsNullOrWhiteSpace($artifactPngName) -or
+            $artifactPngName -in @(".", "..") -or
+            [System.IO.Path]::IsPathRooted($artifactPngName) -or
+            $artifactPngName -match '[:\\/]') {
+            throw "The P0 PNG artifact name is invalid."
+        }
+        $pendingReport.png_path = $artifactPngName
+        $pendingReport.requested_png_path = $artifactPngName
     }
     $finalJson = $pendingReport | ConvertTo-Json -Depth 20
     $stagedReport = Join-Path $finalizeRoot "report.json"

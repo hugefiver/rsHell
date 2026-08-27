@@ -15,6 +15,22 @@ use secrecy::{ExposeSecret, SecretString};
 const PASSWORD: &str = "password-sentinel-must-not-leak";
 const PASSPHRASE: &str = "passphrase-sentinel-must-not-leak";
 
+#[test]
+fn auth_plan_source_never_shares_or_duplicates_secret_storage() {
+    let source = include_str!("../src/auth.rs");
+    let shared_secret_type = ["A", "rc<", "Secret", "String>"].concat();
+    let duplication_method = ["dupli", "cate"].concat();
+
+    assert!(
+        !source.contains(&shared_secret_type),
+        "auth plans must own secret storage"
+    );
+    assert!(
+        !source.contains(&duplication_method),
+        "auth plans must not duplicate secret storage"
+    );
+}
+
 fn profile(transport: TransportKind, authentication: AuthenticationKind) -> ConnectionProfile {
     let mut profile = ConnectionProfile::new("auth test", "auth.test");
     profile.transport = transport;

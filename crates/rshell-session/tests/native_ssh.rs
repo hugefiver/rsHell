@@ -1,14 +1,20 @@
 mod support;
 
-use std::{net::SocketAddr, time::Duration};
+use std::{
+    net::SocketAddr,
+    sync::Arc,
+    time::{Duration, SystemTime, UNIX_EPOCH},
+};
 
 use rshell_core::{
     AuthenticationKind, ConnectionProfile, CredentialRef, HostKeyDecision, InteractionRequest,
-    InteractionResponse, SessionFailure, TerminalSize, TransportKind,
+    InteractionResponse, SessionFailure, SessionState, TerminalProfile, TerminalSize,
+    TransportKind,
 };
 use rshell_session::{
-    AuthPlan, InteractionBroker, NativeSshTransport, SessionTransport, TransportCapabilities,
-    TransportEvent, TransportRequest, interaction_channel,
+    AuthPlan, InteractionBroker, KnownHostsVerifier, NativeFactory, NativeSshTransport,
+    SessionCommand, SessionEvent, SessionLaunch, SessionManager, SessionTransport,
+    TransportCapabilities, TransportEvent, TransportRequest, interaction_channel,
 };
 use rshell_storage::{CredentialVault, MemoryCredentialVault};
 use secrecy::SecretString;
@@ -16,8 +22,8 @@ use tempfile::TempDir;
 use tokio::sync::mpsc;
 
 use support::ssh_server::{
-    KBI_ANSWERS, KEY_PASSPHRASE, PASSWORD, ServerAuth, TestSshServer, USERNAME, start_reset_server,
-    write_encrypted_client_key,
+    KBI_ANSWERS, KEY_PASSPHRASE, PASSWORD, ServerAuth, TestSshServer, USERNAME,
+    password_fingerprint, start_reset_server, write_encrypted_client_key,
 };
 
 const CASE_TIMEOUT: Duration = Duration::from_secs(8);
@@ -196,6 +202,74 @@ async fn password_auth_confirms_unknown_key_then_echoes_and_resizes_pty() {
     assert_eq!(snapshot.successful_authentications, 1);
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn native_reconnect_exhausts_auth_before_second_network_attempt() {
+    let credential = SecretString::from(format!(
+        "native-reconnect-{}",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system clock before Unix epoch")
+            .as_nanos()
+    ));
+    let server = TestSshServer::start(ServerAuth::PasswordFingerprint(password_fingerprint(
+        &credential,
+    )))
+    .await;
+    let directory = TempDir::new().unwrap();
+    let connection = profile(server.address(), AuthenticationKind::Password);
+    let auth = AuthPlan::from_secret(&connection, Some(credential)).unwrap();
+    let factory = Arc::new(NativeFactory::new(
+        connection,
+        auth,
+        KnownHostsVerifier::new(directory.path().join("known_hosts"))
+            .with_timeout(Duration::from_secs(2)),
+    ));
+    let manager = SessionManager::new(factory);
+    let terminal = TerminalProfile::default()
+        .settings
+        .resolve(&Default::default());
+    let launch =
+        SessionLaunch::with_default_engine(TransportRequest::new(size(80, 24)), &terminal).unwrap();
+    let mut client = manager.launch(launch).unwrap();
+
+    tokio::time::timeout(CASE_TIMEOUT, async {
+        loop {
+            match client.events.recv().await.unwrap() {
+                SessionEvent::InteractionRequired(InteractionRequest::HostKey(prompt)) => client
+                    .try_command(SessionCommand::Respond(
+                        prompt.id,
+                        InteractionResponse::HostKey(HostKeyDecision::AcceptAndStore),
+                    ))
+                    .unwrap(),
+                SessionEvent::StateChanged(SessionState::Connected) => break,
+                SessionEvent::Failed(failure) => {
+                    panic!("initial native connection failed: {failure:?}")
+                }
+                _ => {}
+            }
+        }
+    })
+    .await
+    .expect("initial native connection timed out");
+    assert_eq!(server.snapshot().accepted_connections, 1);
+
+    client.try_command(SessionCommand::Reconnect).unwrap();
+    let failure = tokio::time::timeout(CASE_TIMEOUT, async {
+        loop {
+            if let SessionEvent::Failed(failure) = client.events.recv().await.unwrap() {
+                break failure;
+            }
+        }
+    })
+    .await
+    .expect("actor reconnect did not fail");
+
+    assert_eq!(failure, SessionFailure::Authentication);
+    assert_eq!(server.snapshot().accepted_connections, 1);
+    manager.shutdown_all().await.unwrap();
+    server.shutdown().await;
+}
+
 #[tokio::test]
 async fn localhost_alias_uses_the_connected_peer_for_host_key_lookup() {
     let server = TestSshServer::start(ServerAuth::Password).await;
@@ -363,7 +437,7 @@ async fn wrong_password_changed_key_and_reset_map_to_distinct_failures() {
             .await
             .expect_err("consumed password plan must not be reusable")
             .failure(),
-        SessionFailure::Validation
+        SessionFailure::Authentication
     );
     assert_eq!(
         wrong_server.snapshot().accepted_connections,

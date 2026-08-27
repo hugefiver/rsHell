@@ -6,9 +6,11 @@ use rshell_core::{
     AuthPrompt, CellPosition, ExitStatus, HostKeyDecision, HostKeyPrompt, InteractionId,
     InteractionRequest, InteractionResponse, KeyModifiers, MouseButton, MouseEventKind,
     SelectionRange, SessionFailure, SessionState, TerminalInput, TerminalMouseEvent,
+    TerminalOverrides, TerminalSettingsV1,
 };
 use rshell_session::{
-    SessionCommand, SessionError, SessionEvent, SessionManager, TransportError, TransportEvent,
+    DefaultTerminalEngine, PresentationPolicy, SessionCommand, SessionError, SessionEvent,
+    SessionLaunch, SessionManager, TransportError, TransportEvent, TransportRequest,
 };
 
 #[test]
@@ -269,6 +271,194 @@ async fn ten_thousand_output_burst_is_latest_only_and_rate_limited() {
         .await
         .expect("shutdown timeout")
         .expect("shutdown");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn presentation_mutations_publish_monotonic_generations() {
+    let (factory, probe) = FakeFactory::new([TransportScript::events([
+        TransportEvent::Connected,
+        TransportEvent::Output(b"first\r\n".to_vec()),
+    ])]);
+    let manager = SessionManager::new(factory);
+    let (launch, _) = support::launch_fixed_generation(&probe);
+    let launch = launch.with_presentation_policy(PresentationPolicy {
+        scroll_on_output: true,
+        scroll_on_keypress: true,
+    });
+    let mut client = manager.launch(launch).expect("launch");
+    collect_through_state(&mut client.events, SessionState::Connected).await;
+
+    let initial = next_frame(&mut client).await;
+    assert_eq!(
+        initial.generation, 1,
+        "actor stamps the fixed backend frame"
+    );
+
+    client
+        .try_command(SessionCommand::Select(SelectionRange {
+            start: CellPosition {
+                stable_row: 0,
+                column: 0,
+            },
+            end: CellPosition {
+                stable_row: 0,
+                column: 1,
+            },
+            rectangular: false,
+        }))
+        .expect("selection accepted");
+    let selected = next_frame(&mut client).await;
+    assert!(selected.generation > initial.generation);
+
+    client
+        .try_command(SessionCommand::Scroll(-1))
+        .expect("scroll accepted");
+    let scrolled = next_frame(&mut client).await;
+    assert!(scrolled.generation > selected.generation);
+
+    client
+        .try_command(SessionCommand::Resize(support::size()))
+        .expect("resize accepted");
+    let resized = next_frame(&mut client).await;
+    assert!(resized.generation > scrolled.generation);
+
+    client
+        .try_command(SessionCommand::Input(TerminalInput::CommittedText(
+            "key".to_owned(),
+        )))
+        .expect("input accepted");
+    let keyed = next_frame(&mut client).await;
+    assert!(keyed.generation > resized.generation);
+
+    manager.shutdown_all().await.expect("shutdown");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn clear_scrollback_publishes_fresh_frame() {
+    let (factory, probe) = FakeFactory::new([TransportScript::events([
+        TransportEvent::Connected,
+        TransportEvent::Output(b"old-scrollback\r\nvisible".to_vec()),
+    ])]);
+    let manager = SessionManager::new(factory);
+    let (launch, engine) = support::launch_fixed_generation(&probe);
+    let mut client = manager.launch(launch).expect("launch");
+    collect_through_state(&mut client.events, SessionState::Connected).await;
+    let initial = next_frame(&mut client).await;
+    assert!(initial.rows[0].cells[0].text.contains("visible"));
+
+    client
+        .try_command(SessionCommand::ClearScrollback)
+        .expect("clear scrollback accepted");
+    let cleared = next_frame(&mut client).await;
+
+    assert!(cleared.generation > initial.generation);
+    assert!(engine.bytes().is_empty());
+    assert!(
+        probe
+            .log()
+            .iter()
+            .any(|entry| entry == "engine:clear_scrollback")
+    );
+    manager.shutdown_all().await.expect("shutdown");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn scroll_on_keypress_alone_controls_fresh_frame_publication() {
+    let (disabled_script, disabled_stream) = TransportScript::controlled();
+    let (disabled_factory, disabled_probe) = FakeFactory::new([disabled_script]);
+    let disabled_manager = SessionManager::new(disabled_factory);
+    let (disabled_launch, _) = support::launch_fixed_generation(&disabled_probe);
+    let disabled_launch = disabled_launch.with_presentation_policy(PresentationPolicy {
+        scroll_on_output: false,
+        scroll_on_keypress: false,
+    });
+    let mut disabled = disabled_manager.launch(disabled_launch).expect("launch");
+    disabled_stream.send(TransportEvent::Connected);
+    collect_through_state(&mut disabled.events, SessionState::Connected).await;
+    disabled_stream.send(TransportEvent::Output(b"initial\r\n".to_vec()));
+    let disabled_initial = next_frame(&mut disabled).await;
+    disabled
+        .try_command(SessionCommand::Input(TerminalInput::CommittedText(
+            "no-snap".to_owned(),
+        )))
+        .expect("input accepted");
+    wait_until(|| !disabled_probe.writes().is_empty()).await;
+    assert!(
+        tokio::time::timeout(Duration::from_millis(100), disabled.frames.changed())
+            .await
+            .is_err(),
+        "disabled scroll_on_keypress must not publish a presentation-only frame"
+    );
+
+    let (enabled_script, enabled_stream) = TransportScript::controlled();
+    let (enabled_factory, enabled_probe) = FakeFactory::new([enabled_script]);
+    let enabled_manager = SessionManager::new(enabled_factory);
+    let (enabled_launch, _) = support::launch_fixed_generation(&enabled_probe);
+    let enabled_launch = enabled_launch.with_presentation_policy(PresentationPolicy {
+        scroll_on_output: false,
+        scroll_on_keypress: true,
+    });
+    let mut enabled = enabled_manager.launch(enabled_launch).expect("launch");
+    enabled_stream.send(TransportEvent::Connected);
+    collect_through_state(&mut enabled.events, SessionState::Connected).await;
+    enabled_stream.send(TransportEvent::Output(b"initial\r\n".to_vec()));
+    let enabled_initial = next_frame(&mut enabled).await;
+    enabled
+        .try_command(SessionCommand::Input(TerminalInput::CommittedText(
+            "snap".to_owned(),
+        )))
+        .expect("input accepted");
+    let snapped = next_frame(&mut enabled).await;
+    assert!(snapped.generation > enabled_initial.generation);
+    assert_eq!(disabled_initial.generation, 1);
+
+    disabled_manager.shutdown_all().await.expect("shutdown");
+    enabled_manager.shutdown_all().await.expect("shutdown");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn long_output_follows_bottom_and_explicit_scroll_preserves_history() {
+    let (script, stream) = TransportScript::controlled();
+    let (factory, _probe) = FakeFactory::new([script]);
+    let manager = SessionManager::new(factory);
+    let policy = PresentationPolicy {
+        scroll_on_output: false,
+        scroll_on_keypress: false,
+    };
+    let mut client = manager.launch(real_launch(policy)).expect("launch");
+    stream.send(TransportEvent::Connected);
+    collect_through_state(&mut client.events, SessionState::Connected).await;
+
+    stream.send(TransportEvent::Output(numbered_lines("initial", 40)));
+    let initial = next_frame(&mut client).await;
+    assert!(
+        initial.viewport_top > 0,
+        "initial frame follows the newest rows"
+    );
+    assert!(frame_contains(&initial, "initial-039"));
+
+    client
+        .try_command(SessionCommand::Scroll(-5))
+        .expect("scroll up accepted");
+    let historical = next_frame(&mut client).await;
+    assert!(historical.viewport_top < initial.viewport_top);
+
+    stream.send(TransportEvent::Output(b"after-scroll\r\n".to_vec()));
+    let anchored = next_frame(&mut client).await;
+    assert_eq!(anchored.viewport_top, historical.viewport_top);
+
+    client
+        .try_command(SessionCommand::Scroll(i32::MAX))
+        .expect("scroll to bottom accepted");
+    let bottom = next_frame(&mut client).await;
+    assert!(bottom.viewport_top > historical.viewport_top);
+
+    stream.send(TransportEvent::Output(b"newest\r\n".to_vec()));
+    let resumed = next_frame(&mut client).await;
+    assert!(resumed.viewport_top > bottom.viewport_top);
+    assert!(frame_contains(&resumed, "newest"));
+
+    manager.shutdown_all().await.expect("shutdown");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -694,6 +884,40 @@ async fn wait_until(mut condition: impl FnMut() -> bool) {
     })
     .await
     .expect("condition timeout");
+}
+
+async fn next_frame(
+    client: &mut rshell_session::SessionClient,
+) -> std::sync::Arc<rshell_core::RenderFrame> {
+    tokio::time::timeout(WAIT, client.frames.changed())
+        .await
+        .expect("frame timeout")
+        .expect("frame channel closed");
+    client.frames.borrow_and_update().clone().expect("frame")
+}
+
+fn real_launch(policy: PresentationPolicy) -> SessionLaunch {
+    let terminal = TerminalSettingsV1::default().resolve(&TerminalOverrides::default());
+    let engine = DefaultTerminalEngine::new(&terminal, support::size()).expect("engine");
+    SessionLaunch::new(TransportRequest::new(support::size()), Box::new(engine))
+        .with_presentation_policy(policy)
+}
+
+fn numbered_lines(prefix: &str, count: usize) -> Vec<u8> {
+    (0..count)
+        .map(|index| format!("{prefix}-{index:03}\r\n"))
+        .collect::<String>()
+        .into_bytes()
+}
+
+fn frame_contains(frame: &rshell_core::RenderFrame, expected: &str) -> bool {
+    frame.rows.iter().any(|row| {
+        row.cells
+            .iter()
+            .map(|cell| cell.text.as_str())
+            .collect::<String>()
+            .contains(expected)
+    })
 }
 
 fn assert_unknown_session(manager: &SessionManager, id: rshell_core::SessionId) {

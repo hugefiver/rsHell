@@ -56,6 +56,14 @@ impl LocalPtyTransport {
         self.runtime.as_ref().and_then(LocalRuntime::process_id)
     }
 
+    #[cfg(windows)]
+    pub fn process_tree_contains(&self, process_id: u32) -> Result<bool, TransportError> {
+        self.runtime
+            .as_ref()
+            .ok_or_else(|| TransportError::new(SessionFailure::Pty))?
+            .process_tree_contains(process_id)
+    }
+
     fn connect_inner(&mut self, request: &TransportRequest) -> Result<(), TransportError> {
         if self.runtime.is_some() {
             return Err(TransportError::new(SessionFailure::Validation));

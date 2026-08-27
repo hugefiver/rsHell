@@ -8,7 +8,9 @@ use rshell_platform::{PlatformPaths, configure_runtime};
 use rshell_session::{KnownHostsVerifier, SessionManager, ports::SessionPortAdapter};
 use rshell_storage::{
     CredentialCoordinator, SqliteRepository, SystemCredentialVault,
-    ports::{CredentialPortAdapter, ImportPortAdapter, RepositoryPortAdapter},
+    ports::{
+        CredentialPortAdapter, ImportPortAdapter, ImportPreviewCleanup, RepositoryPortAdapter,
+    },
 };
 
 pub(crate) const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(5);
@@ -24,6 +26,7 @@ pub(crate) enum BootstrapError {
     CatalogLoad,
     SettingsLoad,
     ApplicationStart,
+    ImportCleanup,
     ApplicationShutdown,
     SessionShutdown,
     StorageShutdown,
@@ -43,6 +46,7 @@ impl BootstrapError {
             | Self::StorageShutdown => "storage",
             Self::CredentialsReconcile => "credentials",
             Self::ApplicationStart | Self::ApplicationShutdown => "application",
+            Self::ImportCleanup => "cleanup",
             Self::SessionShutdown => "session",
             Self::StartupCleanup | Self::P0Cleanup => "cleanup",
         }
@@ -59,6 +63,7 @@ impl BootstrapError {
             Self::CatalogLoad => "loading connection catalog",
             Self::SettingsLoad => "loading terminal settings",
             Self::ApplicationStart => "starting application service",
+            Self::ImportCleanup => "stopping import preview cleanup",
             Self::ApplicationShutdown => "stopping application service",
             Self::SessionShutdown => "stopping local sessions",
             Self::StorageShutdown => "stopping state storage",
@@ -72,7 +77,7 @@ impl BootstrapError {
 pub(crate) struct BootstrapObserver(Arc<Mutex<Vec<&'static str>>>);
 
 impl BootstrapObserver {
-    fn record(&self, call: &'static str) {
+    pub(crate) fn record(&self, call: &'static str) {
         lock(&self.0).push(call);
     }
 
@@ -87,6 +92,8 @@ pub(crate) struct BootstrappedApplication {
     pub(crate) repository: Arc<SqliteRepository>,
     pub(crate) sessions: Arc<SessionManager>,
     pub(crate) credentials: Arc<CredentialCoordinator>,
+    pub(crate) import_cleanup: ImportPreviewCleanup,
+    pub(crate) observer: BootstrapObserver,
 }
 
 pub(crate) fn create_runtime() -> Result<relm4::tokio::runtime::Runtime, BootstrapError> {
@@ -163,7 +170,7 @@ async fn start_with_repository(
         AppDependencies {
             repository: repository_port,
             credentials: credential_port,
-            imports: import_port,
+            imports: import_port.clone(),
             sessions: session_port,
         },
         AppBootstrapState {
@@ -188,12 +195,16 @@ async fn start_with_repository(
         }
     };
     observer.record("application.start");
+    let import_cleanup = ImportPreviewCleanup::start(&import_port);
+    observer.record("import.cleanup.start");
 
     Ok(BootstrappedApplication {
         application,
         repository,
         sessions,
         credentials: coordinator,
+        import_cleanup,
+        observer: observer.clone(),
     })
 }
 
@@ -257,11 +268,28 @@ mod tests {
                 "catalog.load",
                 "settings.load",
                 "application.start",
+                "import.cleanup.start",
             ]
         );
         runtime
             .block_on(application.shutdown())
             .expect("production bootstrap must shut down");
+        assert_eq!(
+            observer.calls(),
+            [
+                "platform.configure",
+                "storage.open",
+                "storage.migrate",
+                "credentials.reconcile",
+                "catalog.load",
+                "settings.load",
+                "application.start",
+                "import.cleanup.start",
+                "import.cleanup.shutdown",
+                "application.sessions.shutdown",
+                "storage.shutdown",
+            ]
+        );
         fs::remove_dir_all(root).expect("test state must be removed");
     }
 

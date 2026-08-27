@@ -5,7 +5,7 @@ use rshell_core::{
     TerminalMouseEvent, TerminalSize, Viewport,
 };
 
-use crate::{EngineError, input, render, text, wezterm_adapter::WezTermAdapter};
+use crate::{EngineError, ViewportBounds, render, text, wezterm_adapter::WezTermAdapter};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EngineDelta {
@@ -23,7 +23,9 @@ pub trait TerminalEngine: Send {
     ) -> Result<Arc<RenderFrame>, EngineError>;
     fn encode_input(&mut self, input: TerminalInput) -> Result<Vec<u8>, EngineError>;
     fn encode_mouse(&mut self, input: TerminalMouseEvent) -> Result<Vec<u8>, EngineError>;
+    fn clear_scrollback(&mut self) -> Result<(), EngineError>;
     fn scroll(&mut self, delta_rows: i32) -> Result<(), EngineError>;
+    fn viewport_bounds(&self) -> ViewportBounds;
     fn search(&self, query: &SearchQuery) -> Result<Vec<SearchMatch>, EngineError>;
     fn selected_text(&self, range: SelectionRange) -> Result<String, EngineError>;
 }
@@ -88,7 +90,7 @@ impl DefaultTerminalEngine {
 
 impl TerminalEngine for DefaultTerminalEngine {
     fn advance(&mut self, bytes: &[u8]) -> Result<EngineDelta, EngineError> {
-        let outbound = self.adapter.input(bytes);
+        let outbound = self.adapter.input(bytes)?;
         Ok(EngineDelta {
             outbound,
             dirty: !bytes.is_empty(),
@@ -110,16 +112,31 @@ impl TerminalEngine for DefaultTerminalEngine {
     }
 
     fn encode_input(&mut self, input: TerminalInput) -> Result<Vec<u8>, EngineError> {
-        input::encode_input(input)
+        match input {
+            TerminalInput::CommittedText(text) => Ok(text.into_bytes()),
+            TerminalInput::Key { code, modifiers } => self.adapter.encode_key(code, modifiers),
+        }
     }
 
     fn encode_mouse(&mut self, input: TerminalMouseEvent) -> Result<Vec<u8>, EngineError> {
-        input::encode_mouse(input, self.adapter.terminal().is_mouse_grabbed())
+        if !self.adapter.mouse_reporting_allowed() || !self.adapter.terminal().is_mouse_grabbed() {
+            return Err(EngineError::UnsupportedMouse("mouse reporting is disabled"));
+        }
+        self.adapter.encode_mouse(input)
+    }
+
+    fn clear_scrollback(&mut self) -> Result<(), EngineError> {
+        self.adapter.clear_scrollback();
+        Ok(())
     }
 
     fn scroll(&mut self, _delta_rows: i32) -> Result<(), EngineError> {
         // Viewport position is actor-owned; this stateless backend needs no extra mutation.
         Ok(())
+    }
+
+    fn viewport_bounds(&self) -> ViewportBounds {
+        self.adapter.viewport_bounds()
     }
 
     fn search(&self, query: &SearchQuery) -> Result<Vec<SearchMatch>, EngineError> {

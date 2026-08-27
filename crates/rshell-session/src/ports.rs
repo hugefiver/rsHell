@@ -8,7 +8,7 @@ use rshell_core::{
 use secrecy::SecretString;
 
 use crate::{
-    AuthPlan, KnownHostsVerifier, LocalLaunch, LocalPtyFactory, NativeSshTransport, SessionClient,
+    AuthPlan, KnownHostsVerifier, LocalLaunch, LocalPtyFactory, NativeFactory, SessionClient,
     SessionCommand, SessionError, SessionEvent, SessionLaunch, SessionManager, SessionTransport,
     SystemOpenSshTransport, TransportError, TransportFactory, TransportRequest,
 };
@@ -84,11 +84,7 @@ impl SessionPort for SessionPortAdapter {
             TransportKind::NativeSsh => {
                 let auth = AuthPlan::from_secret(&profile, secret)
                     .map_err(|_| SessionFailure::Authentication)?;
-                Arc::new(NativeFactory {
-                    profile,
-                    auth,
-                    verifier: self.verifier.clone(),
-                })
+                Arc::new(NativeFactory::new(profile, auth, self.verifier.clone()))
             }
         };
         self.launch(request, &terminal, Some(factory))
@@ -126,26 +122,6 @@ impl TransportFactory for SystemFactory {
         _request: &TransportRequest,
     ) -> Result<Box<dyn SessionTransport>, TransportError> {
         Ok(Box::new(SystemOpenSshTransport::new(self.profile.clone())))
-    }
-}
-
-struct NativeFactory {
-    profile: ConnectionProfile,
-    auth: AuthPlan,
-    verifier: KnownHostsVerifier,
-}
-
-impl TransportFactory for NativeFactory {
-    fn create(
-        &self,
-        _request: &TransportRequest,
-    ) -> Result<Box<dyn SessionTransport>, TransportError> {
-        NativeSshTransport::new(
-            self.profile.clone(),
-            self.auth.duplicate(),
-            self.verifier.clone(),
-        )
-        .map(|transport| Box::new(transport) as Box<dyn SessionTransport>)
     }
 }
 
@@ -190,6 +166,7 @@ fn map_command(command: SessionUiCommand) -> SessionCommand {
         SessionUiCommand::Search(value) => SessionCommand::Search(value),
         SessionUiCommand::Select(value) => SessionCommand::Select(value),
         SessionUiCommand::CopySelection => SessionCommand::CopySelection,
+        SessionUiCommand::ClearScrollback => SessionCommand::ClearScrollback,
         SessionUiCommand::Respond {
             interaction,
             response,

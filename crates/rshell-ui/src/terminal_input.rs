@@ -60,6 +60,13 @@ impl fmt::Display for TerminalViewError {
 impl Error for TerminalViewError {}
 
 pub fn map_gdk_key(key: Key, state: ModifierType) -> Option<TerminalInput> {
+    map_gdk_key_with_modifiers(key, modifiers(state))
+}
+
+pub(crate) fn map_gdk_key_with_modifiers(
+    key: Key,
+    modifiers: KeyModifiers,
+) -> Option<TerminalInput> {
     let code = match key {
         Key::Return | Key::KP_Enter => KeyCode::Enter,
         Key::Escape => KeyCode::Escape,
@@ -89,10 +96,50 @@ pub fn map_gdk_key(key: Key, state: ModifierType) -> Option<TerminalInput> {
         Key::F12 => KeyCode::F(12),
         _ => KeyCode::Character(key.to_unicode()?),
     };
-    Some(TerminalInput::Key {
-        code,
-        modifiers: modifiers(state),
-    })
+    Some(TerminalInput::Key { code, modifiers })
+}
+
+#[derive(Default)]
+pub(crate) struct PhysicalAltState {
+    left_pressed: bool,
+    right_pressed: bool,
+}
+
+impl PhysicalAltState {
+    pub(crate) fn press(&mut self, key: Key) -> bool {
+        match key {
+            Key::Alt_L => self.left_pressed = true,
+            Key::Alt_R => self.right_pressed = true,
+            _ => return false,
+        }
+        true
+    }
+
+    pub(crate) fn release(&mut self, key: Key) {
+        match key {
+            Key::Alt_L => self.left_pressed = false,
+            Key::Alt_R => self.right_pressed = false,
+            _ => {}
+        }
+    }
+
+    pub(crate) fn clear(&mut self) {
+        self.left_pressed = false;
+        self.right_pressed = false;
+    }
+
+    pub(crate) fn as_meta(
+        &self,
+        aggregate_alt: bool,
+        left_alt_as_meta: bool,
+        right_alt_as_meta: bool,
+    ) -> bool {
+        if left_alt_as_meta && right_alt_as_meta {
+            aggregate_alt || self.left_pressed || self.right_pressed
+        } else {
+            (left_alt_as_meta && self.left_pressed) || (right_alt_as_meta && self.right_pressed)
+        }
+    }
 }
 
 pub(crate) fn modifiers(state: ModifierType) -> KeyModifiers {

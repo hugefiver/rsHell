@@ -1,9 +1,10 @@
 use std::sync::Arc;
 
 use rshell_core::{
-    AppBootstrapState, AppViewModel, ErrorPaneView, PaneId, PaneLaunchTarget, PaneTree,
-    RenderFrame, SessionFailure, SessionId, SessionState, SessionUiEvent, SplitAxis, TabId,
-    TabState, TerminalProfile, TerminalSize, UiCommand, UiPortError, WorkspaceState,
+    AppBootstrapState, AppViewModel, ErrorPaneView, KeyBinding, KeyCode, KeyModifiers, PaneId,
+    PaneLaunchTarget, PaneTree, RenderFrame, SessionFailure, SessionId, SessionState,
+    SessionUiEvent, SplitAxis, TabId, TabState, TerminalProfile, TerminalSize, UiCommand,
+    UiPortError, WorkspaceState,
 };
 use rshell_ui::{
     PaneAction, PaneHostModel, PanePageKind, PaneProjection, SessionPaneViewModel,
@@ -32,7 +33,7 @@ fn two_tabs_with_nested_axes_keep_independent_active_panes() {
 }
 
 #[test]
-fn production_tab_and_pane_actions_emit_exact_typed_commands() {
+fn reconnect_and_retry_use_application_retry_pane() {
     assert!(matches!(
         SessionTabBarAction::NewLocalTab.command(),
         UiCommand::NewLocalTab
@@ -54,6 +55,10 @@ fn production_tab_and_pane_actions_emit_exact_typed_commands() {
     ));
     assert!(matches!(
         PaneAction::Retry.command(pane, None),
+        Some(UiCommand::RetryPane(target)) if target == pane
+    ));
+    assert!(matches!(
+        PaneAction::Reconnect.command(pane, None),
         Some(UiCommand::RetryPane(target)) if target == pane
     ));
     assert!(matches!(
@@ -226,6 +231,66 @@ fn command_rejection_is_total_and_sanitized() {
     model.command_rejected(UiPortError::Closed);
     assert_eq!(model.status(), Some("application command port is closed"));
     assert!(!format!("{model:?}").contains("secret"));
+}
+
+#[test]
+fn pane_profile_and_connection_bindings_shadow_app_bindings() {
+    let mut fixture = workspace_fixture();
+    let chord = KeyModifiers {
+        control: true,
+        ..KeyModifiers::default()
+    };
+    fixture.view.terminal_profiles[0].settings.key_bindings =
+        vec![key_binding(KeyCode::F(2), chord, "new_tab")];
+    fixture.view.settings.key_bindings = vec![
+        key_binding(KeyCode::F(2), chord, "split_vertical"),
+        key_binding(KeyCode::F(3), chord, "clear_scrollback"),
+    ];
+    let connection_id = SessionPaneViewModel::from_app(&fixture.view, fixture.connection_pane)
+        .unwrap()
+        .connection_id()
+        .unwrap();
+    fixture
+        .view
+        .catalog
+        .connections
+        .get_mut(&connection_id)
+        .unwrap()
+        .terminal_overrides
+        .key_bindings = Some(vec![key_binding(KeyCode::F(2), chord, "clear_scrollback")]);
+
+    let local = SessionPaneViewModel::from_app(&fixture.view, fixture.h_pane)
+        .unwrap()
+        .resolved_profile(&fixture.view)
+        .unwrap();
+    assert_eq!(
+        local
+            .key_bindings
+            .iter()
+            .map(|binding| binding.action.as_str())
+            .collect::<Vec<_>>(),
+        ["new_tab", "clear_scrollback"]
+    );
+    let connection = SessionPaneViewModel::from_app(&fixture.view, fixture.connection_pane)
+        .unwrap()
+        .resolved_profile(&fixture.view)
+        .unwrap();
+    assert_eq!(
+        connection
+            .key_bindings
+            .iter()
+            .map(|binding| binding.action.as_str())
+            .collect::<Vec<_>>(),
+        ["clear_scrollback", "clear_scrollback"]
+    );
+}
+
+fn key_binding(code: KeyCode, modifiers: KeyModifiers, action: &str) -> KeyBinding {
+    KeyBinding {
+        code,
+        modifiers,
+        action: action.to_owned(),
+    }
 }
 
 fn frame(generation: u64, title: &str) -> Arc<RenderFrame> {

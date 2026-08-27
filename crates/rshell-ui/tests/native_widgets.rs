@@ -500,6 +500,7 @@ fn native_workspace_fixture() -> NativeWorkspaceFixture {
 fn assert_terminal_view_native_boundary() {
     let terminal = TerminalView::builder()
         .launch(TerminalViewInit {
+            pane: PaneId::new(),
             session: SessionId::new(),
             profile: TerminalSettingsV1::default().resolve(&TerminalOverrides::default()),
             metrics: FontMetrics::new(9.0, 18.0).unwrap(),

@@ -1,7 +1,7 @@
 mod error;
 mod keyboard_interactive;
 
-use std::{fmt, path::Path, sync::Arc};
+use std::{fmt, path::Path};
 
 use rshell_core::{AuthenticationKind, ConnectionProfile, TransportKind};
 use rshell_storage::CredentialVault;
@@ -18,12 +18,12 @@ pub use keyboard_interactive::{
 pub enum AuthPlan {
     Password {
         host: String,
-        password: Arc<SecretString>,
+        password: SecretString,
     },
     PublicKey {
         host: String,
         identity_file: std::path::PathBuf,
-        passphrase: Option<Arc<SecretString>>,
+        passphrase: Option<SecretString>,
     },
     Agent {
         host: String,
@@ -50,10 +50,7 @@ impl AuthPlan {
         let host = profile.host.clone();
         match profile.authentication {
             AuthenticationKind::Password => secret
-                .map(|password| Self::Password {
-                    host,
-                    password: Arc::new(password),
-                })
+                .map(|password| Self::Password { host, password })
                 .ok_or(AuthPlanError::CredentialMissing {
                     host: profile.host.clone(),
                     authentication: profile.authentication,
@@ -70,7 +67,7 @@ impl AuthPlan {
                 Ok(Self::PublicKey {
                     host,
                     identity_file,
-                    passphrase: secret.map(Arc::new),
+                    passphrase: secret,
                 })
             }
             AuthenticationKind::Agent => Ok(Self::Agent { host }),
@@ -94,10 +91,7 @@ impl AuthPlan {
         match profile.authentication {
             AuthenticationKind::Password => {
                 let password = required_secret(profile, vault)?;
-                Ok(Self::Password {
-                    host,
-                    password: Arc::new(password),
-                })
+                Ok(Self::Password { host, password })
             }
             AuthenticationKind::PublicKey => {
                 let identity_file = profile
@@ -112,7 +106,7 @@ impl AuthPlan {
                 Ok(Self::PublicKey {
                     host,
                     identity_file,
-                    passphrase: passphrase.map(Arc::new),
+                    passphrase,
                 })
             }
             AuthenticationKind::Agent => Ok(Self::Agent { host }),
@@ -126,26 +120,6 @@ impl AuthPlan {
             Self::PublicKey { .. } => AuthenticationKind::PublicKey,
             Self::Agent { .. } => AuthenticationKind::Agent,
             Self::KeyboardInteractive { .. } => AuthenticationKind::KeyboardInteractive,
-        }
-    }
-
-    pub(crate) fn duplicate(&self) -> Self {
-        match self {
-            Self::Password { host, password } => Self::Password {
-                host: host.clone(),
-                password: Arc::clone(password),
-            },
-            Self::PublicKey {
-                host,
-                identity_file,
-                passphrase,
-            } => Self::PublicKey {
-                host: host.clone(),
-                identity_file: identity_file.clone(),
-                passphrase: passphrase.as_ref().map(Arc::clone),
-            },
-            Self::Agent { host } => Self::Agent { host: host.clone() },
-            Self::KeyboardInteractive { host } => Self::KeyboardInteractive { host: host.clone() },
         }
     }
 

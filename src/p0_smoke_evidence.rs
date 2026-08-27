@@ -41,7 +41,7 @@ pub(crate) enum QaObservation {
     VaultCredentialReference,
     VaultDatabaseSecretScan,
     ActorCountZero,
-    ChildCountZero,
+    DirectChildCountZero,
     VaultTemporaryReferenceZero,
     JournalCountZero,
 }
@@ -55,7 +55,7 @@ impl QaObservation {
             Self::VaultCredentialReference => "vault_credential_reference",
             Self::VaultDatabaseSecretScan => "vault_database_secret_scan",
             Self::ActorCountZero => "actor_count_zero",
-            Self::ChildCountZero => "child_count_zero",
+            Self::DirectChildCountZero => "direct_child_count_zero",
             Self::VaultTemporaryReferenceZero => "vault_temporary_reference_zero",
             Self::JournalCountZero => "journal_count_zero",
         }

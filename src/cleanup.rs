@@ -25,12 +25,25 @@ pub(crate) async fn shutdown(application: BootstrappedApplication) -> Result<(),
         repository,
         sessions,
         credentials: _,
+        import_cleanup,
+        observer,
     } = application;
+    let import_cleanup_error = import_cleanup
+        .shutdown()
+        .await
+        .err()
+        .map(|_| BootstrapError::ImportCleanup);
+    observer.record("import.cleanup.shutdown");
     let lifecycle_error = shutdown_application_and_sessions(application, &sessions).await;
+    observer.record("application.sessions.shutdown");
     let storage_error =
         (!shutdown_repository(repository)).then_some(BootstrapError::StorageShutdown);
+    observer.record("storage.shutdown");
 
-    lifecycle_error.or(storage_error).map_or(Ok(()), Err)
+    import_cleanup_error
+        .or(lifecycle_error)
+        .or(storage_error)
+        .map_or(Ok(()), Err)
 }
 
 pub(crate) async fn shutdown_p0(
@@ -43,20 +56,31 @@ pub(crate) async fn shutdown_p0(
         repository,
         sessions,
         credentials,
+        import_cleanup,
+        observer,
     } = application;
+    let import_cleanup_error = import_cleanup
+        .shutdown()
+        .await
+        .err()
+        .map(|_| BootstrapError::ImportCleanup);
+    observer.record("import.cleanup.shutdown");
     let lifecycle_error = shutdown_application_and_sessions(application, &sessions).await;
+    observer.record("application.sessions.shutdown");
     let mut evidence = P0CleanupEvidence::new();
     evidence.application_shutdown_clean = Some(lifecycle_error.is_none());
     evidence.actor_count = Some(sessions.active_session_count());
-    evidence.session_child_count = Some(sessions.active_child_process_count());
+    evidence.direct_session_child_count = Some(sessions.active_child_process_count());
     let credentials_clean = delete_temporary_credentials(&credentials, &repository, &mut evidence);
     let storage_clean = shutdown_repository(repository);
+    observer.record("storage.shutdown");
     evidence.repository_shutdown_clean = Some(storage_clean);
     let state_clean = scan_temporary_state(temporary_root, secret_environment, &mut evidence);
     let cleanup_error = (!credentials_clean || !state_clean).then_some(BootstrapError::P0Cleanup);
     P0Shutdown {
         evidence,
-        error: cleanup_error
+        error: import_cleanup_error
+            .or(cleanup_error)
             .or((!storage_clean).then_some(BootstrapError::StorageShutdown))
             .or(lifecycle_error),
     }

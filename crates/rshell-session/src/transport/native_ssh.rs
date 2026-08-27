@@ -73,7 +73,7 @@ impl NativeSshTransport {
         }
         validate_request(request)?;
         if self.auth.is_none() {
-            return Err(TransportError::new(SessionFailure::Validation));
+            return Err(TransportError::new(SessionFailure::Authentication));
         }
         let target = (self.profile.host.as_str(), self.profile.port);
         let stream = TcpStream::connect(target)
@@ -100,9 +100,8 @@ impl NativeSshTransport {
             .map_err(TransportError::from)?;
         let Some(auth) = self.auth.take() else {
             disconnect_quietly(&handle).await;
-            return Err(TransportError::new(SessionFailure::Validation));
+            return Err(TransportError::new(SessionFailure::Authentication));
         };
-
         if let Err(error) =
             auth::authenticate(&mut handle, &self.profile.username, auth, &interactions).await
         {

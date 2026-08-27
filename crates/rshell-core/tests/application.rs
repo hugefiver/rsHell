@@ -10,7 +10,9 @@ use rshell_core::{
     TerminalProfile, TerminalSize, TransportKind, UI_COMMAND_CAPACITY, UiCommand, UiPortError,
     VaultFailure,
 };
+use secrecy::SecretString;
 use tokio::time::timeout;
+use uuid::Uuid;
 
 use support::{RecordingPorts, bootstrap_state};
 
@@ -190,6 +192,63 @@ async fn connect_reads_credential_once_moves_it_and_emits_only_redacted_values()
     assert!(ports.secret_received());
     assert!(!format!("{event:?}").contains("application-secret"));
     assert!(!format!("{:?}", app.view_model()).contains("application-secret"));
+    app.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn retry_pane_reads_fresh_native_credential() {
+    let mut bootstrap = bootstrap_state();
+    let mut profile = ConnectionProfile::new("managed", "example.test");
+    profile.username = "alice".into();
+    profile.transport = TransportKind::NativeSsh;
+    profile.authentication = AuthenticationKind::Password;
+    profile.credential_ref = Some(CredentialRef::new("credential-key"));
+    let connection = profile.id;
+    bootstrap.catalog.connections.insert(connection, profile);
+    let ports = RecordingPorts::new(&bootstrap);
+    let first = SecretString::from(Uuid::new_v4().to_string());
+    let second = SecretString::from(Uuid::new_v4().to_string());
+    ports.set_secret(first);
+    let app = ApplicationService::start(ports.dependencies(), bootstrap)
+        .await
+        .unwrap();
+    let pane = app.initial_view_model().workspace.tabs[0].active_pane;
+    let events = app.event_receiver();
+
+    app.ui_port()
+        .try_send(UiCommand::Connect { pane, connection })
+        .unwrap();
+    let first_workspace = recv_matching(&events, |event| {
+        matches!(event, AppEvent::WorkspaceChanged(_))
+    })
+    .await;
+    let AppEvent::WorkspaceChanged(first_workspace) = first_workspace else {
+        unreachable!();
+    };
+    let first_session = first_workspace.tabs[0]
+        .pane_tree
+        .session_id(pane)
+        .unwrap()
+        .unwrap();
+
+    ports.set_secret(second);
+    app.ui_port().try_send(UiCommand::RetryPane(pane)).unwrap();
+    let second_workspace = recv_matching(&events, |event| {
+        matches!(event, AppEvent::WorkspaceChanged(_))
+    })
+    .await;
+    let AppEvent::WorkspaceChanged(second_workspace) = second_workspace else {
+        unreachable!();
+    };
+    let second_session = second_workspace.tabs[0]
+        .pane_tree
+        .session_id(pane)
+        .unwrap()
+        .unwrap();
+
+    assert_ne!(first_session, second_session);
+    assert_eq!(ports.credential_reads(), 2);
+    assert!(ports.second_launch_received_replacement_secret());
     app.shutdown().await.unwrap();
 }
 
@@ -612,6 +671,61 @@ async fn preview_cancel_and_failed_commit_preserve_storage_ownership_and_view_mo
     .await;
     assert_eq!(ports.pending_preview_count(), 0);
     assert!(app.view_model().pending_imports.is_empty());
+    app.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn expired_import_preview_is_removed_from_core_view() {
+    let bootstrap = bootstrap_state();
+    let ports = RecordingPorts::new(&bootstrap);
+    let app = ApplicationService::start(ports.dependencies(), bootstrap)
+        .await
+        .unwrap();
+    let events = app.event_receiver();
+
+    for commit in [true, false] {
+        app.ui_port()
+            .try_send(UiCommand::PreviewImport {
+                source: ImportSourceKind::OpenSshConfig,
+                path: PathBuf::from("config"),
+            })
+            .unwrap();
+        let preview =
+            recv_matching(&events, |event| matches!(event, AppEvent::ImportPreview(_))).await;
+        let AppEvent::ImportPreview(preview) = preview else {
+            unreachable!()
+        };
+        let mut view = app.view_stream();
+        ports.import_error(Some(rshell_core::ImportError::PreviewExpired));
+        let command = if commit {
+            UiCommand::CommitImport {
+                preview: preview.id,
+                selected: Default::default(),
+            }
+        } else {
+            UiCommand::CancelImport {
+                preview: preview.id,
+            }
+        };
+
+        app.ui_port().try_send(command).unwrap();
+        let failure = recv_matching(&events, |event| {
+            matches!(event, AppEvent::OperationFailed(_))
+        })
+        .await;
+        let updated = timeout(Duration::from_secs(2), view.changed())
+            .await
+            .expect("expired preview must publish a view")
+            .expect("view stream must remain open");
+
+        assert!(matches!(
+            failure,
+            AppEvent::OperationFailed(failure) if failure.context == "import preview expired"
+        ));
+        assert!(!updated.pending_imports.contains_key(&preview.id));
+        ports.import_error(None);
+    }
+
     app.shutdown().await.unwrap();
 }
 

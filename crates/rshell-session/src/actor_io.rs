@@ -19,7 +19,13 @@ impl SessionActor {
                     Err(_) => return ActorControl::Failure(SessionFailure::Platform),
                 };
                 match transport.write(&bytes).await {
-                    Ok(()) => ActorControl::Continue,
+                    Ok(()) => {
+                        if self.presentation.scroll_on_keypress() {
+                            self.presentation.on_input(self.engine.viewport_bounds());
+                            self.frame_clock.mark_dirty();
+                        }
+                        ActorControl::Continue
+                    }
                     Err(error) => ActorControl::Failure(error.failure()),
                 }
             }
@@ -43,7 +49,8 @@ impl SessionActor {
                 if self.engine.resize(size).is_err() {
                     return ActorControl::Failure(SessionFailure::Platform);
                 }
-                self.viewport.rows = size.rows;
+                self.presentation
+                    .on_resize(size, self.engine.viewport_bounds());
                 match transport.resize(size).await {
                     Ok(()) => {
                         self.frame_clock.mark_dirty();
@@ -56,12 +63,11 @@ impl SessionActor {
                 if self.engine.scroll(rows).is_err() {
                     return ActorControl::Failure(SessionFailure::Platform);
                 }
-                self.viewport.top_stable_row = self
-                    .viewport
-                    .top_stable_row
-                    .saturating_add(i64::from(rows))
-                    .max(0);
-                self.frame_clock.mark_dirty();
+                self.presentation
+                    .on_scroll(rows, self.engine.viewport_bounds());
+                if rows != 0 {
+                    self.frame_clock.mark_dirty();
+                }
                 ActorControl::Continue
             }
             SessionCommand::Search(query) => match self.engine.search(&query) {
@@ -72,12 +78,12 @@ impl SessionActor {
                 Err(_) => ActorControl::Failure(SessionFailure::Platform),
             },
             SessionCommand::Select(range) => {
-                self.selection = Some(range);
+                self.presentation.set_selection(range);
                 self.frame_clock.mark_dirty();
                 ActorControl::Continue
             }
             SessionCommand::CopySelection => {
-                let text = match self.selection {
+                let text = match self.presentation.selection() {
                     Some(range) => match self.engine.selected_text(range) {
                         Ok(text) => text,
                         Err(_) => return ActorControl::Failure(SessionFailure::Platform),
@@ -87,6 +93,7 @@ impl SessionActor {
                 let _ = self.events.send(SessionEvent::CopyReady(text));
                 ActorControl::Continue
             }
+            SessionCommand::ClearScrollback => self.clear_scrollback(),
             SessionCommand::Respond(id, response) => {
                 match self.interactions.respond(id, response) {
                     Ok(()) => ActorControl::Continue,
@@ -138,6 +145,7 @@ impl SessionActor {
                     return ActorControl::Failure(error.failure());
                 }
                 if delta.dirty {
+                    self.presentation.on_output(self.engine.viewport_bounds());
                     self.frame_clock.mark_dirty();
                 }
                 ActorControl::Continue
@@ -154,7 +162,11 @@ impl SessionActor {
     }
 
     pub(crate) fn publish_frame(&mut self) -> Result<(), crate::EngineError> {
-        let frame = self.engine.render(self.viewport, self.selection)?;
+        let viewport = self.presentation.viewport(self.engine.viewport_bounds());
+        let mut frame = self
+            .engine
+            .render(viewport, self.presentation.selection())?;
+        std::sync::Arc::make_mut(&mut frame).generation = self.presentation.next_generation()?;
         let first_frame = self.frames.borrow().is_none();
         self.frames.send_replace(Some(frame.clone()));
         if first_frame {

@@ -1,16 +1,23 @@
-use std::{
-    io::{self, Write},
-    sync::{Arc, Mutex},
+use std::sync::Arc;
+
+use rshell_core::{
+    KeyCode, KeyModifiers, ResolvedTerminalProfile, TerminalMouseEvent, TerminalSize,
+};
+use wezterm_term::{
+    KeyCode as WezKeyCode, KeyModifiers as WezKeyModifiers, Terminal, TerminalConfiguration,
+    TerminalSize as WezTermSize, color::ColorPalette,
 };
 
-use rshell_core::{ResolvedTerminalProfile, TerminalSize};
-use wezterm_term::{
-    Terminal, TerminalConfiguration, TerminalSize as WezTermSize, color::ColorPalette,
+use crate::{
+    EngineError, ViewportBounds,
+    wezterm_input::{map_key, map_key_modifiers, map_mouse},
+    wezterm_writer::SharedWriter,
 };
 
 #[derive(Debug)]
 struct RshellTerminalConfig {
     settings: ResolvedTerminalProfile,
+    mouse_reporting_allowed: bool,
 }
 
 impl TerminalConfiguration for RshellTerminalConfig {
@@ -46,6 +53,7 @@ impl WezTermAdapter {
     pub(crate) fn new(settings: &ResolvedTerminalProfile, size: TerminalSize) -> Self {
         let config = Arc::new(RshellTerminalConfig {
             settings: settings.clone(),
+            mouse_reporting_allowed: settings.mouse_reporting,
         });
         let outbound = SharedWriter::default();
         let terminal = make_terminal(size, config.clone(), outbound.clone());
@@ -65,9 +73,50 @@ impl WezTermAdapter {
         self.size
     }
 
-    pub(crate) fn input(&mut self, bytes: &[u8]) -> Vec<u8> {
+    pub(crate) fn mouse_reporting_allowed(&self) -> bool {
+        self.config.mouse_reporting_allowed
+    }
+
+    pub(crate) fn encode_key(
+        &mut self,
+        code: KeyCode,
+        modifiers: KeyModifiers,
+    ) -> Result<Vec<u8>, EngineError> {
+        let key = map_key(code)?;
+        let modifiers = map_key_modifiers(modifiers)?;
+        self.terminal
+            .key_down(key, modifiers)
+            .map_err(|_| EngineError::UnsupportedInput("wezterm key encoding failed"))?;
+        self.drain_with_barrier()
+    }
+
+    pub(crate) fn encode_mouse(
+        &mut self,
+        event: TerminalMouseEvent,
+    ) -> Result<Vec<u8>, EngineError> {
+        let event = map_mouse(event, self.size)?;
+        self.terminal
+            .mouse_event(event)
+            .map_err(|_| EngineError::UnsupportedMouse("wezterm mouse encoding failed"))?;
+        self.drain_with_barrier()
+    }
+
+    pub(crate) fn viewport_bounds(&self) -> ViewportBounds {
+        let screen = self.terminal.screen();
+        let rows = screen.scrollback_rows();
+        let first_stable_row = stable_row(screen.phys_to_stable_row_index(0));
+        let end_stable_row = stable_row(screen.phys_to_stable_row_index(rows));
+        ViewportBounds {
+            first_stable_row,
+            bottom_top_stable_row: end_stable_row
+                .saturating_sub(i64::from(self.size.rows))
+                .max(first_stable_row),
+        }
+    }
+
+    pub(crate) fn input(&mut self, bytes: &[u8]) -> Result<Vec<u8>, EngineError> {
         self.terminal.advance_bytes(bytes);
-        self.outbound.take()
+        self.drain_with_barrier()
     }
 
     pub(crate) fn resize(&mut self, size: TerminalSize) {
@@ -83,28 +132,19 @@ impl WezTermAdapter {
         self.outbound.take();
         self.terminal = make_terminal(self.size, self.config.clone(), self.outbound.clone());
     }
-}
 
-#[derive(Clone, Default)]
-struct SharedWriter(Arc<Mutex<Vec<u8>>>);
-
-impl SharedWriter {
-    fn take(&self) -> Vec<u8> {
-        std::mem::take(&mut *self.0.lock().unwrap_or_else(|error| error.into_inner()))
-    }
-}
-
-impl Write for SharedWriter {
-    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
-        self.0
-            .lock()
-            .unwrap_or_else(|error| error.into_inner())
-            .extend_from_slice(bytes);
-        Ok(bytes.len())
-    }
-
-    fn flush(&mut self) -> io::Result<()> {
-        Ok(())
+    fn drain_with_barrier(&mut self) -> Result<Vec<u8>, EngineError> {
+        // The pinned terminal forwards writer bytes on a background thread. A
+        // synthetic key provides an ordered drain marker; its bytes are removed
+        // before the payload can reach the transport.
+        const BARRIER: char = '\u{10ffff}';
+        self.terminal
+            .key_down(WezKeyCode::Char(BARRIER), WezKeyModifiers::NONE)
+            .map_err(|_| EngineError::UnsupportedInput("wezterm writer barrier failed"))?;
+        let mut encoded = [0; 4];
+        Ok(self
+            .outbound
+            .take_through(BARRIER.encode_utf8(&mut encoded).as_bytes()))
     }
 }
 
@@ -132,4 +172,12 @@ fn to_backend_size(size: TerminalSize) -> WezTermSize {
         pixel_height: size.pixel_height as usize,
         dpi: size.dpi,
     }
+}
+
+fn stable_row(index: isize) -> i64 {
+    i64::try_from(index).unwrap_or(if index.is_negative() {
+        i64::MIN
+    } else {
+        i64::MAX
+    })
 }

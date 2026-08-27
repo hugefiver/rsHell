@@ -1,14 +1,16 @@
 use std::{collections::VecDeque, sync::Arc};
 
-use rshell_core::{SessionFailure, SessionId, SessionState, Viewport};
+use rshell_core::{SessionFailure, SessionId, SessionState};
 use tokio::sync::{broadcast, mpsc, watch};
 
 use crate::{
     COMMAND_CAPACITY, InteractionBroker, SessionCommand, SessionEvent, SessionTransport,
     TerminalEngine, TransportFactory, TransportRequest,
+    actor_process::{clear_stopped_child_process, record_child_process},
     frame_clock::FrameClock,
     lifecycle::Lifecycle,
     manager::ChildProcessRegistry,
+    presentation::{PresentationPolicy, PresentationState},
     transport::{interaction_channel, interaction_state},
 };
 
@@ -31,8 +33,7 @@ pub(crate) struct SessionActor {
         mpsc::Receiver<(rshell_core::InteractionId, rshell_core::InteractionRequest)>,
     pub(crate) deferred: VecDeque<SessionCommand>,
     pub(crate) lifecycle: Lifecycle,
-    pub(crate) viewport: Viewport,
-    pub(crate) selection: Option<rshell_core::SelectionRange>,
+    pub(crate) presentation: PresentationState,
     pub(crate) frame_clock: FrameClock,
     pub(crate) child_processes: ChildProcessRegistry,
 }
@@ -60,14 +61,12 @@ impl SessionActor {
         factory: Arc<dyn TransportFactory>,
         request: TransportRequest,
         engine: Box<dyn TerminalEngine>,
+        presentation_policy: PresentationPolicy,
         channels: ActorChannels,
         child_processes: ChildProcessRegistry,
     ) -> Self {
         let (interactions, interaction_rx) = interaction_channel();
-        let viewport = Viewport {
-            top_stable_row: 0,
-            rows: request.initial_size().rows,
-        };
+        let presentation = PresentationState::new(request.initial_size(), presentation_policy);
         let lifecycle = Lifecycle::new(&channels.events);
         Self {
             id,
@@ -81,8 +80,7 @@ impl SessionActor {
             interaction_rx,
             deferred: VecDeque::new(),
             lifecycle,
-            viewport,
-            selection: None,
+            presentation,
             frame_clock: FrameClock::default(),
             child_processes,
         }
@@ -104,7 +102,11 @@ impl SessionActor {
         loop {
             match self.connect(&mut *transport).await {
                 ConnectOutcome::Connected => {
-                    self.record_child_process(transport.child_process_id());
+                    record_child_process(
+                        self.id,
+                        &self.child_processes,
+                        transport.child_process_id(),
+                    );
                 }
                 ConnectOutcome::Shutdown => {
                     return self.shutdown(&mut *transport).await;
@@ -126,7 +128,7 @@ impl SessionActor {
                         self.lifecycle.fail(error.failure(), &self.events);
                         return Err(crate::SessionError::TransportShutdown(error.failure()));
                     }
-                    self.clear_stopped_child_process()?;
+                    clear_stopped_child_process(self.id, &self.child_processes)?;
                     let replacement = match self.factory.create(&self.request) {
                         Ok(replacement) => replacement,
                         Err(error) => {
@@ -190,36 +192,6 @@ impl SessionActor {
         }
     }
 
-    fn record_child_process(&self, process_id: Option<u32>) {
-        let mut processes = self
-            .child_processes
-            .lock()
-            .unwrap_or_else(|error| error.into_inner());
-        match process_id {
-            Some(process_id) => {
-                processes.insert(self.id, process_id);
-            }
-            None => {
-                processes.remove(&self.id);
-            }
-        }
-    }
-
-    fn clear_stopped_child_process(&self) -> Result<(), crate::SessionError> {
-        let mut processes = self
-            .child_processes
-            .lock()
-            .unwrap_or_else(|error| error.into_inner());
-        let Some(process_id) = processes.get(&self.id).copied() else {
-            return Ok(());
-        };
-        if crate::process::is_active(process_id) {
-            return Err(crate::SessionError::ChildProcessAlive);
-        }
-        processes.remove(&self.id);
-        Ok(())
-    }
-
     async fn connected(&mut self, transport: &mut dyn SessionTransport) -> ActorControl {
         loop {
             if let Some(command) = self.deferred.pop_front() {
@@ -259,6 +231,16 @@ impl SessionActor {
 
     pub(crate) fn transition(&mut self, next: SessionState) -> bool {
         self.lifecycle.transition(next, &self.events)
+    }
+
+    pub(crate) fn clear_scrollback(&mut self) -> ActorControl {
+        if self.engine.clear_scrollback().is_err() {
+            return ActorControl::Failure(SessionFailure::Platform);
+        }
+        self.presentation
+            .on_clear_scrollback(self.engine.viewport_bounds());
+        self.frame_clock.mark_dirty();
+        ActorControl::Continue
     }
 
     fn route_interaction(&mut self, request: rshell_core::InteractionRequest) -> bool {

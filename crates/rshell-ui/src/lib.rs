@@ -113,6 +113,7 @@ mod terminal_render_cache;
 mod terminal_renderer;
 mod terminal_search;
 mod terminal_view;
+mod terminal_view_keys;
 mod terminal_view_message;
 mod terminal_view_model;
 mod terminal_view_pointer;

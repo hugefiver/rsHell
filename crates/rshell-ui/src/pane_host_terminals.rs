@@ -87,6 +87,7 @@ pub(crate) fn sync_terminals(
         };
         let controller = TerminalView::builder()
             .launch(TerminalViewInit {
+                pane: pane_id,
                 session,
                 profile,
                 metrics: terminal_font_metrics(),

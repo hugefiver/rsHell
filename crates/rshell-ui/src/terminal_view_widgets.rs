@@ -162,13 +162,21 @@ fn connect_keyboard(
             glib::Propagation::Proceed
         }
     });
+    let release_sender = sender.clone();
+    key.connect_key_released(move |_, key, _, _| {
+        release_sender.input(TerminalViewMsg::KeyReleased(key));
+    });
     canvas.add_controller(key);
 
     let focus = gtk::EventControllerFocus::new();
     let focus_in = im_context.clone();
     focus.connect_enter(move |_| focus_in.focus_in());
     let focus_out = im_context.clone();
-    focus.connect_leave(move |_| focus_out.focus_out());
+    let focus_sender = sender.clone();
+    focus.connect_leave(move |_| {
+        focus_out.focus_out();
+        focus_sender.input(TerminalViewMsg::FocusLost);
+    });
     canvas.add_controller(focus);
 
     let search_keys = gtk::EventControllerKey::new();
@@ -210,6 +218,9 @@ fn connect_resize(canvas: &gtk::DrawingArea, sender: &ComponentSender<TerminalVi
 }
 
 fn should_handle_key(key: gdk::Key, state: gdk::ModifierType) -> bool {
+    if matches!(key, gdk::Key::Alt_L | gdk::Key::Alt_R) {
+        return true;
+    }
     let terminal_modifiers = modifiers(state);
     terminal_modifiers.control
         || terminal_modifiers.alt

@@ -1,6 +1,9 @@
+use secrecy::{ExposeSecret, SecretString};
 use std::{
     borrow::Cow,
+    collections::hash_map::DefaultHasher,
     fmt,
+    hash::{Hash, Hasher},
     net::SocketAddr,
     path::{Path, PathBuf},
     sync::{
@@ -39,9 +42,14 @@ sJWR7W+cGvJ/vLsw==
 pub enum ServerAuth {
     Password,
     PasswordValue(String),
+    PasswordFingerprint(u64),
     PublicKey(PublicKey),
     PublicKeys(Vec<PublicKey>),
     KeyboardInteractive,
+}
+
+pub fn password_fingerprint(secret: &SecretString) -> u64 {
+    fingerprint(secret.expose_secret())
 }
 
 #[derive(Clone, Default, PartialEq, Eq)]
@@ -375,6 +383,7 @@ impl TestHandler {
             ServerAuth::PublicKeys(expected) => expected.iter().any(|key| key == public_key),
             ServerAuth::Password
             | ServerAuth::PasswordValue(_)
+            | ServerAuth::PasswordFingerprint(_)
             | ServerAuth::KeyboardInteractive => false,
         }
     }
@@ -384,14 +393,15 @@ impl server::Handler for TestHandler {
     type Error = russh::Error;
 
     async fn auth_password(&mut self, user: &str, password: &str) -> Result<Auth, Self::Error> {
-        let expected_password = match &self.auth {
-            ServerAuth::Password => Some(PASSWORD),
-            ServerAuth::PasswordValue(value) => Some(value.as_str()),
+        let accepted = match &self.auth {
+            ServerAuth::Password => password == PASSWORD,
+            ServerAuth::PasswordValue(value) => password == value,
+            ServerAuth::PasswordFingerprint(expected) => fingerprint(password) == *expected,
             ServerAuth::PublicKey(_)
             | ServerAuth::PublicKeys(_)
-            | ServerAuth::KeyboardInteractive => None,
+            | ServerAuth::KeyboardInteractive => false,
         };
-        if expected_password.is_some_and(|expected| user == USERNAME && password == expected) {
+        if user == USERNAME && accepted {
             self.record_success(AuthenticationMethod::Password);
             Ok(Auth::Accept)
         } else {
@@ -594,6 +604,12 @@ impl server::Handler for TestHandler {
         }
         Ok(())
     }
+}
+
+fn fingerprint(value: &str) -> u64 {
+    let mut hasher = DefaultHasher::new();
+    value.hash(&mut hasher);
+    hasher.finish()
 }
 
 #[derive(Clone, Copy)]

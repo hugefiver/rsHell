@@ -2,7 +2,7 @@ use std::{
     collections::{BTreeMap, BTreeSet},
     path::{Path, PathBuf},
     sync::{Arc, Mutex, MutexGuard},
-    time::{Duration, Instant},
+    time::Duration,
 };
 
 use async_trait::async_trait;
@@ -10,6 +10,7 @@ use rshell_core::{
     ConnectionId, ImportCandidateId, ImportCommitResult, ImportError, ImportPort, ImportPreviewId,
     ImportPreviewView, ImportSourceKind,
 };
+use tokio::time::Instant;
 
 use crate::{
     CredentialCoordinator, ImportPreview, LegacyJsonImporter, OpenSshConfigImporter,

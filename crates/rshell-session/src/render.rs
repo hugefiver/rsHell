@@ -16,10 +16,8 @@ pub(crate) fn snapshot(
     let terminal = adapter.terminal();
     let screen = terminal.screen();
     let total_rows = screen.scrollback_rows();
-    let first_stable = screen.phys_to_stable_row_index(0) as i64;
     let end_stable = screen.phys_to_stable_row_index(total_rows) as i64;
-    let requested_start = viewport.top_stable_row.max(first_stable);
-    let start = requested_start.min(end_stable);
+    let start = adapter.viewport_bounds().clamp_top(viewport.top_stable_row);
     let end = start
         .saturating_add(i64::from(viewport.rows))
         .min(end_stable);
@@ -45,7 +43,7 @@ pub(crate) fn snapshot(
     let cursor = terminal.cursor_pos();
     let cursor_stable = screen.visible_row_to_stable_row(cursor.y) as i64;
     RenderFrame {
-        generation: terminal.current_seqno() as u64,
+        generation: 0,
         size: adapter.size(),
         viewport_top: start,
         rows: Arc::from(rows),
@@ -59,7 +57,7 @@ pub(crate) fn snapshot(
         }),
         title: terminal.get_title().into(),
         alternate_screen: terminal.is_alt_screen_active(),
-        mouse_reporting: terminal.is_mouse_grabbed(),
+        mouse_reporting: adapter.mouse_reporting_allowed() && terminal.is_mouse_grabbed(),
     }
 }
 

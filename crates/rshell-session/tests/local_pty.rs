@@ -315,6 +315,73 @@ async fn shutdown_is_bounded_when_a_descendant_inherits_the_pty() {
     );
 }
 
+#[cfg(windows)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn immediate_descendant_is_contained_before_first_user_marker() {
+    for teardown in ["shutdown", "drop"] {
+        let mut transport =
+            LocalPtyTransport::launch(command(["--spawn-descendant-before-marker-ms", "30000"]));
+        connect(&mut transport, &TransportRequest::new(size(80, 24))).await;
+        let direct_pid = transport.process_id().expect("native process id");
+        let output = read_until(&mut transport, b"FIRST_USER_MARKER").await;
+        let descendant_pid = line_value(&output, b"DESCENDANT:");
+
+        let app_inside = transport
+            .process_tree_contains(std::process::id())
+            .expect("query app Job membership");
+        let direct_inside = transport
+            .process_tree_contains(direct_pid)
+            .expect("query direct-child Job membership");
+        let descendant_inside = transport
+            .process_tree_contains(descendant_pid)
+            .expect("query descendant Job membership");
+        let direct_alive_before = process_is_active(direct_pid);
+        let descendant_alive_before = process_is_active(descendant_pid);
+        assert!(
+            !app_inside,
+            "the rsHell test process must remain outside the per-session Job"
+        );
+        assert!(
+            direct_inside,
+            "direct child {direct_pid} was not in the Job before the first marker"
+        );
+        assert!(
+            descendant_inside,
+            "descendant {descendant_pid} was not in the Job before the first marker"
+        );
+        assert!(direct_alive_before);
+        assert!(descendant_alive_before);
+
+        if teardown == "shutdown" {
+            tokio::time::timeout(Duration::from_secs(2), transport.shutdown())
+                .await
+                .expect("contained shutdown must be bounded")
+                .expect("contained shutdown must converge");
+        } else {
+            drop(transport);
+        }
+        wait_until_process_stops(direct_pid).await;
+        wait_until_process_stops(descendant_pid).await;
+        eprintln!(
+            "{teardown}: app_inside={app_inside} direct_pid={direct_pid} \
+             direct_inside={direct_inside} direct_alive_before={direct_alive_before} \
+             descendant_pid={descendant_pid} descendant_inside={descendant_inside} \
+             descendant_alive_before={descendant_alive_before} both_dead_after=true"
+        );
+    }
+}
+
+#[cfg(windows)]
+async fn wait_until_process_stops(pid: u32) {
+    tokio::time::timeout(Duration::from_secs(2), async {
+        while process_is_active(pid) {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap_or_else(|_| panic!("process {pid} remained active after bounded teardown"));
+}
+
 fn contains(haystack: &[u8], needle: &[u8]) -> bool {
     haystack
         .windows(needle.len())
@@ -322,14 +389,17 @@ fn contains(haystack: &[u8], needle: &[u8]) -> bool {
 }
 
 fn line_value(output: &[u8], prefix: &[u8]) -> u32 {
-    let value = output
-        .split(|byte| *byte == b'\n')
-        .find_map(|line| {
-            line.strip_suffix(b"\r")
-                .unwrap_or(line)
-                .strip_prefix(prefix)
-        })
-        .expect("fixture line prefix");
+    let start = output
+        .windows(prefix.len())
+        .position(|window| window == prefix)
+        .map(|offset| offset + prefix.len())
+        .unwrap_or_else(|| panic!("fixture line prefix missing from {output:?}"));
+    let value = &output[start
+        ..start
+            + output[start..]
+                .iter()
+                .take_while(|byte| byte.is_ascii_digit())
+                .count()];
     std::str::from_utf8(value)
         .expect("fixture value is UTF-8")
         .parse()

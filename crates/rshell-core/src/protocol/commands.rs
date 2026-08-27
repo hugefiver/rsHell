@@ -153,6 +153,7 @@ pub enum SessionUiCommand {
     Search(SearchQuery),
     Select(SelectionRange),
     CopySelection,
+    ClearScrollback,
     Respond {
         interaction: InteractionId,
         response: InteractionResponse,
@@ -193,6 +194,7 @@ impl fmt::Debug for SessionUiCommand {
             Self::Search(query) => formatter.debug_tuple("Search").field(query).finish(),
             Self::Select(range) => formatter.debug_tuple("Select").field(range).finish(),
             Self::CopySelection => formatter.write_str("CopySelection"),
+            Self::ClearScrollback => formatter.write_str("ClearScrollback"),
             Self::Respond {
                 interaction,
                 response,

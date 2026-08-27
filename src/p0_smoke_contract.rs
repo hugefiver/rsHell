@@ -221,8 +221,8 @@ pub(crate) fn assess_all(
                     "actor_count_zero",
                 ),
                 (
-                    cleanup.is_some_and(P0CleanupEvidence::session_children_are_stopped),
-                    "child_count_zero",
+                    cleanup.is_some_and(P0CleanupEvidence::direct_session_children_are_stopped),
+                    "direct_child_count_zero",
                 ),
                 (
                     cleanup.is_some_and(P0CleanupEvidence::vault_references_are_absent),

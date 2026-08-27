@@ -221,10 +221,11 @@ impl SessionPaneViewModel {
             .terminal_profiles
             .iter()
             .find(|profile| profile.id == requested)?;
-        Some(match connection {
+        let resolved = match connection {
             Some(connection) => profile.settings.resolve(&connection.terminal_overrides),
             None => profile.settings.resolve(&Default::default()),
-        })
+        };
+        Some(resolved.with_app_key_bindings(&app.settings.key_bindings))
     }
 }
 

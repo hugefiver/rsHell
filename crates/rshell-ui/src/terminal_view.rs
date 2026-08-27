@@ -37,7 +37,12 @@ impl SimpleComponent for TerminalView {
     ) -> ComponentParts<Self> {
         let widgets = TerminalViewWidgets::build(&root, &init, &sender);
         let model = Self {
-            model: TerminalViewModel::new(init.session, init.metrics),
+            model: TerminalViewModel::with_profile(
+                init.pane,
+                init.session,
+                init.profile,
+                init.metrics,
+            ),
             clipboard: root.display().clipboard(),
             selection_anchor: None,
             pressed_button: None,
@@ -51,6 +56,8 @@ impl SimpleComponent for TerminalView {
                 self.model.apply_frame(frame);
             }
             TerminalViewMsg::Key { key, state } => self.handle_key(key, state, &sender),
+            TerminalViewMsg::KeyReleased(key) => self.model.key_released(key),
+            TerminalViewMsg::FocusLost => self.model.focus_lost(),
             TerminalViewMsg::CommittedText(text) => {
                 let result = self.model.committed_text(&text);
                 output_result(result, &sender);
@@ -129,10 +136,7 @@ impl TerminalView {
         if event.kind == MouseEventKind::Move {
             event.button = self.pressed_button;
         }
-        let reports_mouse = self
-            .model
-            .frame()
-            .is_some_and(|frame| frame.mouse_reporting);
+        let reports_mouse = self.model.reports_mouse();
         if reports_mouse {
             if event.kind == MouseEventKind::Press {
                 self.pressed_button = event.button;

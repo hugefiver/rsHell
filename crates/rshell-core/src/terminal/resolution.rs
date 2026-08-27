@@ -154,6 +154,21 @@ impl TerminalSettingsV1 {
     }
 }
 
+impl ResolvedTerminalProfile {
+    pub fn with_app_key_bindings(mut self, app_bindings: &[KeyBinding]) -> Self {
+        for app_binding in app_bindings {
+            let shadowed = self.key_bindings.iter().any(|profile_binding| {
+                profile_binding.code == app_binding.code
+                    && profile_binding.modifiers == app_binding.modifiers
+            });
+            if !shadowed {
+                self.key_bindings.push(app_binding.clone());
+            }
+        }
+        self
+    }
+}
+
 fn text(value: &str, fallback: &str) -> String {
     let trimmed = value.trim();
     if trimmed.is_empty() {

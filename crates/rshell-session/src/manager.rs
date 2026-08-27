@@ -61,6 +61,7 @@ impl SessionManager {
             factory,
             launch.request,
             launch.engine,
+            launch.presentation_policy,
             channels,
             Arc::clone(&self.child_processes),
         );

@@ -1,12 +1,15 @@
 use std::{fmt, sync::Arc};
 
 use gtk::gdk;
-use rshell_core::{RenderFrame, ResolvedTerminalProfile, SessionId, SessionUiEvent, UiCommand};
+use rshell_core::{
+    PaneId, RenderFrame, ResolvedTerminalProfile, SessionId, SessionUiEvent, UiCommand,
+};
 
 use crate::{FontMetrics, PointerEvent, TerminalViewError};
 
 #[derive(Debug, Clone)]
 pub struct TerminalViewInit {
+    pub pane: PaneId,
     pub session: SessionId,
     pub profile: ResolvedTerminalProfile,
     pub metrics: FontMetrics,
@@ -18,6 +21,8 @@ pub enum TerminalViewMsg {
         key: gdk::Key,
         state: gdk::ModifierType,
     },
+    KeyReleased(gdk::Key),
+    FocusLost,
     CommittedText(String),
     Pointer(PointerEvent),
     Resize {
@@ -55,6 +60,8 @@ impl fmt::Debug for TerminalViewMsg {
                 .field("key", key)
                 .field("state", state)
                 .finish(),
+            Self::KeyReleased(key) => formatter.debug_tuple("KeyReleased").field(key).finish(),
+            Self::FocusLost => formatter.write_str("FocusLost"),
             Self::CommittedText(_) => formatter.write_str("CommittedText([REDACTED])"),
             Self::Pointer(event) => formatter.debug_tuple("Pointer").field(event).finish(),
             Self::Resize {

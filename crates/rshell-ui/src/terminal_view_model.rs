@@ -1,9 +1,9 @@
 use std::{fmt, sync::Arc};
 
-use gtk::gdk::{Key, ModifierType};
 use rshell_core::{
-    MouseButton, MouseEventKind, RenderFrame, SearchMatch, SearchQuery, SelectionRange, SessionId,
-    SessionUiCommand, SessionUiEvent, TerminalInput, TerminalMouseEvent, UiCommand,
+    MouseButton, MouseEventKind, PaneId, RenderFrame, ResolvedTerminalProfile, SearchMatch,
+    SearchQuery, SelectionRange, SessionId, SessionUiCommand, SessionUiEvent, TerminalInput,
+    TerminalMouseEvent, TerminalSettingsV1, UiCommand,
 };
 use rshell_platform::ClipboardPolicy;
 
@@ -12,7 +12,7 @@ use crate::{
         PointerEvent, ViewRect, checked_pixel, logical_cell, point_to_cell, point_to_view_cell,
         terminal_size,
     },
-    terminal_input::{FontMetrics, TerminalViewError, map_gdk_key, modifiers},
+    terminal_input::{FontMetrics, PhysicalAltState, TerminalViewError},
     terminal_search::TerminalSearchState,
 };
 
@@ -32,17 +32,37 @@ impl fmt::Debug for TerminalClipboardAction {
 }
 
 pub struct TerminalViewModel {
-    session: SessionId,
+    pub(crate) pane: PaneId,
+    pub(crate) session: SessionId,
+    pub(crate) profile: ResolvedTerminalProfile,
+    pub(crate) alt: PhysicalAltState,
     metrics: FontMetrics,
     frame: Option<Arc<RenderFrame>>,
-    search: TerminalSearchState,
+    pub(crate) search: TerminalSearchState,
     clipboard: Option<TerminalClipboardAction>,
 }
 
 impl TerminalViewModel {
     pub fn new(session: SessionId, metrics: FontMetrics) -> Self {
-        Self {
+        Self::with_profile(
+            PaneId::new(),
             session,
+            TerminalSettingsV1::default().resolve(&Default::default()),
+            metrics,
+        )
+    }
+
+    pub fn with_profile(
+        pane: PaneId,
+        session: SessionId,
+        profile: ResolvedTerminalProfile,
+        metrics: FontMetrics,
+    ) -> Self {
+        Self {
+            pane,
+            session,
+            profile,
+            alt: PhysicalAltState::default(),
             metrics,
             frame: None,
             search: TerminalSearchState::default(),
@@ -118,39 +138,13 @@ impl TerminalViewModel {
         Ok(self.command(SessionUiCommand::paste(text)))
     }
 
-    pub fn key(
-        &mut self,
-        key: Key,
-        state: ModifierType,
-    ) -> Result<Option<UiCommand>, TerminalViewError> {
-        let key_modifiers = modifiers(state);
-        if key
-            .to_unicode()
-            .is_some_and(|value| value.eq_ignore_ascii_case(&'f'))
-            && key_modifiers.control
-            && key_modifiers.shift
-        {
-            self.search.open();
-            return Ok(None);
-        }
-        if self.search.is_open() && matches!(key, Key::Return | Key::KP_Enter) {
-            return Ok(self.navigate_search(key_modifiers.shift));
-        }
-        if self.search.is_open() && key == Key::Escape {
-            self.search.close();
-            return Ok(None);
-        }
-        Ok(map_gdk_key(key, state)
-            .map(SessionUiCommand::Input)
-            .map(|command| self.command(command)))
-    }
-
     pub fn mouse(&self, event: PointerEvent) -> Result<Option<UiCommand>, TerminalViewError> {
         let frame = self.frame.as_ref().ok_or(TerminalViewError::OutOfBounds)?;
-        if !frame.mouse_reporting && event.kind != MouseEventKind::Scroll {
+        let reports_mouse = self.profile.mouse_reporting && frame.mouse_reporting;
+        if !reports_mouse && event.kind != MouseEventKind::Scroll {
             return Ok(None);
         }
-        if !frame.mouse_reporting {
+        if !reports_mouse {
             return Ok((event.scroll_delta != 0)
                 .then(|| self.command(SessionUiCommand::Scroll(event.scroll_delta))));
         }
@@ -237,6 +231,14 @@ impl TerminalViewModel {
         self.command(SessionUiCommand::CopySelection)
     }
 
+    pub(crate) fn reports_mouse(&self) -> bool {
+        self.profile.mouse_reporting
+            && self
+                .frame
+                .as_ref()
+                .is_some_and(|frame| frame.mouse_reporting)
+    }
+
     pub fn apply_session_event(&mut self, event: SessionUiEvent) {
         match event {
             SessionUiEvent::Frame(frame) => {
@@ -254,7 +256,7 @@ impl TerminalViewModel {
         self.clipboard.take()
     }
 
-    fn navigate_search(&mut self, previous: bool) -> Option<UiCommand> {
+    pub(crate) fn navigate_search(&mut self, previous: bool) -> Option<UiCommand> {
         let found = self.search.navigate(previous)?;
         Some(self.command(SessionUiCommand::Select(SelectionRange {
             start: found.start,
@@ -263,7 +265,7 @@ impl TerminalViewModel {
         })))
     }
 
-    fn command(&self, command: SessionUiCommand) -> UiCommand {
+    pub(crate) fn command(&self, command: SessionUiCommand) -> UiCommand {
         UiCommand::Session {
             session: self.session,
             command,

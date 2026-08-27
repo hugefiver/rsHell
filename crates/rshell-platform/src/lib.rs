@@ -6,6 +6,7 @@ mod environment;
 mod file_selection;
 mod permissions;
 mod process;
+mod process_tree;
 mod shell;
 
 use std::io;
@@ -23,6 +24,8 @@ pub use permissions::{
     create_private_file, durable_replace_user_file, harden_private_file, private_file_is_secure,
 };
 pub use process::{CommandSpec, ExternalEditorRequest, external_editor_command, ssh_executable};
+#[cfg(windows)]
+pub use process_tree::WindowsProcessJob;
 pub use shell::{ShellSpec, default_local_shell};
 
 /// Errors returned by the platform adapter without exposing environment values.

@@ -16,8 +16,20 @@ fn main() -> io::Result<()> {
         thread::sleep(Duration::from_millis(duration));
         return Ok(());
     }
+    let early_descendant = option_value(&args, "--spawn-descendant-before-marker-ms")
+        .map(|duration| {
+            Command::new(env::current_exe()?)
+                .arg("--hold-open-ms")
+                .arg(duration)
+                .spawn()
+        })
+        .transpose()?;
     let mut stdout = io::stdout().lock();
     writeln!(stdout, "PID:{}", process::id())?;
+    if let Some(descendant) = early_descendant {
+        writeln!(stdout, "DESCENDANT:{}", descendant.id())?;
+        writeln!(stdout, "FIRST_USER_MARKER")?;
+    }
     for (index, arg) in args.iter().enumerate() {
         writeln!(stdout, "ARG:{index}:{}", arg.to_string_lossy())?;
     }

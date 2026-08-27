@@ -1,7 +1,9 @@
+mod key_action;
 mod resolution;
 mod settings;
 mod validation;
 
+pub use key_action::{TerminalKeyAction, TerminalSendSequence, parse_terminal_key_action};
 pub use resolution::{ResolvedTerminalProfile, TerminalOverrides};
 pub use settings::{
     AppSettings, ColorScheme, KeyBinding, KeyCode, KeyModifiers, TerminalProfile,
