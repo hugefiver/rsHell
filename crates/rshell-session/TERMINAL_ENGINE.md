@@ -27,6 +27,12 @@ and requires nearest-rank p95 below 16.0 ms. Its scrollback oracle feeds exactly
 labels with explicit trailing CRLF, verifies rendered rows before hashing, and canonicalizes the
 verified labels with LF and no final LF.
 
+Candidate mode completes every section even when a performance threshold misses. After exact
+row equality, it emits the complete version 1 field set with the verified digest and
+`decision=NO-GO`, writes a static threshold diagnostic to stderr, and exits nonzero. This output
+is diagnostic only: it must not populate this record or the fixture, and the normal gate rejects
+it. A passing candidate continues to emit `decision=CANDIDATE`.
+
 ## Recording instructions
 
 1. Freeze the implementation in an orchestrator-authorized commit and require a clean tracked

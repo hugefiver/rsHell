@@ -1,6 +1,8 @@
 use std::{
     collections::BTreeSet,
-    env, process,
+    env,
+    io::{self, Write},
+    process,
     time::{Duration, Instant},
 };
 
@@ -31,6 +33,7 @@ const SAMPLE_FIELDS: [&str; THROUGHPUT_SAMPLES] = [
     "throughput_sample_5_mib_s",
 ];
 const CANDIDATE_DECISION: &str = "decision=CANDIDATE";
+const NO_GO_DECISION: &str = "decision=NO-GO";
 const GO_DECISION: &str = "decision=GO";
 
 type GateResult<T> = Result<T, &'static str>;
@@ -60,19 +63,12 @@ fn run() -> GateResult<()> {
     let mut sorted_samples = samples;
     sorted_samples.sort_by(f64::total_cmp);
     let median = sorted_samples[2];
-    if median < MINIMUM_MIB_PER_SECOND {
-        return Err("terminal-engine throughput threshold was not met");
-    }
 
     let frame_p95_ms = measure_frame_p95()?;
     let frame_p95_output = format!("{frame_p95_ms:.6}");
     let emitted_frame_p95_ms = frame_p95_output
         .parse::<f64>()
         .map_err(|_| "terminal-engine frame measurement is invalid")?;
-    if frame_p95_ms >= MAXIMUM_FRAME_P95_MS || emitted_frame_p95_ms >= MAXIMUM_FRAME_P95_MS {
-        return Err("terminal-engine frame threshold was not met");
-    }
-
     let digest = verify_scrollback_and_hash()?;
     if expected_digest
         .as_deref()
@@ -81,10 +77,42 @@ fn run() -> GateResult<()> {
         return Err("terminal-engine fixture digest does not match");
     }
 
+    let throughput_passed = median >= MINIMUM_MIB_PER_SECOND;
+    let frame_passed =
+        frame_p95_ms < MAXIMUM_FRAME_P95_MS && emitted_frame_p95_ms < MAXIMUM_FRAME_P95_MS;
+    if !throughput_passed || !frame_passed {
+        print_measurements(&samples, median, &frame_p95_output, &digest, NO_GO_DECISION);
+        io::stdout()
+            .flush()
+            .map_err(|_| "terminal-engine diagnostic output failed")?;
+        return Err(match (throughput_passed, frame_passed) {
+            (false, false) => "terminal-engine throughput and frame thresholds were not met",
+            (false, true) => "terminal-engine throughput threshold was not met",
+            (true, false) => "terminal-engine frame threshold was not met",
+            (true, true) => unreachable!(),
+        });
+    }
+
+    let decision = if mode == Mode::RecordCandidate {
+        CANDIDATE_DECISION
+    } else {
+        GO_DECISION
+    };
+    print_measurements(&samples, median, &frame_p95_output, &digest, decision);
+    Ok(())
+}
+
+fn print_measurements(
+    samples: &[f64; THROUGHPUT_SAMPLES],
+    median: f64,
+    frame_p95_output: &str,
+    digest: &str,
+    decision: &str,
+) {
     println!("RSHELL_TERMINAL_ENGINE_GATE version=1");
     println!("{BACKEND_LINE}");
     println!("throughput_bytes={THROUGHPUT_BYTES}");
-    for (field, sample) in SAMPLE_FIELDS.iter().zip(samples) {
+    for (field, sample) in SAMPLE_FIELDS.iter().zip(samples.iter()) {
         println!("{field}={sample:.6}");
     }
     println!("throughput_median_mib_s={median:.6}");
@@ -92,15 +120,7 @@ fn run() -> GateResult<()> {
     println!("frame_120x40_p95_ms={frame_p95_output}");
     println!("scrollback_rows={SCROLLBACK_ROWS}");
     println!("scrollback_sha256={digest}");
-    println!(
-        "{}",
-        if mode == Mode::RecordCandidate {
-            CANDIDATE_DECISION
-        } else {
-            GO_DECISION
-        }
-    );
-    Ok(())
+    println!("{decision}");
 }
 
 fn mode() -> GateResult<Mode> {

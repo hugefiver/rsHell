@@ -946,12 +946,41 @@ fn terminal_engine_gate_contract_is_exact() {
         "16.0",
         "--record-candidate",
         "decision=CANDIDATE",
+        "decision=NO-GO",
         "decision=GO",
+        "print_measurements",
         "[argument] if argument == \"--bench\"",
         "candidate == \"--record-candidate\" && bench == \"--bench\"",
     ] {
         assert!(bench.contains(exact), "bench is missing `{exact}`");
     }
+    for trace_fragment in [
+        "rsHell throughput",
+        "α界e\\u{301}",
+        "\\x1b[31mRED\\x1b[0m",
+        "\\x1b[1;34mBOLD-BLUE\\x1b[0m",
+        "\\r\\n",
+    ] {
+        assert!(
+            bench.contains(trace_fragment),
+            "throughput trace is missing representative fragment `{trace_fragment}`"
+        );
+    }
+    let throughput_measurement = bench.find("let samples = measure_throughput").unwrap();
+    let frame_measurement = bench.find("let frame_p95_ms = measure_frame_p95").unwrap();
+    let correctness_oracle = bench
+        .find("let digest = verify_scrollback_and_hash()?")
+        .unwrap();
+    let threshold_decision = bench
+        .find("if !throughput_passed || !frame_passed")
+        .unwrap();
+    let passing_decision = bench
+        .find("let decision = if mode == Mode::RecordCandidate")
+        .unwrap();
+    assert!(throughput_measurement < frame_measurement);
+    assert!(frame_measurement < correctness_oracle);
+    assert!(correctness_oracle < threshold_decision);
+    assert!(threshold_decision < passing_decision);
     for field in [
         "RSHELL_TERMINAL_ENGINE_GATE version=1",
         "backend=wezterm-term@d69264df66fdcc928c7a30c673df108984fda821",
@@ -976,6 +1005,7 @@ fn terminal_engine_gate_contract_is_exact() {
         );
     }
     assert!(script.contains("cargo bench -p rshell-session --bench terminal_engine --locked"));
+    assert!(record.contains("`decision=NO-GO`"));
     match fixture_digest {
         serde_json::Value::Null => {
             assert!(record.contains("Decision: **NO-GO (unrecorded)**"));
@@ -1001,6 +1031,7 @@ fn terminal_engine_gate_contract_is_exact() {
         "infinity",
         "negative",
         "candidate",
+        "no-go",
         "null",
     ] {
         let output = Command::new("pwsh")

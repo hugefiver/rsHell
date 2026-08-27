@@ -1,5 +1,5 @@
 param(
-    [ValidateSet("", "duplicate", "missing", "missing-equals", "malformed", "nan", "infinity", "negative", "candidate", "null")]
+    [ValidateSet("", "duplicate", "missing", "missing-equals", "malformed", "nan", "infinity", "negative", "candidate", "no-go", "null")]
     [string]$RegressionProbe = ""
 )
 
@@ -295,6 +295,7 @@ function Invoke-RegressionProbe {
         "infinity" { $invalid = $valid.Replace("throughput_sample_1_mib_s=40.000000", "throughput_sample_1_mib_s=Infinity") }
         "negative" { $invalid = $valid.Replace("throughput_sample_1_mib_s=40.000000", "throughput_sample_1_mib_s=-1.000000") }
         "candidate" { $invalid = $valid.Replace("decision=GO", "decision=CANDIDATE") }
+        "no-go" { $invalid = $valid.Replace("decision=GO", "decision=NO-GO") }
         "null" { $fixture.sha256 = $null }
     }
     $rejected = $false

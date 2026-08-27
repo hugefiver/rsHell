@@ -34,6 +34,14 @@ tracing-subscriber = "0.3"
 async-trait = "0.1"
 tokio = { version = "1", features = ["rt", "time"] }
 
+[profile.release]
+lto = "fat"
+codegen-units = 1
+
+[profile.bench]
+lto = "fat"
+codegen-units = 1
+
 [[test]]
 name = "actor_panic_gtk_survival_macos"
 path = "tests/actor_panic_gtk_survival_macos.rs"
