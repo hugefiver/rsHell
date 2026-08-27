@@ -107,7 +107,10 @@ fn mode() -> GateResult<Mode> {
     let arguments = env::args().skip(1).collect::<Vec<_>>();
     match arguments.as_slice() {
         [] => Ok(Mode::Normal),
-        [argument] if argument == "--record-candidate" => Ok(Mode::RecordCandidate),
+        [argument] if argument == "--bench" => Ok(Mode::Normal),
+        [candidate, bench] if candidate == "--record-candidate" && bench == "--bench" => {
+            Ok(Mode::RecordCandidate)
+        }
         _ => Err("terminal-engine gate arguments are invalid"),
     }
 }

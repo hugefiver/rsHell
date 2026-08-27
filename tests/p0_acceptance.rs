@@ -947,6 +947,8 @@ fn terminal_engine_gate_contract_is_exact() {
         "--record-candidate",
         "decision=CANDIDATE",
         "decision=GO",
+        "[argument] if argument == \"--bench\"",
+        "candidate == \"--record-candidate\" && bench == \"--bench\"",
     ] {
         assert!(bench.contains(exact), "bench is missing `{exact}`");
     }
