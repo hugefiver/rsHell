@@ -202,7 +202,8 @@ function Assert-MeasurementOutput {
 function Assert-DecisionRecord {
     param(
         [Parameter(Mandatory)][string]$Path,
-        [Parameter(Mandatory)][psobject]$Measurement
+        [Parameter(Mandatory)][psobject]$Measurement,
+        [Parameter(Mandatory)][psobject]$Fixture
     )
 
     if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) {
@@ -221,16 +222,32 @@ function Assert-DecisionRecord {
         -not [regex]::IsMatch($record, "(?m)^Decision: \*\*GO\*\*\r?$")) {
         New-GateFailure "terminal-engine decision record identity is incomplete"
     }
+    $recordSamples = @()
     for ($index = 0; $index -lt $SampleFields.Count; $index++) {
-        $value = $Measurement.Values[$SampleFields[$index]]
-        if (-not $record.Contains("- Throughput sample $($index + 1): $value MiB/s")) {
+        $match = [regex]::Match(
+            $record,
+            "(?m)^- Throughput sample $($index + 1): ([0-9]+\.[0-9]{6}) MiB/s\r?$"
+        )
+        if (-not $match.Success) {
             New-GateFailure "terminal-engine decision record sample is missing"
         }
+        $recordSamples += Convert-InvariantMeasurement -Value $match.Groups[1].Value -Field "recorded throughput sample"
     }
-    if (-not $record.Contains("- Throughput median: $($Measurement.Values.throughput_median_mib_s) MiB/s") -or
-        -not $record.Contains("- 120x40 frame p95: $($Measurement.Values.frame_120x40_p95_ms) ms") -or
-        -not $record.Contains("- Scrollback digest: ``sha256: $($Measurement.Values.scrollback_sha256)``")) {
+    $medianMatch = [regex]::Match($record, "(?m)^- Throughput median: ([0-9]+\.[0-9]{6}) MiB/s\r?$")
+    $p95Match = [regex]::Match($record, "(?m)^- 120x40 frame p95: ([0-9]+\.[0-9]{6}) ms\r?$")
+    if (-not $medianMatch.Success -or -not $p95Match.Success -or
+        -not $record.Contains("- Scrollback digest: ``sha256: $($Fixture.sha256)``")) {
         New-GateFailure "terminal-engine decision record measurements are incomplete"
+    }
+    $recordMedian = Convert-InvariantMeasurement -Value $medianMatch.Groups[1].Value -Field "recorded throughput median"
+    $recordP95 = Convert-InvariantMeasurement -Value $p95Match.Groups[1].Value -Field "recorded frame p95"
+    $sortedRecordSamples = [double[]]@($recordSamples | Sort-Object)
+    if ($recordMedian -ne $sortedRecordSamples[2]) {
+        New-GateFailure "terminal-engine decision record median is not the third sorted sample"
+    }
+    if ($recordMedian -lt [double]$Fixture.minimum_mib_per_second -or
+        $recordP95 -ge [double]$Fixture.maximum_frame_p95_ms) {
+        New-GateFailure "terminal-engine decision record thresholds were not met"
     }
 }
 
@@ -339,7 +356,7 @@ try {
         New-GateFailure "terminal-engine measurement command failed"
     }
     $measurement = Assert-MeasurementOutput -Text $measurementText -Fixture $fixture
-    Assert-DecisionRecord -Path $RecordPath -Measurement $measurement
+    Assert-DecisionRecord -Path $RecordPath -Measurement $measurement -Fixture $fixture
 
     $Header
     foreach ($field in $FieldNames) {

@@ -1,25 +1,26 @@
 # Terminal-engine decision record
 
-Decision: **NO-GO (unrecorded)**
+Decision: **GO**
 
-The terminal-engine measurement has not been recorded against a frozen source identity. The
-canary fixture deliberately contains `sha256: null`, so normal verification fails closed.
+The sole Alacritty adapter passed the unchanged terminal-engine measurement contract against the
+frozen implementation identity below. Normal verification fails closed if any runtime field,
+threshold, fixture value, or recorded measurement differs.
 
 ## Measurement contract
 
 - Command: `cargo bench -p rshell-session --bench terminal_engine --locked`
 - Candidate command: `cargo bench -p rshell-session --bench terminal_engine --locked -- --record-candidate`
 - Selected sole adapter: `alacritty-terminal@0.26.0`
-- Measured implementation commit: unrecorded
-- Platform and toolchain: unrecorded
-- Throughput sample 1: unrecorded MiB/s
-- Throughput sample 2: unrecorded MiB/s
-- Throughput sample 3: unrecorded MiB/s
-- Throughput sample 4: unrecorded MiB/s
-- Throughput sample 5: unrecorded MiB/s
-- Throughput median: unrecorded MiB/s
-- 120x40 frame p95: unrecorded ms
-- Scrollback digest: `sha256: null`
+- Measured implementation commit: d37e44ff2c20474bcfcf8670332464b6b25b5d7d
+- Platform and toolchain: Windows x86_64-pc-windows-msvc; rustc 1.95.0 (59807616e 2026-04-14)
+- Throughput sample 1: 55.158777 MiB/s
+- Throughput sample 2: 47.245962 MiB/s
+- Throughput sample 3: 39.302994 MiB/s
+- Throughput sample 4: 42.060847 MiB/s
+- Throughput sample 5: 46.943365 MiB/s
+- Throughput median: 46.943365 MiB/s
+- 120x40 frame p95: 0.550100 ms
+- Scrollback digest: `sha256: bf34a24ce64fe4568b31353096d538dc0bb083c52ba0dab3099595b62d1dfcd5`
 
 The executable processes exactly 104857600 bytes in each of five fresh-engine samples and
 requires a median of at least 40.0 MiB/s. It measures 1000 full-dirty 120x40 frame observations

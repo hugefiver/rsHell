@@ -1005,6 +1005,10 @@ fn terminal_engine_gate_contract_is_exact() {
         );
     }
     assert!(script.contains("cargo bench -p rshell-session --bench terminal_engine --locked"));
+    assert!(script.contains("$recordSamples = @()"));
+    assert!(script.contains("$recordMedian -ne $sortedRecordSamples[2]"));
+    assert!(script.contains("terminal-engine decision record thresholds were not met"));
+    assert!(!script.contains("$Measurement.Values[$SampleFields[$index]]"));
     assert!(record.contains("`decision=NO-GO`"));
     match fixture_digest {
         serde_json::Value::Null => {

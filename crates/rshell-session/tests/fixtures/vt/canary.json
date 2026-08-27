@@ -11,5 +11,5 @@
   "input_separator": "CRLF",
   "input_trailing_crlf": true,
   "canonicalization": "trim ASCII spaces from each rendered row and join rows with LF",
-  "sha256": null
+  "sha256": "bf34a24ce64fe4568b31353096d538dc0bb083c52ba0dab3099595b62d1dfcd5"
 }
