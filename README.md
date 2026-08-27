@@ -5,6 +5,7 @@ rsHell 是使用 Rust、GTK4 与 Relm4 构建的跨平台 SSH 终端管理器。
 ## P0 功能
 
 - 本地 shell 与完整终端模拟：ANSI 样式、Unicode、滚动缓冲、搜索、选择、复制粘贴和尺寸调整。
+- 唯一终端后端是 Alacritty 0.26（`alacritty-terminal@0.26.0`）。其 100 MiB×5、120×40 p95、1000 行滚动缓冲 SHA-256 的记录契约为 **GO**；`scripts/qa/terminal-engine-gate.ps1` 会将后端、记录和测量不一致视为失败。
 - 连接目录：创建、编辑、复制、移动、删除和搜索连接；支持嵌套分组与 tags。
 - 工作区：多标签页、水平/垂直分屏、关闭、重连和明确的会话状态/错误页面。
 - 两种 SSH transport：
@@ -90,6 +91,7 @@ cargo fmt --all -- --check
 cargo check --workspace --all-targets --all-features --locked
 cargo test --workspace --all-features --locked
 cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
+pwsh -NoProfile -File scripts/qa/terminal-engine-gate.ps1
 ```
 
 真实 P0 surface（会使用 GTK、PTY、System OpenSSH、真实系统凭据库与临时 QA 资源）：
@@ -99,7 +101,7 @@ pwsh -NoProfile -File scripts/qa/p0-smoke.ps1 -Mode All
 pwsh -NoProfile -File scripts/qa/assert-no-secrets.ps1 -ArtifactRoot artifacts/p0-smoke
 ```
 
-Smoke 报告、JUnit 与截图写入 `artifacts/p0-smoke/`。脚本对 timeout、失败的服务准备、未清理的进程/凭据/journal 和缺失证据 fail closed。
+Smoke 报告、JUnit 与截图写入 `artifacts/p0-smoke/`；报告中的 artifact 路径仅为 leaf 文件名，不会写入工作区或用户绝对路径。`direct_session_child_count == 0` 仅证明注册表中的直接 PID 已停止，不是进程树证明；Windows 的 Job Object `immediate_descendant_is_contained_before_first_user_marker` 真实即时后代测试才证明树在首个用户标记前已被包含并在 teardown 后终止。脚本对 timeout、失败的服务准备、未清理的进程/凭据/journal 和缺失证据 fail closed。
 
 ## 架构
 
@@ -114,7 +116,7 @@ resources/              编译期 CSS 与产品 SVG 图标
 scripts/qa/             P0 smoke、secret、workflow 与 package contracts
 ```
 
-CI 在 Linux x86_64、macOS arm64 与 Windows x86_64 上运行 workspace gates、真实 SSH/vault/GTK smoke。Release workflow 还构建并验证三个平台包的架构、runtime、启动报告与禁止的旧依赖标记。
+CI 在 Linux x86_64、macOS arm64 与 Windows x86_64 上依次运行 workspace gates、记录的 Alacritty 0.26 terminal-engine gate、真实 SSH/vault/GTK smoke。Release workflow 在每个构建矩阵路径先运行同一 gate，再构建并验证三个平台包的架构、runtime、启动报告与禁止的旧依赖标记。
 
 ## 许可证
 

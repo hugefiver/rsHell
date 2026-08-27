@@ -119,6 +119,11 @@ jobs:
         with:
           key: ${{ matrix.target }}
 
+      - name: Run terminal engine gate
+        run: |
+          pwsh -NoProfile -File scripts/qa/terminal-engine-gate.ps1
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
       - name: Build release
         run: |
           cargo build --release --workspace --target ${{ matrix.target }} --locked

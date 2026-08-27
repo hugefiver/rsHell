@@ -7,7 +7,7 @@ param(
     [AllowEmptyString()][string]$ReleaseText = "",
     [AllowEmptyString()][string]$P0Text = "",
     [AllowEmptyString()][string]$PackageText = "",
-    [ValidateSet("", "dead-workspace-gate")]
+    [ValidateSet("", "dead-workspace-gate", "dead-terminal-engine-gate", "conditional-terminal-engine-gate", "continue-terminal-engine-gate", "missing-terminal-engine-gate", "duplicate-terminal-engine-gate", "misplaced-terminal-engine-gate")]
     [string]$RegressionProbe = ""
 )
 
@@ -169,23 +169,96 @@ function Assert-StepPattern {
     }
 }
 
+function Assert-TerminalEngineGateStep {
+    param(
+        [Parameter(Mandatory)][string]$Text,
+        [Parameter(Mandatory)][string]$Workflow,
+        [Parameter(Mandatory)][string]$FailureCheck,
+        [Parameter(Mandatory)][AllowEmptyCollection()][System.Collections.Generic.List[string]]$Failures
+    )
+
+    $name = "Run terminal engine gate"
+    $matches = @(Get-NamedStepBlocks -Text $Text | Where-Object { $_.Groups["name"].Value -ceq $name })
+    if ($matches.Count -ne 1) {
+        Add-ContractFailure -Failures $Failures -Message "$Workflow workflow step '$name' must occur exactly once; found $($matches.Count)."
+        return $null
+    }
+
+    $step = $matches[0]
+    $body = $step.Groups["body"].Value
+    $command = "pwsh -NoProfile -File scripts/qa/terminal-engine-gate.ps1"
+    Assert-StepHasNoYamlCondition -Step $body -Name "$Workflow $name" -Failures $Failures
+    Assert-StepPattern -Step $body -Pattern "(?m)^ {8}run: \|\s*$" -Name "$Workflow $name" -Failures $Failures
+    Assert-StepLineCount -Step $body -Line $command -Expected 1 -Name "$Workflow $name" -Failures $Failures
+    Assert-StepLineCount -Step $body -Line $FailureCheck -Expected 1 -Name "$Workflow $name" -Failures $Failures
+    $commandAndFailure = "(?m)^ {10}$([regex]::Escape($command))\r?\n {10}$([regex]::Escape($FailureCheck))\s*$"
+    if (-not [regex]::IsMatch($body, $commandAndFailure)) {
+        Add-ContractFailure -Failures $Failures -Message "$Workflow workflow step '$name' must immediately fail on a nonzero terminal-engine gate exit."
+    }
+    return $step
+}
+
+function Get-NamedStepBlock {
+    param(
+        [Parameter(Mandatory)][string]$Text,
+        [Parameter(Mandatory)][string]$Name
+    )
+
+    return @(Get-NamedStepBlocks -Text $Text | Where-Object { $_.Groups["name"].Value -ceq $Name })
+}
+
 $ci = if ($CiText.Length -gt 0) { $CiText } else { Read-WorkflowText -Path $CiPath -Label "CI" }
 $release = if ($ReleaseText.Length -gt 0) { $ReleaseText } else { Read-WorkflowText -Path $ReleasePath -Label "Release" }
 $p0 = if ($P0Text.Length -gt 0) { $P0Text } else { Read-WorkflowText -Path $P0Path -Label "P0 smoke" }
 $package = if ($PackageText.Length -gt 0) { $PackageText } else { Read-WorkflowText -Path $PackagePath -Label "Package assertion" }
 
-if ($RegressionProbe -eq "dead-workspace-gate") {
-    $stepHeader = "      - name: Run required workspace gates"
-    $deadGateCi = $ci.Replace($stepHeader, "$stepHeader`n        if: false")
-    if ($deadGateCi -ceq $ci) {
-        throw "Workflow regression probe could not inject a dead workspace gate."
+if ($RegressionProbe.Length -gt 0) {
+    $probeCi = $ci
+    switch ($RegressionProbe) {
+        "dead-workspace-gate" {
+            $stepHeader = "      - name: Run required workspace gates"
+            $probeCi = $ci.Replace($stepHeader, "$stepHeader`n        if: false")
+        }
+        "dead-terminal-engine-gate" {
+            $stepHeader = "      - name: Run terminal engine gate"
+            $probeCi = $ci.Replace($stepHeader, "$stepHeader`n        if: false")
+        }
+        "conditional-terminal-engine-gate" {
+            $stepHeader = "      - name: Run terminal engine gate"
+            $probeCi = $ci.Replace($stepHeader, "$stepHeader`n        if: runner.os == 'Windows'")
+        }
+        "continue-terminal-engine-gate" {
+            $stepHeader = "      - name: Run terminal engine gate"
+            $probeCi = $ci.Replace($stepHeader, "$stepHeader`n        continue-on-error: true")
+        }
+        "missing-terminal-engine-gate" {
+            $gateMatches = @(Get-NamedStepBlock -Text $ci -Name "Run terminal engine gate")
+            if ($gateMatches.Count -ne 1) { throw "Workflow regression probe could not locate the terminal-engine gate." }
+            $probeCi = $ci.Remove($gateMatches[0].Index, $gateMatches[0].Length)
+        }
+        "duplicate-terminal-engine-gate" {
+            $gateMatches = @(Get-NamedStepBlock -Text $ci -Name "Run terminal engine gate")
+            if ($gateMatches.Count -ne 1) { throw "Workflow regression probe could not locate the terminal-engine gate." }
+            $probeCi = $ci.Insert($gateMatches[0].Index, $gateMatches[0].Value)
+        }
+        "misplaced-terminal-engine-gate" {
+            $gateMatches = @(Get-NamedStepBlock -Text $ci -Name "Run terminal engine gate")
+            if ($gateMatches.Count -ne 1) { throw "Workflow regression probe could not locate the terminal-engine gate." }
+            $withoutGate = $ci.Remove($gateMatches[0].Index, $gateMatches[0].Length)
+            $workspaceMatches = @(Get-NamedStepBlock -Text $withoutGate -Name "Run required workspace gates")
+            if ($workspaceMatches.Count -ne 1) { throw "Workflow regression probe could not locate workspace gates." }
+            $probeCi = $withoutGate.Insert($workspaceMatches[0].Index, $gateMatches[0].Value)
+        }
+    }
+    if ($probeCi -ceq $ci) {
+        throw "Workflow regression probe could not mutate its CI workflow."
     }
     $temporaryRoot = [System.IO.Path]::GetTempPath()
     if (-not (Test-Path -LiteralPath $temporaryRoot -PathType Container)) {
         throw "Workflow regression probe temporary directory is unavailable."
     }
     $probeCiPath = Join-Path $temporaryRoot "rshell-workflow-contract-$([Guid]::NewGuid().ToString('N')).yml"
-    [System.IO.File]::WriteAllText($probeCiPath, $deadGateCi, [System.Text.UTF8Encoding]::new($false))
+    [System.IO.File]::WriteAllText($probeCiPath, $probeCi, [System.Text.UTF8Encoding]::new($false))
     $pwsh = (Get-Command -Name "pwsh" -ErrorAction Stop).Source
     $startInfo = [System.Diagnostics.ProcessStartInfo]::new()
     $startInfo.FileName = $pwsh
@@ -214,7 +287,7 @@ if ($RegressionProbe -eq "dead-workspace-gate") {
         [void]$stdout.GetAwaiter().GetResult()
         [void]$stderr.GetAwaiter().GetResult()
         if ($process.ExitCode -eq 0) {
-            throw "Workflow regression probe accepted a disabled workspace gate."
+            throw "Workflow regression probe '$RegressionProbe' accepted an invalid workflow."
         }
     }
     finally {
@@ -248,6 +321,7 @@ foreach ($workflow in @(
     }
     Assert-Exactly -Text $workflow.Text -Pattern "(?ms)^defaults:\s*\r?\n\s*run:\s*\r?\n\s*shell:\s*pwsh\s*$" -Expected 1 -Label "$($workflow.Name) PowerShell default shell" -Failures $failures
     Assert-OnlyPowerShellShells -Text $workflow.Text -Label "$($workflow.Name) shell" -Failures $failures
+    Assert-Absent -Text $workflow.Text -Pattern "(?i)wezterm" -Label "$($workflow.Name) WezTerm terminal runtime" -Failures $failures
 }
 
 Assert-Contains -Text $ci -Pattern "(?ms)^permissions:\s*\r?\n\s*contents:\s*read\s*$" -Label "CI least-privilege permissions" -Failures $failures
@@ -280,6 +354,12 @@ foreach ($pattern in @(
     Assert-StepPattern -Step $workspaceStep -Pattern $pattern -Name "Run required workspace gates" -Failures $failures
 }
 
+$ciTerminalGate = Assert-TerminalEngineGateStep -Text $ci -Workflow "CI" -FailureCheck $failureCheck -Failures $failures
+$workspaceGateMatches = @(Get-NamedStepBlock -Text $ci -Name "Run required workspace gates")
+if ($null -ne $ciTerminalGate -and $workspaceGateMatches.Count -eq 1 -and $ciTerminalGate.Index -le $workspaceGateMatches[0].Index) {
+    Add-ContractFailure -Failures $failures -Message "CI terminal-engine gate must run after required workspace gates."
+}
+
 $openSshToolsStep = Assert-NamedStep -Text $ci -Name "Confirm system OpenSSH tools" -Failures $failures
 Assert-StepHasNoYamlCondition -Step $openSshToolsStep -Name "Confirm system OpenSSH tools" -Failures $failures
 Assert-StepLine -Step $openSshToolsStep -Line '$ssh = Get-Command ssh -ErrorAction Stop' -Name "Confirm system OpenSSH tools" -Failures $failures
@@ -300,6 +380,10 @@ foreach ($modeAllStep in @(
     }
     if ($null -eq $step -or [regex]::Matches($step, "(?m)^\s*pwsh -NoProfile -File scripts/qa/p0-smoke\.ps1 -Mode All\s*$").Count -ne 1) {
         Add-ContractFailure -Failures $failures -Message "CI step '$($modeAllStep.Name)' must run exactly one P0 All smoke command."
+    }
+    $modeAllMatches = @(Get-NamedStepBlock -Text $ci -Name $modeAllStep.Name)
+    if ($null -ne $ciTerminalGate -and $modeAllMatches.Count -eq 1 -and $ciTerminalGate.Index -ge $modeAllMatches[0].Index) {
+        Add-ContractFailure -Failures $failures -Message "CI terminal-engine gate must run before '$($modeAllStep.Name)'."
     }
 }
 Assert-Exactly -Text $ci -Pattern "(?m)system_vault_real_os_probe_uses_coordinator_and_cleans_random_entry" -Expected 3 -Label "CI ignored system vault probe" -Failures $failures
@@ -381,6 +465,19 @@ Assert-StepHasNoYamlCondition -Step $releaseBuildStep -Name "Build release" -Fai
 Assert-StepLine -Step $releaseBuildStep -Line 'cargo build --release --workspace --target ${{ matrix.target }} --locked' -Name "Build release" -Failures $failures
 Assert-StepLineCount -Step $releaseBuildStep -Line $failureCheck -Expected 1 -Name "Build release" -Failures $failures
 
+$releaseTerminalGate = Assert-TerminalEngineGateStep -Text $release -Workflow "Release" -FailureCheck $failureCheck -Failures $failures
+$releaseBuildMatches = @(Get-NamedStepBlock -Text $release -Name "Build release")
+if ($null -ne $releaseTerminalGate -and $releaseBuildMatches.Count -eq 1 -and $releaseTerminalGate.Index -ge $releaseBuildMatches[0].Index) {
+    Add-ContractFailure -Failures $failures -Message "Release terminal-engine gate must run before the release build."
+}
+$publisherOffset = $release.IndexOf("  release:", [System.StringComparison]::Ordinal)
+if ($publisherOffset -lt 0) {
+    Add-ContractFailure -Failures $failures -Message "Release publisher job is missing."
+} else {
+    $publisher = $release.Substring($publisherOffset)
+    Assert-Absent -Text $publisher -Pattern "Run terminal engine gate|terminal-engine-gate\.ps1" -Label "Release publisher terminal-engine gate" -Failures $failures
+}
+
 $packageProbe = 'pwsh -NoProfile -File scripts/qa/assert-package.ps1 -Target $env:RSHELL_TARGET -Package $env:RSHELL_PACKAGE'
 foreach ($packageStep in @(
         [pscustomobject]@{ Name = "Package (Linux/macOS)"; Condition = "runner.os != 'Windows'" },
@@ -391,7 +488,28 @@ foreach ($packageStep in @(
         Add-ContractFailure -Failures $failures -Message "Workflow step '$($packageStep.Name)' must have its exact platform condition."
     }
     Assert-StepLine -Step $step -Line $packageProbe -Name $packageStep.Name -Failures $failures
+    $packageMatches = @(Get-NamedStepBlock -Text $release -Name $packageStep.Name)
+    if ($null -ne $releaseTerminalGate -and $packageMatches.Count -eq 1 -and $releaseTerminalGate.Index -ge $packageMatches[0].Index) {
+        Add-ContractFailure -Failures $failures -Message "Release terminal-engine gate must run before '$($packageStep.Name)'."
+    }
 }
+foreach ($runtimeInvocation in @(
+        "(?im)^\s*(?:&\s*)?wezterm(?:[-_.][A-Za-z0-9_]+)?(?:\.exe)?(?:\s|$)",
+        "(?im)^\s*Start-Process\b[^\r\n]*\bwezterm\b",
+        "(?im)^\s*(?:cargo|pwsh)\b[^\r\n]*\bwezterm\b",
+        "(?im)^\s*(?:Copy-Item|Compress-Archive|tar)\b[^\r\n]*\bwezterm\b"
+    )) {
+    Assert-Absent -Text $package -Pattern $runtimeInvocation -Label "Package active WezTerm terminal runtime command" -Failures $failures
+}
+Assert-Contains -Text $package -Pattern "(?i)wezterm" -Label "Package WezTerm negative QA sentinel" -Failures $failures
+
+$terminalEngine = Read-WorkflowText -Path (Join-Path $PSScriptRoot "terminal-engine-gate.ps1") -Label "Terminal-engine gate"
+$terminalRecord = Read-WorkflowText -Path (Join-Path $PSScriptRoot "..\..\crates\rshell-session\TERMINAL_ENGINE.md") -Label "Terminal-engine decision record"
+Assert-Contains -Text $terminalEngine -Pattern '(?m)^\$Backend = "alacritty-terminal@0\.26\.0"\s*$' -Label "Terminal-engine Alacritty 0.26 backend" -Failures $failures
+Assert-Contains -Text $terminalRecord -Pattern '(?m)^Decision: \*\*GO\*\*\s*$' -Label "Terminal-engine recorded GO decision" -Failures $failures
+Assert-Contains -Text $terminalRecord -Pattern '(?m)^- Selected sole adapter: `alacritty-terminal@0\.26\.0`\s*$' -Label "Terminal-engine recorded Alacritty 0.26 backend" -Failures $failures
+Assert-Absent -Text $terminalEngine -Pattern '(?i)wezterm' -Label "Terminal-engine WezTerm runtime" -Failures $failures
+Assert-Absent -Text $terminalRecord -Pattern '(?i)wezterm' -Label "Terminal-engine record WezTerm runtime" -Failures $failures
 foreach ($marker in @(
         "embedded_css_loaded", "embedded_icons_renderable", "embedded_icon_backend",
         "Assert-NoProductAssetPayload", "external-icon-payload", "runtime-icon-backends",

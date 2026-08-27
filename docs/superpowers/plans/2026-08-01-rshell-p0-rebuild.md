@@ -2257,31 +2257,31 @@ Expected: 授权后提交；否则跳过。
 
 - [ ] **Step 1: 更新用户/开发文档并删除旧 examples**
 
-README 只描述 P0：本地/system/native SSH 能力差异；password/key/agent/keyboard-interactive 支持矩阵；严格 host key；SQLite 与系统 vault；连接/分组/tag/search/copy/move；tab/H/V split；旧 JSON/OpenSSH import；三平台 prerequisites、`cargo` quality commands 和 `pwsh scripts/qa/p0-smoke.ps1 -Mode All`。删除只验证旧 monolith/CSS 的两个 examples，不保留旧 API 文档。
+README 只描述 P0：本地/system/native SSH 能力差异；password/key/agent/keyboard-interactive 支持矩阵；严格 host key；SQLite 与系统 vault；连接/分组/tag/search/copy/move；tab/H/V split；旧 JSON/OpenSSH import；唯一 Alacritty 0.26 terminal-engine 的已记录 GO contract；三平台 prerequisites、全 feature/locked 的 `cargo` quality commands、terminal-engine gate 和 `pwsh scripts/qa/p0-smoke.ps1 -Mode All`。说明 `direct_session_child_count == 0` 只代表直接 PID 证据，Windows Job Object 的真实即时后代测试才是树证明，且报告 artifact 路径只保存 leaf 名。删除只验证旧 monolith/CSS 的两个 examples，不保留旧 API 文档。
 
 - [ ] **Step 2: 执行全量静态清理检查**
 
-Run: `rg -n 'src/(app|config|connection|credentials|ssh|storage|terminal|theme)\.rs|wezterm-ssh|05343b|ConnectionStore|TerminalSessionHandle|libssh2' Cargo.toml Cargo.lock README.md src crates resources .github scripts`
+Run: `rg -n 'src/(app|config|connection|credentials|ssh|storage|terminal|theme)\.rs|ConnectionStore|TerminalSessionHandle|libssh2' Cargo.toml Cargo.lock README.md src crates resources .github scripts`
 
-Expected: 0 matches；当前选中 WezTerm 时 lock/source 只出现 `d69264df66fdcc928c7a30c673df108984fda821`，fallback 时不出现任何 WezTerm terminal dependency。
+Expected: 该旧源码/依赖搜索为 0 matches；workflow contract 另行证明唯一终端运行时为 `alacritty-terminal@0.26.0`，不得存在活动 WezTerm terminal runtime 命令或包内容。历史 importer alias 与 package/QA 的 WezTerm 禁止标记仍是负向验证，不是运行时依赖。
 
 - [ ] **Step 3: 执行最终自动质量门**
 
-Run: `cargo fmt -- --check; if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }; cargo check --workspace --all-targets --locked; if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }; cargo test --workspace --locked; if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }; cargo clippy --workspace --all-targets --locked -- -D warnings`
+Run: `cargo fmt --all -- --check; if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }; cargo check --workspace --all-targets --all-features --locked; if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }; cargo test --workspace --all-features --locked; if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }; cargo clippy --workspace --all-targets --all-features --locked -- -D warnings`
 
 Expected: 全部 exit 0；0 failed；clippy 0 warnings。
 
 - [ ] **Step 4: 再跑完整真实表面与 package 门**
 
-Run: `pwsh -NoProfile -File scripts/qa/p0-smoke.ps1 -Mode All; if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }; pwsh -NoProfile -File scripts/qa/assert-no-secrets.ps1 -ArtifactRoot artifacts/p0-smoke`
+Run: `pwsh -NoProfile -File scripts/qa/terminal-engine-gate.ps1; if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }; pwsh -NoProfile -File scripts/qa/p0-smoke.ps1 -Mode All; if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }; pwsh -NoProfile -File scripts/qa/assert-no-secrets.ps1 -ArtifactRoot artifacts/p0-smoke; if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }`
 
-Expected: 所有 P0 report 项 passed、无 skipped、无 secret、无 orphan process/credential/journal row。
+Expected: recorded Alacritty 0.26 gate 输出 `decision=GO`；所有 P0 report 项 passed、无 skipped、无 secret、无 orphan process/credential/journal row。报告中的 `png_path` 与 `requested_png_path` 仅为 artifact leaf 名；`direct_session_child_count == 0` 仅为直接 PID 证据，Windows Job Object 的 `immediate_descendant_is_contained_before_first_user_marker` 为真实树证明。
 
 - [ ] **Step 5: 审阅最终 diff 边界**
 
-Run: `git status --short; git diff --stat; git diff --check`
+Run: `git rev-parse HEAD; git status --short; git diff --stat; git diff --check`
 
-Expected: 只包含计划列出的 workspace/资源/CI/README 变化；`git diff --check` 无 whitespace error；不得出现 `tmp/`、测试 secret、真实 key、DB 或 smoke artifacts。
+Expected: 只包含计划列出的 workspace/资源/CI/README 变化；`git diff --check` 无 whitespace error；不得出现 `tmp/`、测试 secret、真实 key、DB 或 smoke artifacts。静态本地结果不构成 hosted claim；后续 hosted CI/release 与 review artifacts 必须绑定同一 `HEAD` SHA，并以 artifact-relative report names 和该 SHA 的证据进行审阅。
 
 - [ ] **Step 6: 可选最终 commit（仅在用户单独授权后执行）**
 

@@ -190,6 +190,11 @@ jobs:
           cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
+      - name: Run terminal engine gate
+        run: |
+          pwsh -NoProfile -File scripts/qa/terminal-engine-gate.ps1
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
       - name: Run Secret Service vault probe and P0 All smoke (Linux)
         if: runner.os == 'Linux'
         run: |

@@ -214,9 +214,10 @@ fn windows_pty_uses_creation_time_job_list_attribute() {
 fn p0_cleanup_names_direct_child_evidence_without_claiming_tree_proof() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR"));
     let cleanup = std::fs::read_to_string(root.join("src/p0_smoke_cleanup.rs")).unwrap();
-    assert!(cleanup.contains("direct_session_child_count"));
+    assert!(cleanup.contains("pub(crate) direct_session_child_count:"));
     assert!(cleanup.contains("direct_session_children_are_stopped"));
     assert!(!cleanup.contains("pub(crate) session_child_count"));
+    assert!(!cleanup.contains("\"session_child_count\""));
     assert!(!cleanup.contains("fn session_children_are_stopped"));
 
     let contract = std::fs::read_to_string(root.join("src/p0_smoke_contract.rs")).unwrap();
@@ -392,12 +393,82 @@ fn embedded_product_assets_and_package_contract_are_closed() {
 }
 
 #[test]
-fn hosted_workflows_fail_closed_and_package_smoke_uses_a_deterministic_shell() {
+fn workflow_and_cleanup_evidence_contracts_are_fail_closed() {
     let ci = include_str!("../.github/workflows/ci.yml");
     let release = include_str!("../.github/workflows/release.yml");
     let package = include_str!("../scripts/qa/assert-package.ps1");
     let harness = include_str!("../scripts/qa/p0-smoke.ps1");
     let bootstrap = include_str!("../src/bootstrap.rs");
+
+    let terminal_gate_step = concat!(
+        "      - name: Run terminal engine gate\n",
+        "        run: |\n",
+        "          pwsh -NoProfile -File scripts/qa/terminal-engine-gate.ps1\n",
+        "          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }"
+    );
+    let ci_gate_contract = ci.replace("\r\n", "\n");
+    let release_gate_contract = release.replace("\r\n", "\n");
+    for workflow in [&ci_gate_contract, &release_gate_contract] {
+        assert_eq!(
+            workflow
+                .matches("      - name: Run terminal engine gate")
+                .count(),
+            1
+        );
+        assert!(
+            workflow.contains(terminal_gate_step),
+            "workflow must retain the exact fail-closed terminal-engine gate step"
+        );
+        assert!(!workflow.contains("continue-on-error"));
+    }
+    let ci_terminal_gate = ci_gate_contract.find(terminal_gate_step).unwrap();
+    assert!(
+        ci_gate_contract
+            .find("      - name: Run required workspace gates")
+            .unwrap()
+            < ci_terminal_gate
+            && ci_terminal_gate
+                < ci_gate_contract
+                    .find("      - name: Run Secret Service vault probe and P0 All smoke (Linux)")
+                    .unwrap()
+    );
+    let release_terminal_gate = release_gate_contract.find(terminal_gate_step).unwrap();
+    assert!(
+        release_terminal_gate
+            < release_gate_contract
+                .find("      - name: Build release")
+                .unwrap()
+            && release_terminal_gate
+                < release_gate_contract
+                    .find("      - name: Package (Linux/macOS)")
+                    .unwrap()
+            && release_terminal_gate
+                < release_gate_contract
+                    .find("      - name: Package (Windows)")
+                    .unwrap()
+    );
+    let publisher = &release_gate_contract[release_gate_contract.find("  release:").unwrap()..];
+    assert!(!publisher.contains("terminal-engine-gate.ps1"));
+
+    let local_pty = include_str!("../crates/rshell-session/tests/local_pty.rs");
+    assert!(local_pty.contains("#[cfg(windows)]"));
+    assert!(
+        local_pty.contains("async fn immediate_descendant_is_contained_before_first_user_marker()")
+    );
+    assert!(local_pty.contains("process_tree_contains(descendant_pid)"));
+
+    let cleanup = include_str!("../src/p0_smoke_cleanup.rs");
+    assert!(cleanup.contains("pub(crate) direct_session_child_count:"));
+    assert!(!cleanup.contains("pub(crate) session_child_count:"));
+    assert!(!cleanup.contains("\"session_child_count\""));
+
+    let terminal_engine_gate = include_str!("../scripts/qa/terminal-engine-gate.ps1");
+    let terminal_engine_record = include_str!("../crates/rshell-session/TERMINAL_ENGINE.md");
+    assert!(terminal_engine_gate.contains("$Backend = \"alacritty-terminal@0.26.0\""));
+    assert!(terminal_engine_record.contains("Decision: **GO**"));
+    assert!(terminal_engine_record.contains("Selected sole adapter: `alacritty-terminal@0.26.0`"));
+    assert!(!terminal_engine_gate.contains("wezterm"));
+    assert!(!terminal_engine_record.contains("wezterm"));
 
     for command in [
         "cargo check --workspace --all-targets --all-features --locked",
