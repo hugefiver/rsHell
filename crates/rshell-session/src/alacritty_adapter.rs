@@ -122,6 +122,7 @@ impl AlacrittyAdapter {
     }
 
     pub(crate) fn resize(&mut self, size: TerminalSize) {
+        let dimensions_changed = self.size.cols != size.cols || self.size.rows != size.rows;
         let old_history = self.terminal.grid().history_size();
         self.terminal.resize(GridSize::from(size));
         let history = self.terminal.grid().history_size();
@@ -132,8 +133,18 @@ impl AlacrittyAdapter {
         }
         self.events.resize(size);
         self.size = size;
-        self.scroll_tracker
-            .resize(usize::from(size.cols), usize::from(size.rows));
+        if dimensions_changed {
+            self.scroll_tracker
+                .resize(usize::from(size.cols), usize::from(size.rows));
+        }
+        let active_primary = !self.alternate_screen();
+        let cursor = &self.terminal.grid().cursor;
+        self.scroll_tracker.sync_cursor(
+            active_primary,
+            cursor.point.line.0 as usize,
+            cursor.point.column.0,
+            cursor.input_needs_wrap,
+        );
     }
 
     pub(crate) fn clear_scrollback(&mut self) {

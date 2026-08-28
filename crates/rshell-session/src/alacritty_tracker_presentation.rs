@@ -1,4 +1,5 @@
 use crate::alacritty_tracker::Csi;
+use unicode_width::UnicodeWidthChar;
 
 #[derive(Clone, Copy)]
 pub(super) struct Presentation {
@@ -28,8 +29,36 @@ impl Presentation {
         *self = Self::new(columns, lines);
     }
 
-    pub(super) fn print(&mut self, primary: bool) -> usize {
-        self.print_many(1, primary)
+    pub(super) fn sync_cursor(&mut self, row: usize, column: usize, wrap: bool) {
+        self.row = row.min(self.lines - 1);
+        self.column = column.min(self.columns - 1);
+        self.wrap = wrap;
+    }
+
+    pub(super) fn print_char(&mut self, character: char, primary: bool) -> usize {
+        character
+            .width()
+            .map_or(0, |width| self.print_width(width, primary))
+    }
+
+    pub(super) fn print_width(&mut self, width: usize, primary: bool) -> usize {
+        if width == 0 {
+            return 0;
+        }
+        if width == 1 {
+            return self.print_many(1, primary);
+        }
+        let mut shift = usize::from(self.wrapline(primary));
+        if self.columns < 2 || self.column + 1 >= self.columns {
+            shift += usize::from(self.line_wrap(primary));
+        }
+        if self.column + 2 < self.columns {
+            self.column += 2;
+        } else {
+            self.column = self.columns - 1;
+            self.wrap = true;
+        }
+        shift
     }
 
     pub(super) fn print_many(&mut self, mut count: usize, primary: bool) -> usize {
@@ -116,6 +145,10 @@ impl Presentation {
         if !self.wrap {
             return false;
         }
+        self.line_wrap(primary)
+    }
+
+    fn line_wrap(&mut self, primary: bool) -> bool {
         let scroll = if self.row + 1 >= self.bottom {
             self.scrolls_primary(primary)
         } else {

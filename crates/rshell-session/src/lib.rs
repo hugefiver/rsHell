@@ -9,6 +9,7 @@ mod alacritty_mouse;
 mod alacritty_rows;
 mod alacritty_tracker;
 mod alacritty_tracker_presentation;
+mod alacritty_tracker_utf8;
 mod auth;
 mod engine;
 mod error;

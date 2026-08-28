@@ -127,6 +127,7 @@ fn advance_windows(
             terminal,
             settings,
             primary_origin,
+            tracker,
             FeedWindow {
                 bytes: &remaining[..length],
                 maximum_shift,
@@ -142,6 +143,7 @@ fn advance_window(
     terminal: &mut Term<EventSink>,
     settings: &ResolvedTerminalProfile,
     primary_origin: &mut i64,
+    tracker: &mut ScrollTracker,
     window: FeedWindow<'_>,
 ) {
     let FeedWindow {
@@ -157,8 +159,16 @@ fn advance_window(
         .flatten();
 
     processor.advance(terminal, bytes);
+    let active_primary = !terminal.mode().contains(TermMode::ALT_SCREEN);
+    let cursor = &terminal.grid().cursor;
+    tracker.sync_cursor(
+        active_primary,
+        cursor.point.line.0 as usize,
+        cursor.point.column.0,
+        cursor.input_needs_wrap,
+    );
 
-    if !terminal.mode().contains(TermMode::ALT_SCREEN) {
+    if active_primary {
         let history = terminal.grid().history_size();
         if was_primary {
             let completed = if old_history == settings.scrollback_lines

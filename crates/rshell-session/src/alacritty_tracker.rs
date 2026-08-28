@@ -1,4 +1,5 @@
 use crate::alacritty_tracker_presentation::Presentation;
+use crate::alacritty_tracker_utf8::{Decoded, Utf8Decoder};
 
 #[derive(Clone, Copy)]
 pub(crate) enum Window {
@@ -9,6 +10,7 @@ pub(crate) enum Window {
 #[derive(Clone, Copy)]
 pub(crate) struct ScrollTracker {
     state: ScanState,
+    utf8: Utf8Decoder,
     primary: Presentation,
     alternate: Presentation,
 }
@@ -32,6 +34,7 @@ impl ScrollTracker {
         let presentation = Presentation::new(columns, lines);
         Self {
             state: ScanState::Ground,
+            utf8: Utf8Decoder::default(),
             primary: presentation,
             alternate: presentation,
         }
@@ -42,6 +45,10 @@ impl ScrollTracker {
         self.alternate.resize(columns, lines);
     }
 
+    pub(crate) fn sync_cursor(&mut self, primary: bool, row: usize, column: usize, wrap: bool) {
+        self.presentation(primary).sync_cursor(row, column, wrap);
+    }
+
     pub(crate) fn next_window(&mut self, bytes: &[u8], primary: bool, maximum: usize) -> Window {
         let mut shift = 0usize;
         let mut sequence = None;
@@ -50,7 +57,7 @@ impl ScrollTracker {
             let byte = bytes[index];
             let before = *self;
             let previous_shift = shift;
-            if matches!(self.state, ScanState::Ground) && printable(byte) {
+            if matches!(self.state, ScanState::Ground) && self.utf8.is_empty() && printable(byte) {
                 let length = printable_run(&bytes[index..]);
                 let effect = self.presentation(primary).print_many(length, primary);
                 if shift.saturating_add(effect) <= maximum {
@@ -104,18 +111,7 @@ impl ScrollTracker {
 
     fn observe(&mut self, byte: u8, primary: bool) -> usize {
         match self.state {
-            ScanState::Ground => match byte {
-                0x1b => self.state = ScanState::Escape,
-                0x9b => self.state = ScanState::Csi(Csi::default()),
-                0x84 => return self.presentation(primary).linefeed(primary),
-                0x85 => return self.presentation(primary).newline(primary),
-                b'\n' | 0x0b | 0x0c => return self.presentation(primary).linefeed(primary),
-                b'\r' => self.presentation(primary).carriage_return(),
-                0x08 => self.presentation(primary).backspace(),
-                b'\t' => return self.presentation(primary).tab(primary),
-                0x20..=0x7e | 0x80..=0xff => return self.presentation(primary).print(primary),
-                _ => {}
-            },
+            ScanState::Ground => return self.ground(byte, primary),
             ScanState::Escape => match byte {
                 b'[' => self.state = ScanState::Csi(Csi::default()),
                 b'D' => {
@@ -148,6 +144,40 @@ impl ScrollTracker {
         0
     }
 
+    fn ground(&mut self, byte: u8, primary: bool) -> usize {
+        if !self.utf8.is_empty() {
+            return match self.utf8.push(byte) {
+                Decoded::Pending => 0,
+                Decoded::Char(character) => {
+                    self.presentation(primary).print_char(character, primary)
+                }
+                // Keep malformed text conservative, then let a non-continuation byte execute.
+                Decoded::Invalid => self
+                    .presentation(primary)
+                    .print_width(2, primary)
+                    .saturating_add(self.ground(byte, primary)),
+            };
+        }
+        match byte {
+            0x1b => self.state = ScanState::Escape,
+            0x9b => self.state = ScanState::Csi(Csi::default()),
+            0x84 => return self.presentation(primary).linefeed(primary),
+            0x85 => return self.presentation(primary).newline(primary),
+            b'\n' | 0x0b | 0x0c => return self.presentation(primary).linefeed(primary),
+            b'\r' => self.presentation(primary).carriage_return(),
+            0x08 => self.presentation(primary).backspace(),
+            b'\t' => return self.presentation(primary).tab(primary),
+            0x20..=0x7e => return self.presentation(primary).print_width(1, primary),
+            0xc2..=0xf4 => {
+                self.utf8.push(byte);
+                return 0;
+            }
+            0xa0..=0xff => return self.presentation(primary).print_width(2, primary),
+            _ => {}
+        }
+        0
+    }
+
     fn presentation(&mut self, primary: bool) -> &mut Presentation {
         if primary {
             &mut self.primary
@@ -158,7 +188,7 @@ impl ScrollTracker {
 }
 
 fn printable(byte: u8) -> bool {
-    matches!(byte, 0x20..=0x7e | 0xa0..=0xff)
+    matches!(byte, 0x20..=0x7e)
 }
 
 fn printable_run(bytes: &[u8]) -> usize {

@@ -440,6 +440,63 @@ fn cursor_forward_then_text_wraps_are_counted_at_capacity() {
 }
 
 #[test]
+fn wide_utf8_rows_complete_a_logical_rotation_without_reusing_ids() {
+    let mut whole = repeated_rows_at_capacity();
+    let whole_before = whole.viewport_bounds();
+    whole.input(&"界".as_bytes().repeat(619)).unwrap();
+    assert_saturated_scroll(&whole, whole_before, 103);
+    assert!(whole.viewport_bounds().first_stable_row > whole_before.bottom_top_stable_row);
+
+    let mut split = repeated_rows_at_capacity();
+    let split_before = split.viewport_bounds();
+    split.input(b"\xe7\x95").unwrap();
+    split.input(b"\x8c").unwrap();
+    split.input(&"界".as_bytes().repeat(618)).unwrap();
+    assert_saturated_scroll(&split, split_before, 103);
+    assert!(split.viewport_bounds().first_stable_row > split_before.bottom_top_stable_row);
+}
+
+#[test]
+fn utf8_continuation_c1_bytes_do_not_start_csi() {
+    let mut whole = repeated_rows_at_capacity();
+    let whole_before = whole.viewport_bounds();
+    whole.input(&"Û".as_bytes().repeat(1_237)).unwrap();
+    assert_saturated_scroll(&whole, whole_before, 103);
+    assert!(whole.viewport_bounds().first_stable_row > whole_before.bottom_top_stable_row);
+
+    let mut split = repeated_rows_at_capacity();
+    let split_before = split.viewport_bounds();
+    split.input(b"\xc3").unwrap();
+    split.input(b"\x9b").unwrap();
+    split.input(&"Û".as_bytes().repeat(1_236)).unwrap();
+    assert_saturated_scroll(&split, split_before, 103);
+    assert!(split.viewport_bounds().first_stable_row > split_before.bottom_top_stable_row);
+}
+
+#[test]
+fn same_size_resize_preserves_wrap_tracking_before_linefeed() {
+    let mut engine = repeated_rows_at_capacity();
+    engine.input(b"\x1b[3;12HX").unwrap();
+    let before = engine.viewport_bounds();
+    engine.resize(size(12, 3)).unwrap();
+    assert_eq!(engine.viewport_bounds(), before);
+    engine.input(b"\n").unwrap();
+    assert_saturated_scroll(&engine, before, 1);
+}
+
+#[test]
+fn changed_size_resize_syncs_cursor_before_following_scroll() {
+    let mut engine = repeated_rows_at_capacity();
+    engine.input(b"\x1b[3;12HX").unwrap();
+    engine.resize(size(24, 3)).unwrap();
+    let resized = engine.viewport_bounds();
+    let frame = engine.snapshot(viewport(resized.bottom_top_stable_row, 3), None);
+    assert_eq!(frame.size, size(24, 3));
+    engine.input(b"\n").unwrap();
+    assert_saturated_scroll(&engine, resized, 1);
+}
+
+#[test]
 fn tracker_persists_split_csi_margin_and_cursor_sequences() {
     let mut engine = repeated_rows_at_capacity();
     engine.input(b"\x1b[2;").unwrap();

@@ -21,6 +21,7 @@ russh = { version = "=0.62.5", default-features = false, features = ["flate2", "
 secrecy = "0.10.3"
 thiserror = "2.0"
 tokio = { version = "1", features = ["macros", "rt", "rt-multi-thread", "sync", "time"] }
+unicode-width = "0.2.2"
 
 [dev-dependencies]
 portable-pty = { package = "portable-pty-psmux", version = "=0.9.6", features = ["containment-test-support"] }
