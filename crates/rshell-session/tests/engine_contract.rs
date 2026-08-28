@@ -403,6 +403,66 @@ fn csi_scroll_up_in_one_input_keeps_stable_rows_monotonic() {
 }
 
 #[test]
+fn repeated_default_csi_scroll_up_tracks_one_and_two_logical_rotations() {
+    for scrolls in [103, 206] {
+        let mut engine = repeated_rows_at_capacity();
+        let before = engine.viewport_bounds();
+        engine.input(&b"\x1b[S".repeat(scrolls)).unwrap();
+        assert_saturated_scroll(&engine, before, scrolls as i64);
+        assert!(
+            engine.viewport_bounds().first_stable_row > before.bottom_top_stable_row,
+            "a complete logical rotation must not reuse a stable row"
+        );
+    }
+}
+
+#[test]
+fn csi_scroll_up_only_advances_primary_origin_with_full_margins() {
+    let mut engine = repeated_rows_at_capacity();
+    engine.input(b"\x1b[2;3r").unwrap();
+    let subregion_before = engine.viewport_bounds();
+    engine.input(&b"\x1b[S".repeat(206)).unwrap();
+    assert_eq!(engine.viewport_bounds(), subregion_before);
+
+    engine.input(b"\x1b[r").unwrap();
+    let full_before = engine.viewport_bounds();
+    engine.input(b"\x1b[S").unwrap();
+    assert_saturated_scroll(&engine, full_before, 1);
+}
+
+#[test]
+fn cursor_forward_then_text_wraps_are_counted_at_capacity() {
+    let mut engine = repeated_rows_at_capacity();
+    let before = engine.viewport_bounds();
+    engine.input(&b"\x1b[999CXX".repeat(103)).unwrap();
+    assert_saturated_scroll(&engine, before, 103);
+    assert!(engine.viewport_bounds().first_stable_row > before.bottom_top_stable_row);
+}
+
+#[test]
+fn tracker_persists_split_csi_margin_and_cursor_sequences() {
+    let mut engine = repeated_rows_at_capacity();
+    engine.input(b"\x1b[2;").unwrap();
+    engine.input(b"3r\x1b[").unwrap();
+    engine.input(b"S").unwrap();
+    let before = engine.viewport_bounds();
+    engine.input(&b"\x1b[S".repeat(103)).unwrap();
+    assert_eq!(engine.viewport_bounds(), before);
+
+    engine.input(b"\x1b[").unwrap();
+    engine.input(b"r\x1b[3;").unwrap();
+    engine.input(b"1H\x1b[999").unwrap();
+    engine.input(b"CXX").unwrap();
+    let after_first_wrap = engine.viewport_bounds();
+    assert_saturated_scroll(&engine, before, 1);
+    for _ in 1..103 {
+        engine.input(b"\x1b[999").unwrap();
+        engine.input(b"CXX").unwrap();
+    }
+    assert_saturated_scroll(&engine, after_first_wrap, 102);
+}
+
+#[test]
 fn subregion_scroll_does_not_advance_primary_origin() {
     let mut engine = repeated_rows_at_capacity();
     let before = engine.viewport_bounds();
@@ -853,7 +913,6 @@ fn assert_saturated_scroll(
         before.bottom_top_stable_row + shift
     );
     assert_eq!(after.first_stable_row, before.first_stable_row + shift);
-    assert!(after.first_stable_row > before.bottom_top_stable_row);
 }
 
 fn mouse_event(

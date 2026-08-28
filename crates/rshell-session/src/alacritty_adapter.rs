@@ -11,7 +11,7 @@ use rshell_core::{
 
 use crate::{
     EngineError, ViewportBounds, alacritty_event::EventSink, alacritty_feed, alacritty_key,
-    alacritty_mouse,
+    alacritty_mouse, alacritty_tracker,
 };
 
 pub(crate) struct AlacrittyAdapter {
@@ -21,7 +21,7 @@ pub(crate) struct AlacrittyAdapter {
     settings: ResolvedTerminalProfile,
     size: TerminalSize,
     primary_origin: i64,
-    scroll_tracker: crate::alacritty_rows::ScrollTracker,
+    scroll_tracker: alacritty_tracker::ScrollTracker,
 }
 
 impl AlacrittyAdapter {
@@ -35,7 +35,10 @@ impl AlacrittyAdapter {
             settings: settings.clone(),
             size,
             primary_origin: 0,
-            scroll_tracker: crate::alacritty_rows::ScrollTracker::default(),
+            scroll_tracker: alacritty_tracker::ScrollTracker::new(
+                usize::from(size.cols),
+                usize::from(size.rows),
+            ),
         }
     }
 
@@ -129,6 +132,8 @@ impl AlacrittyAdapter {
         }
         self.events.resize(size);
         self.size = size;
+        self.scroll_tracker
+            .resize(usize::from(size.cols), usize::from(size.rows));
     }
 
     pub(crate) fn clear_scrollback(&mut self) {
@@ -141,7 +146,10 @@ impl AlacrittyAdapter {
         self.terminal = make_terminal(&self.settings, self.size, self.events.clone());
         self.processor = Processor::new();
         self.primary_origin = 0;
-        self.scroll_tracker = crate::alacritty_rows::ScrollTracker::default();
+        self.scroll_tracker = alacritty_tracker::ScrollTracker::new(
+            usize::from(self.size.cols),
+            usize::from(self.size.rows),
+        );
     }
 }
 

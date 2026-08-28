@@ -1,7 +1,11 @@
 use alacritty_terminal::{Term, grid::Dimensions, term::TermMode, vte::ansi::Processor};
 use rshell_core::ResolvedTerminalProfile;
 
-use crate::{alacritty_event::EventSink, alacritty_rows};
+use crate::{
+    alacritty_event::EventSink,
+    alacritty_rows,
+    alacritty_tracker::{ScrollTracker, Window},
+};
 
 struct FeedWindow<'a> {
     bytes: &'a [u8],
@@ -15,7 +19,7 @@ pub(crate) fn advance(
     events: &EventSink,
     settings: &ResolvedTerminalProfile,
     primary_origin: &mut i64,
-    tracker: &mut alacritty_rows::ScrollTracker,
+    tracker: &mut ScrollTracker,
     bytes: &[u8],
 ) -> Vec<u8> {
     let mut remaining = bytes;
@@ -58,7 +62,7 @@ fn advance_segment(
     events: &EventSink,
     settings: &ResolvedTerminalProfile,
     primary_origin: &mut i64,
-    tracker: &mut alacritty_rows::ScrollTracker,
+    tracker: &mut ScrollTracker,
     bytes: &[u8],
 ) {
     if bytes.is_empty() {
@@ -92,22 +96,30 @@ fn advance_windows(
     terminal: &mut Term<EventSink>,
     settings: &ResolvedTerminalProfile,
     primary_origin: &mut i64,
-    tracker: &mut alacritty_rows::ScrollTracker,
+    tracker: &mut ScrollTracker,
     mut remaining: &[u8],
 ) {
     while !remaining.is_empty() {
         let was_primary = !terminal.mode().contains(TermMode::ALT_SCREEN);
         let (length, maximum_shift, track_capacity) = if was_primary {
-            match alacritty_rows::bounded_prefix(
-                tracker,
-                remaining,
-                terminal,
-                settings.scrollback_lines,
-            ) {
-                Some(prefix) => (prefix.length, prefix.maximum_shift, true),
-                None => (remaining.len(), 0, false),
+            let grid = terminal.grid();
+            let room = settings
+                .scrollback_lines
+                .saturating_sub(grid.history_size());
+            let maximum = if room == 0 {
+                grid.total_lines().saturating_sub(3)
+            } else {
+                room
+            };
+            match tracker.next_window(remaining, true, maximum) {
+                Window::Bounded {
+                    length,
+                    maximum_shift,
+                } => (length, maximum_shift, true),
+                Window::Unsafe { length } => (length, 0, false),
             }
         } else {
+            tracker.consume(remaining, false);
             (remaining.len(), 0, false)
         };
         advance_window(
@@ -115,7 +127,6 @@ fn advance_windows(
             terminal,
             settings,
             primary_origin,
-            tracker,
             FeedWindow {
                 bytes: &remaining[..length],
                 maximum_shift,
@@ -131,7 +142,6 @@ fn advance_window(
     terminal: &mut Term<EventSink>,
     settings: &ResolvedTerminalProfile,
     primary_origin: &mut i64,
-    tracker: &mut alacritty_rows::ScrollTracker,
     window: FeedWindow<'_>,
 ) {
     let FeedWindow {
@@ -141,25 +151,27 @@ fn advance_window(
     } = window;
     let was_primary = !terminal.mode().contains(TermMode::ALT_SCREEN);
     let old_history = terminal.grid().history_size();
-    let screen_lines = terminal.grid().screen_lines();
     let anchor_shift = if track_capacity { maximum_shift } else { 0 };
     let capacity_anchor = was_primary
         .then(|| alacritty_rows::capture(terminal, anchor_shift))
         .flatten();
 
     processor.advance(terminal, bytes);
-    if !track_capacity {
-        tracker.consume(bytes, screen_lines);
-    }
 
     if !terminal.mode().contains(TermMode::ALT_SCREEN) {
         let history = terminal.grid().history_size();
         if was_primary {
-            let completed = alacritty_rows::completed_shift(
-                terminal,
-                settings.scrollback_lines,
-                capacity_anchor,
-            );
+            let completed = if old_history == settings.scrollback_lines
+                || (!track_capacity && history == settings.scrollback_lines)
+            {
+                alacritty_rows::completed_shift(
+                    terminal,
+                    settings.scrollback_lines,
+                    capacity_anchor,
+                )
+            } else {
+                0
+            };
             let shift = history
                 .saturating_sub(old_history)
                 .saturating_add(completed);

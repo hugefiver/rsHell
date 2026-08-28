@@ -7,6 +7,8 @@ mod alacritty_feed;
 mod alacritty_key;
 mod alacritty_mouse;
 mod alacritty_rows;
+mod alacritty_tracker;
+mod alacritty_tracker_presentation;
 mod auth;
 mod engine;
 mod error;
