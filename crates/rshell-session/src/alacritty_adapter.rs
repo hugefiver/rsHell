@@ -126,7 +126,8 @@ impl AlacrittyAdapter {
         let old_lines = usize::from(self.size.rows);
         let lines = usize::from(size.rows);
         let primary_scrolls = if dimensions_changed {
-            self.scroll_tracker.resize(usize::from(size.cols), lines)
+            self.scroll_tracker
+                .resize(usize::from(size.cols), lines, self.primary_rows.history)
         } else {
             0
         };

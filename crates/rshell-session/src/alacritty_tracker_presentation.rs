@@ -34,14 +34,25 @@ impl Presentation {
         }
     }
 
-    pub(super) fn resize(&mut self, columns: usize, lines: usize) -> usize {
+    pub(super) fn resize(
+        &mut self,
+        columns: usize,
+        lines: usize,
+        available_history: usize,
+    ) -> usize {
         let lines = lines.max(1);
+        let pulled_from_history = available_history.min(lines.saturating_sub(self.lines));
         let primary_scrolls = (self.row + 1).saturating_sub(lines);
         self.columns = columns.max(1);
         self.lines = lines;
         self.top = 0;
         self.bottom = self.lines;
-        self.sync_cursor(self.row, self.column, self.wrap);
+        self.sync_cursor(
+            self.row.saturating_add(pulled_from_history),
+            self.column,
+            self.wrap,
+        );
+        self.saved.row = self.saved.row.saturating_add(pulled_from_history);
         self.saved = self.clamped(self.saved);
         primary_scrolls
     }
