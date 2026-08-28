@@ -122,6 +122,14 @@ impl ScrollTracker {
                     self.state = ScanState::Ground;
                     return self.presentation(primary).newline(primary);
                 }
+                b'7' => {
+                    self.state = ScanState::Ground;
+                    self.presentation(primary).save_cursor();
+                }
+                b'8' => {
+                    self.state = ScanState::Ground;
+                    self.presentation(primary).restore_cursor();
+                }
                 0x1b => self.state = ScanState::Escape,
                 _ => self.state = ScanState::Ground,
             },

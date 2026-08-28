@@ -10,6 +10,14 @@ pub(super) struct Presentation {
     wrap: bool,
     top: usize,
     bottom: usize,
+    saved: CursorState,
+}
+
+#[derive(Clone, Copy, Default)]
+struct CursorState {
+    row: usize,
+    column: usize,
+    wrap: bool,
 }
 
 impl Presentation {
@@ -22,17 +30,36 @@ impl Presentation {
             wrap: false,
             top: 0,
             bottom: lines.max(1),
+            saved: CursorState::default(),
         }
     }
 
     pub(super) fn resize(&mut self, columns: usize, lines: usize) {
-        *self = Self::new(columns, lines);
+        self.columns = columns.max(1);
+        self.lines = lines.max(1);
+        self.top = 0;
+        self.bottom = self.lines;
+        self.sync_cursor(self.row, self.column, self.wrap);
+        self.saved = self.clamped(self.saved);
     }
 
     pub(super) fn sync_cursor(&mut self, row: usize, column: usize, wrap: bool) {
         self.row = row.min(self.lines - 1);
         self.column = column.min(self.columns - 1);
         self.wrap = wrap;
+    }
+
+    pub(super) fn save_cursor(&mut self) {
+        self.saved = CursorState {
+            row: self.row,
+            column: self.column,
+            wrap: self.wrap,
+        };
+    }
+
+    pub(super) fn restore_cursor(&mut self) {
+        let saved = self.clamped(self.saved);
+        self.sync_cursor(saved.row, saved.column, saved.wrap);
     }
 
     pub(super) fn print_char(&mut self, character: char, primary: bool) -> usize {
@@ -136,6 +163,8 @@ impl Presentation {
             b'M' if self.row == 0 && self.full_margin() => amount.min(self.lines),
             b'S' if self.full_margin() => amount.min(self.bottom - self.top),
             b'r' => self.margins(csi),
+            b's' => self.save_cursor_return(),
+            b'u' => self.restore_cursor_return(),
             _ => 0,
         };
         shift * usize::from(primary)
@@ -176,6 +205,24 @@ impl Presentation {
         self.column = column;
         self.wrap = false;
         0
+    }
+
+    fn save_cursor_return(&mut self) -> usize {
+        self.save_cursor();
+        0
+    }
+
+    fn restore_cursor_return(&mut self) -> usize {
+        self.restore_cursor();
+        0
+    }
+
+    fn clamped(&self, cursor: CursorState) -> CursorState {
+        CursorState {
+            row: cursor.row.min(self.lines - 1),
+            column: cursor.column.min(self.columns - 1),
+            wrap: cursor.wrap,
+        }
     }
 
     fn full_margin(&self) -> bool {

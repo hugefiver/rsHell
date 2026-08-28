@@ -497,6 +497,50 @@ fn changed_size_resize_syncs_cursor_before_following_scroll() {
 }
 
 #[test]
+fn decsc_decrc_restore_bottom_wrap_for_every_scroll() {
+    let mut engine = repeated_rows_at_capacity();
+    engine.input(b"\x1b[3;12HX\x1b7").unwrap();
+    let before = engine.viewport_bounds();
+    engine.input(&b"\x1b[H\x1b8XX".repeat(103)).unwrap();
+    assert_saturated_scroll(&engine, before, 103);
+    assert!(engine.viewport_bounds().first_stable_row > before.bottom_top_stable_row);
+}
+
+#[test]
+fn csi_save_restore_matches_decsc_decrc_scroll_behavior() {
+    let mut engine = repeated_rows_at_capacity();
+    engine.input(b"\x1b[3;12HX\x1b[s").unwrap();
+    let before = engine.viewport_bounds();
+    engine.input(&b"\x1b[H\x1b[uXX".repeat(103)).unwrap();
+    assert_saturated_scroll(&engine, before, 103);
+    assert!(engine.viewport_bounds().first_stable_row > before.bottom_top_stable_row);
+}
+
+#[test]
+fn split_cursor_save_restore_sequences_preserve_primary_and_alternate_state() {
+    let mut engine = repeated_rows_at_capacity();
+    engine.input(b"\x1b[3;12HX\x1b").unwrap();
+    engine.input(b"7").unwrap();
+    let primary_before = engine.viewport_bounds();
+
+    engine.input(b"\x1b[?1049h\x1b[3;12HX\x1b7").unwrap();
+    engine.input(b"\x1b[H\x1b").unwrap();
+    engine.input(b"8XX\x1b[?1049l").unwrap();
+    assert_eq!(engine.viewport_bounds(), primary_before);
+
+    engine.input(b"\x1b[").unwrap();
+    engine.input(b"H\x1b").unwrap();
+    engine.input(b"8XX").unwrap();
+    let primary_after = engine.viewport_bounds();
+    assert_saturated_scroll(&engine, primary_before, 1);
+
+    engine
+        .input(b"\x1b[?1049h\x1b[H\x1b8XX\x1b[?1049l")
+        .unwrap();
+    assert_eq!(engine.viewport_bounds(), primary_after);
+}
+
+#[test]
 fn tracker_persists_split_csi_margin_and_cursor_sequences() {
     let mut engine = repeated_rows_at_capacity();
     engine.input(b"\x1b[2;").unwrap();
