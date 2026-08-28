@@ -347,7 +347,7 @@ fn tiny_saturated_grid_reserves_a_disjoint_range_when_no_window_is_safe() {
     let mut engine = DefaultTerminalEngine::new(&settings, size(12, 3)).unwrap();
     engine.input(b"same\r\nsame\r\nsame\r\n").unwrap();
     let before = engine.viewport_bounds();
-    engine.input(b"same\r\n").unwrap();
+    engine.input(b"\x1b[10S").unwrap();
     let after = engine.viewport_bounds();
 
     assert_eq!(
@@ -365,6 +365,49 @@ fn single_input_full_ring_rotation_keeps_identical_rows_monotonic() {
 #[test]
 fn single_input_multiple_ring_rotations_keep_identical_rows_monotonic() {
     assert_full_ring_rotations(2);
+}
+
+#[test]
+fn fresh_large_input_crosses_capacity_without_reusing_stable_rows() {
+    let mut engine = DefaultTerminalEngine::new(&profile(100), size(12, 3)).unwrap();
+    let before = engine.viewport_bounds();
+    engine.input(&b"same\r\n".repeat(205)).unwrap();
+    assert_crossing_bounds(&engine, before, 203, 103);
+}
+
+#[test]
+fn partial_large_input_crosses_capacity_without_reusing_stable_rows() {
+    let mut engine = DefaultTerminalEngine::new(&profile(100), size(12, 3)).unwrap();
+    for _ in 0..52 {
+        engine.input(b"same\r\n").unwrap();
+    }
+    let before = engine.viewport_bounds();
+    engine.input(&b"same\r\n".repeat(256)).unwrap();
+    assert_crossing_bounds(&engine, before, 256, 206);
+}
+
+#[test]
+fn ind_scrolls_in_one_input_keep_stable_rows_monotonic() {
+    let mut engine = repeated_rows_at_capacity();
+    let before = engine.viewport_bounds();
+    engine.input(&b"\x1bD".repeat(206)).unwrap();
+    assert_saturated_scroll(&engine, before, 206);
+}
+
+#[test]
+fn csi_scroll_up_in_one_input_keeps_stable_rows_monotonic() {
+    let mut engine = repeated_rows_at_capacity();
+    let before = engine.viewport_bounds();
+    engine.input(&b"\x1b[10S".repeat(400)).unwrap();
+    assert_saturated_scroll(&engine, before, 1_200);
+}
+
+#[test]
+fn subregion_scroll_does_not_advance_primary_origin() {
+    let mut engine = repeated_rows_at_capacity();
+    let before = engine.viewport_bounds();
+    engine.input(b"\x1b[2;3r\x1b[100S\x1b[r").unwrap();
+    assert_eq!(engine.viewport_bounds(), before);
 }
 
 #[test]
@@ -752,7 +795,7 @@ fn repeated_rows_at_capacity() -> DefaultTerminalEngine {
 }
 
 fn assert_full_ring_rotations(rotations: usize) {
-    const RING_LINES: usize = 1_003;
+    const RING_LINES: usize = 103;
 
     let mut engine = repeated_rows_at_capacity();
     let before = engine.viewport_bounds();
@@ -774,6 +817,43 @@ fn assert_full_ring_rotations(rotations: usize) {
         trimmed_rows(&frame),
         vec!["same".to_owned(), "same".to_owned(), String::new()]
     );
+}
+
+fn assert_crossing_bounds(
+    engine: &DefaultTerminalEngine,
+    before: rshell_session::ViewportBounds,
+    origin_advance: i64,
+    first_advance: i64,
+) {
+    let after = engine.viewport_bounds();
+    assert_eq!(
+        after.bottom_top_stable_row,
+        before.bottom_top_stable_row + origin_advance
+    );
+    assert_eq!(
+        after.first_stable_row,
+        before.first_stable_row + first_advance
+    );
+    assert!(after.first_stable_row > before.bottom_top_stable_row);
+    let frame = engine.snapshot(viewport(after.bottom_top_stable_row, 3), None);
+    assert_eq!(
+        trimmed_rows(&frame),
+        vec!["same".to_owned(), "same".to_owned(), String::new()]
+    );
+}
+
+fn assert_saturated_scroll(
+    engine: &DefaultTerminalEngine,
+    before: rshell_session::ViewportBounds,
+    shift: i64,
+) {
+    let after = engine.viewport_bounds();
+    assert_eq!(
+        after.bottom_top_stable_row,
+        before.bottom_top_stable_row + shift
+    );
+    assert_eq!(after.first_stable_row, before.first_stable_row + shift);
+    assert!(after.first_stable_row > before.bottom_top_stable_row);
 }
 
 fn mouse_event(

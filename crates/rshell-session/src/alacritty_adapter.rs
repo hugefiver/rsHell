@@ -21,6 +21,7 @@ pub(crate) struct AlacrittyAdapter {
     settings: ResolvedTerminalProfile,
     size: TerminalSize,
     primary_origin: i64,
+    scroll_tracker: crate::alacritty_rows::ScrollTracker,
 }
 
 impl AlacrittyAdapter {
@@ -34,6 +35,7 @@ impl AlacrittyAdapter {
             settings: settings.clone(),
             size,
             primary_origin: 0,
+            scroll_tracker: crate::alacritty_rows::ScrollTracker::default(),
         }
     }
 
@@ -111,6 +113,7 @@ impl AlacrittyAdapter {
             &self.events,
             &self.settings,
             &mut self.primary_origin,
+            &mut self.scroll_tracker,
             bytes,
         )
     }
@@ -138,6 +141,7 @@ impl AlacrittyAdapter {
         self.terminal = make_terminal(&self.settings, self.size, self.events.clone());
         self.processor = Processor::new();
         self.primary_origin = 0;
+        self.scroll_tracker = crate::alacritty_rows::ScrollTracker::default();
     }
 }
 

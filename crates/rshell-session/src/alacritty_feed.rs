@@ -3,12 +3,19 @@ use rshell_core::ResolvedTerminalProfile;
 
 use crate::{alacritty_event::EventSink, alacritty_rows};
 
+struct FeedWindow<'a> {
+    bytes: &'a [u8],
+    maximum_shift: usize,
+    track_capacity: bool,
+}
+
 pub(crate) fn advance(
     processor: &mut Processor,
     terminal: &mut Term<EventSink>,
     events: &EventSink,
     settings: &ResolvedTerminalProfile,
     primary_origin: &mut i64,
+    tracker: &mut alacritty_rows::ScrollTracker,
     bytes: &[u8],
 ) -> Vec<u8> {
     let mut remaining = bytes;
@@ -19,6 +26,7 @@ pub(crate) fn advance(
             events,
             settings,
             primary_origin,
+            tracker,
             &remaining[..sequence.start],
         );
         advance_segment(
@@ -27,6 +35,7 @@ pub(crate) fn advance(
             events,
             settings,
             primary_origin,
+            tracker,
             &remaining[sequence.clone()],
         );
         remaining = &remaining[sequence.end..];
@@ -37,6 +46,7 @@ pub(crate) fn advance(
         events,
         settings,
         primary_origin,
+        tracker,
         remaining,
     );
     events.take_outbound()
@@ -48,6 +58,7 @@ fn advance_segment(
     events: &EventSink,
     settings: &ResolvedTerminalProfile,
     primary_origin: &mut i64,
+    tracker: &mut alacritty_rows::ScrollTracker,
     bytes: &[u8],
 ) {
     if bytes.is_empty() {
@@ -60,12 +71,20 @@ fn advance_segment(
             terminal,
             settings,
             primary_origin,
+            tracker,
             &remaining[..=index],
         );
         events.push_outbound(settings.answerback.as_bytes());
         remaining = &remaining[index + 1..];
     }
-    advance_windows(processor, terminal, settings, primary_origin, remaining);
+    advance_windows(
+        processor,
+        terminal,
+        settings,
+        primary_origin,
+        tracker,
+        remaining,
+    );
 }
 
 fn advance_windows(
@@ -73,26 +92,35 @@ fn advance_windows(
     terminal: &mut Term<EventSink>,
     settings: &ResolvedTerminalProfile,
     primary_origin: &mut i64,
+    tracker: &mut alacritty_rows::ScrollTracker,
     mut remaining: &[u8],
 ) {
     while !remaining.is_empty() {
         let was_primary = !terminal.mode().contains(TermMode::ALT_SCREEN);
-        let saturated = was_primary && terminal.grid().history_size() == settings.scrollback_lines;
-        let (length, track_capacity) = if saturated {
-            match alacritty_rows::bounded_prefix(terminal, settings.scrollback_lines, remaining) {
-                Some(length) => (length, true),
-                None => (remaining.len(), false),
+        let (length, maximum_shift, track_capacity) = if was_primary {
+            match alacritty_rows::bounded_prefix(
+                tracker,
+                remaining,
+                terminal,
+                settings.scrollback_lines,
+            ) {
+                Some(prefix) => (prefix.length, prefix.maximum_shift, true),
+                None => (remaining.len(), 0, false),
             }
         } else {
-            (remaining.len(), true)
+            (remaining.len(), 0, false)
         };
         advance_window(
             processor,
             terminal,
             settings,
             primary_origin,
-            &remaining[..length],
-            track_capacity,
+            tracker,
+            FeedWindow {
+                bytes: &remaining[..length],
+                maximum_shift,
+                track_capacity,
+            },
         );
         remaining = &remaining[length..];
     }
@@ -103,29 +131,35 @@ fn advance_window(
     terminal: &mut Term<EventSink>,
     settings: &ResolvedTerminalProfile,
     primary_origin: &mut i64,
-    bytes: &[u8],
-    track_capacity: bool,
+    tracker: &mut alacritty_rows::ScrollTracker,
+    window: FeedWindow<'_>,
 ) {
+    let FeedWindow {
+        bytes,
+        maximum_shift,
+        track_capacity,
+    } = window;
     let was_primary = !terminal.mode().contains(TermMode::ALT_SCREEN);
     let old_history = terminal.grid().history_size();
-    let capacity_anchor = (was_primary && track_capacity)
-        .then(|| alacritty_rows::capture(terminal, settings.scrollback_lines, bytes))
+    let screen_lines = terminal.grid().screen_lines();
+    let anchor_shift = if track_capacity { maximum_shift } else { 0 };
+    let capacity_anchor = was_primary
+        .then(|| alacritty_rows::capture(terminal, anchor_shift))
         .flatten();
 
     processor.advance(terminal, bytes);
+    if !track_capacity {
+        tracker.consume(bytes, screen_lines);
+    }
 
     if !terminal.mode().contains(TermMode::ALT_SCREEN) {
         let history = terminal.grid().history_size();
         if was_primary {
-            let completed = if old_history == settings.scrollback_lines && !track_capacity {
-                terminal.grid().total_lines()
-            } else {
-                alacritty_rows::completed_shift(
-                    terminal,
-                    settings.scrollback_lines,
-                    capacity_anchor,
-                )
-            };
+            let completed = alacritty_rows::completed_shift(
+                terminal,
+                settings.scrollback_lines,
+                capacity_anchor,
+            );
             let shift = history
                 .saturating_sub(old_history)
                 .saturating_add(completed);
