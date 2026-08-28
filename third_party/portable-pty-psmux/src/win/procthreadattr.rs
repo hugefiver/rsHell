@@ -13,6 +13,8 @@ const PROC_THREAD_ATTRIBUTE_JOB_LIST: usize = 0x0002000D;
 pub struct ProcThreadAttributeList {
     data: Vec<u8>,
     job_handles: Option<Box<[HANDLE; 1]>>,
+    #[cfg(feature = "containment-test-support")]
+    test_hook: Option<crate::ContainmentTestHook>,
 }
 
 impl ProcThreadAttributeList {
@@ -44,6 +46,8 @@ impl ProcThreadAttributeList {
         Ok(Self {
             data,
             job_handles: None,
+            #[cfg(feature = "containment-test-support")]
+            test_hook: None,
         })
     }
 
@@ -72,6 +76,28 @@ impl ProcThreadAttributeList {
     }
 
     pub fn set_job(&mut self, job: BorrowedHandle<'_>) -> Result<(), Error> {
+        self.set_job_inner(
+            job,
+            #[cfg(feature = "containment-test-support")]
+            None,
+        )
+    }
+
+    #[cfg(feature = "containment-test-support")]
+    pub fn set_job_with_test_hook(
+        &mut self,
+        job: BorrowedHandle<'_>,
+        hook: &crate::ContainmentTestHook,
+    ) -> Result<(), Error> {
+        self.test_hook = Some(hook.clone());
+        self.set_job_inner(job, Some(hook))
+    }
+
+    fn set_job_inner(
+        &mut self,
+        job: BorrowedHandle<'_>,
+        #[cfg(feature = "containment-test-support")] test_hook: Option<&crate::ContainmentTestHook>,
+    ) -> Result<(), Error> {
         ensure!(self.job_handles.is_none(), "JOB_LIST already configured");
         self.job_handles = Some(Box::new([job.as_raw_handle() as HANDLE]));
         let attribute_list = self.as_mut_ptr();
@@ -88,6 +114,17 @@ impl ProcThreadAttributeList {
                 ptr::null_mut(),
             )
         };
+        #[cfg(feature = "containment-test-support")]
+        let res = if let Some(hook) = test_hook {
+            hook.record_job_attribute_update();
+            if res != 0 && hook.fail_job_attribute_update() {
+                0
+            } else {
+                res
+            }
+        } else {
+            res
+        };
         ensure!(
             res != 0,
             "UpdateProcThreadAttribute JOB_LIST failed: {}",
@@ -100,6 +137,10 @@ impl ProcThreadAttributeList {
 impl Drop for ProcThreadAttributeList {
     fn drop(&mut self) {
         unsafe { DeleteProcThreadAttributeList(self.as_mut_ptr()) };
+        #[cfg(feature = "containment-test-support")]
+        if let Some(hook) = &self.test_hook {
+            hook.record_attribute_list_destroyed();
+        }
         // `job_handles` remains live until after attribute-list destruction.
     }
 }

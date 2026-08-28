@@ -35,6 +35,7 @@ repository = "https://github.com/psmux/portable-pty-patched"
 resolver = "2"
 
 [features]
+containment-test-support = []
 default = []
 serde_support = [
     "serde",

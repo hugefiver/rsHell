@@ -222,6 +222,30 @@ impl PsuedoCon {
         cmd: CommandBuilder,
         job: Option<BorrowedHandle<'_>>,
     ) -> anyhow::Result<WinChild> {
+        self.spawn_command_inner_impl(
+            cmd,
+            job,
+            #[cfg(feature = "containment-test-support")]
+            None,
+        )
+    }
+
+    #[cfg(feature = "containment-test-support")]
+    pub fn spawn_command_inner_with_test_hook(
+        &self,
+        cmd: CommandBuilder,
+        job: Option<BorrowedHandle<'_>>,
+        hook: &crate::ContainmentTestHook,
+    ) -> anyhow::Result<WinChild> {
+        self.spawn_command_inner_impl(cmd, job, Some(hook))
+    }
+
+    fn spawn_command_inner_impl(
+        &self,
+        cmd: CommandBuilder,
+        job: Option<BorrowedHandle<'_>>,
+        #[cfg(feature = "containment-test-support")] test_hook: Option<&crate::ContainmentTestHook>,
+    ) -> anyhow::Result<WinChild> {
         let mut si: STARTUPINFOEXW = unsafe { mem::zeroed() };
         si.StartupInfo.cb = mem::size_of::<STARTUPINFOEXW>() as u32;
         // Note: we deliberately do NOT set STARTF_USESTDHANDLES with
@@ -243,6 +267,13 @@ impl PsuedoCon {
         let mut attrs = ProcThreadAttributeList::with_capacity(if job.is_some() { 2 } else { 1 })?;
         attrs.set_pty(self.con)?;
         if let Some(job) = job {
+            #[cfg(feature = "containment-test-support")]
+            if let Some(hook) = test_hook {
+                attrs.set_job_with_test_hook(job, hook)?;
+            } else {
+                attrs.set_job(job)?;
+            }
+            #[cfg(not(feature = "containment-test-support"))]
             attrs.set_job(job)?;
         }
         si.lpAttributeList = attrs.as_mut_ptr();
@@ -294,6 +325,10 @@ impl PsuedoCon {
                 &mut pi,
             )
         };
+        #[cfg(feature = "containment-test-support")]
+        if let Some(hook) = test_hook {
+            hook.record_create_process(res != 0);
+        }
         let create_err = IoError::last_os_error();
         drop(attrs);
         unsafe {

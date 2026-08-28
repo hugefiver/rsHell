@@ -26,6 +26,10 @@ pub use permissions::{
 pub use process::{CommandSpec, ExternalEditorRequest, external_editor_command, ssh_executable};
 #[cfg(windows)]
 pub use process_tree::WindowsProcessJob;
+#[cfg(all(windows, feature = "containment-test-support"))]
+pub use process_tree::{
+    WindowsProcessJobTestFailure, WindowsProcessJobTestHook, WindowsProcessJobTestSnapshot,
+};
 pub use shell::{ShellSpec, default_local_shell};
 
 /// Errors returned by the platform adapter without exposing environment values.
@@ -57,5 +61,13 @@ impl PlatformError {
     #[cfg(windows)]
     pub(crate) fn last_os_error() -> Self {
         Self::io("Windows platform operation", io::Error::last_os_error())
+    }
+
+    #[cfg(all(windows, feature = "containment-test-support"))]
+    pub(crate) fn injected_containment_failure() -> Self {
+        Self::io(
+            "Windows platform operation",
+            io::Error::other("injected containment boundary failure"),
+        )
     }
 }

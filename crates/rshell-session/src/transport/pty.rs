@@ -18,7 +18,7 @@ pub(super) fn spawn_pty_runtime(
         command,
         size,
         spawn_failure,
-        #[cfg(windows)]
+        #[cfg(all(test, windows))]
         None,
     )
 }
@@ -27,36 +27,35 @@ fn spawn_pty_runtime_impl(
     command: CommandBuilder,
     size: TerminalSize,
     spawn_failure: SessionFailure,
-    #[cfg(windows)] injected_failure: Option<InjectedContainmentFailure>,
+    #[cfg(all(test, windows))] containment_evidence: Option<&ContainmentFailureEvidence>,
 ) -> Result<LocalRuntime, TransportError> {
     let pty_size = checked_pty_size(size)?;
     #[cfg(windows)]
     let _ = &spawn_failure;
     #[cfg(windows)]
-    if injected_failure == Some(InjectedContainmentFailure::JobCreation) {
-        return Err(TransportError::new(SessionFailure::Pty));
+    let mut process_job = {
+        #[cfg(test)]
+        {
+            match containment_evidence {
+                Some(evidence) => {
+                    rshell_platform::WindowsProcessJob::new_with_test_hook(&evidence.job)
+                }
+                None => rshell_platform::WindowsProcessJob::new(),
+            }
+        }
+        #[cfg(not(test))]
+        {
+            rshell_platform::WindowsProcessJob::new()
+        }
     }
-    #[cfg(windows)]
-    let mut process_job = rshell_platform::WindowsProcessJob::new()
-        .map_err(|_| TransportError::new(SessionFailure::Pty))?;
-    #[cfg(windows)]
-    if injected_failure == Some(InjectedContainmentFailure::JobConfiguration) {
-        let _ = process_job.terminate();
-        return Err(TransportError::new(SessionFailure::Pty));
-    }
+    .map_err(|_| TransportError::new(SessionFailure::Pty))?;
     let pair = native_pty_system()
         .openpty(pty_size)
         .map_err(|_| TransportError::new(SessionFailure::Pty))?;
-    #[cfg(windows)]
-    if matches!(
-        injected_failure,
-        Some(InjectedContainmentFailure::AttributeUpdate)
-    ) {
-        let _ = process_job.terminate();
-        return Err(TransportError::new(SessionFailure::Pty));
-    }
-    #[cfg(windows)]
-    let command = if injected_failure == Some(InjectedContainmentFailure::CreateProcess) {
+    #[cfg(all(test, windows))]
+    let command = if containment_evidence
+        .is_some_and(|evidence| evidence.failure == InjectedContainmentFailure::CreateProcess)
+    {
         CommandBuilder::new(std::env::temp_dir().join(format!(
             "rshell-missing-task4-create-process-{}.exe",
             std::process::id()
@@ -64,7 +63,18 @@ fn spawn_pty_runtime_impl(
     } else {
         command
     };
-    #[cfg(windows)]
+    #[cfg(all(test, windows))]
+    let spawned = match containment_evidence {
+        Some(evidence) => pair.slave.spawn_command_in_job_with_test_hook(
+            command,
+            process_job.as_borrowed_handle(),
+            &evidence.vendor,
+        ),
+        None => pair
+            .slave
+            .spawn_command_in_job(command, process_job.as_borrowed_handle()),
+    };
+    #[cfg(all(not(test), windows))]
     let spawned = pair
         .slave
         .spawn_command_in_job(command, process_job.as_borrowed_handle());
@@ -136,8 +146,8 @@ fn cleanup_failed_launch(
     TransportError::new(SessionFailure::Pty)
 }
 
+#[cfg(test)]
 #[cfg(windows)]
-#[allow(dead_code)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum InjectedContainmentFailure {
     JobCreation,
@@ -147,12 +157,58 @@ enum InjectedContainmentFailure {
 }
 
 #[cfg(all(test, windows))]
+struct ContainmentFailureEvidence {
+    failure: InjectedContainmentFailure,
+    job: rshell_platform::WindowsProcessJobTestHook,
+    vendor: portable_pty::ContainmentTestHook,
+}
+
+#[cfg(all(test, windows))]
+impl ContainmentFailureEvidence {
+    fn new(failure: InjectedContainmentFailure) -> Self {
+        use rshell_platform::WindowsProcessJobTestFailure;
+
+        let job = match failure {
+            InjectedContainmentFailure::JobCreation => {
+                rshell_platform::WindowsProcessJobTestHook::failing(
+                    WindowsProcessJobTestFailure::Creation,
+                )
+            }
+            InjectedContainmentFailure::JobConfiguration => {
+                rshell_platform::WindowsProcessJobTestHook::failing(
+                    WindowsProcessJobTestFailure::Configuration,
+                )
+            }
+            InjectedContainmentFailure::AttributeUpdate
+            | InjectedContainmentFailure::CreateProcess => {
+                rshell_platform::WindowsProcessJobTestHook::observing()
+            }
+        };
+        let vendor = if failure == InjectedContainmentFailure::AttributeUpdate {
+            portable_pty::ContainmentTestHook::failing_job_attribute_update()
+        } else {
+            portable_pty::ContainmentTestHook::observing()
+        };
+        Self {
+            failure,
+            job,
+            vendor,
+        }
+    }
+}
+
+#[cfg(all(test, windows))]
 fn spawn_pty_runtime_with_failure(
     command: CommandBuilder,
     size: TerminalSize,
     failure: InjectedContainmentFailure,
-) -> Result<LocalRuntime, TransportError> {
-    spawn_pty_runtime_impl(command, size, SessionFailure::Pty, Some(failure))
+) -> (
+    Result<LocalRuntime, TransportError>,
+    ContainmentFailureEvidence,
+) {
+    let evidence = ContainmentFailureEvidence::new(failure);
+    let result = spawn_pty_runtime_impl(command, size, SessionFailure::Pty, Some(&evidence));
+    (result, evidence)
 }
 
 #[cfg(all(test, windows))]
@@ -169,7 +225,7 @@ mod tests {
             InjectedContainmentFailure::AttributeUpdate,
             InjectedContainmentFailure::CreateProcess,
         ] {
-            let result = spawn_pty_runtime_with_failure(
+            let (result, evidence) = spawn_pty_runtime_with_failure(
                 CommandBuilder::new("cmd.exe"),
                 TerminalSize {
                     cols: 80,
@@ -185,6 +241,51 @@ mod tests {
                 Err(error) => error,
             };
             assert_eq!(error.failure(), SessionFailure::Pty);
+            assert_eq!(error.to_string(), "transport operation failed (Pty)");
+
+            let job = evidence.job.snapshot();
+            let vendor = evidence.vendor.snapshot();
+            eprintln!("{failure:?}: job={job:?} vendor={vendor:?}");
+            assert_eq!(vendor.successful_process_creations, 0);
+            match failure {
+                InjectedContainmentFailure::JobCreation => {
+                    assert_eq!(job.creation_calls, 1);
+                    assert_eq!(job.configuration_calls, 0);
+                    assert_eq!(job.termination_calls, 0);
+                    assert_eq!(job.closed_handles, 1);
+                    assert_eq!(vendor.job_attribute_update_calls, 0);
+                    assert_eq!(vendor.create_process_calls, 0);
+                    assert_eq!(vendor.attribute_lists_destroyed, 0);
+                }
+                InjectedContainmentFailure::JobConfiguration => {
+                    assert_eq!(job.creation_calls, 1);
+                    assert_eq!(job.configuration_calls, 1);
+                    assert_eq!(job.termination_calls, 0);
+                    assert_eq!(job.closed_handles, 1);
+                    assert_eq!(vendor.job_attribute_update_calls, 0);
+                    assert_eq!(vendor.create_process_calls, 0);
+                    assert_eq!(vendor.attribute_lists_destroyed, 0);
+                }
+                InjectedContainmentFailure::AttributeUpdate => {
+                    assert_eq!(job.creation_calls, 1);
+                    assert_eq!(job.configuration_calls, 1);
+                    assert_eq!(job.termination_calls, 1);
+                    assert_eq!(job.closed_handles, 1);
+                    assert_eq!(vendor.job_attribute_update_calls, 1);
+                    assert_eq!(vendor.create_process_calls, 0);
+                    assert_eq!(vendor.attribute_lists_destroyed, 1);
+                }
+                InjectedContainmentFailure::CreateProcess => {
+                    assert_eq!(job.creation_calls, 1);
+                    assert_eq!(job.configuration_calls, 1);
+                    assert_eq!(job.termination_calls, 1);
+                    assert_eq!(job.closed_handles, 1);
+                    assert_eq!(vendor.job_attribute_update_calls, 1);
+                    assert_eq!(vendor.create_process_calls, 1);
+                    assert_eq!(vendor.successful_process_creations, 0);
+                    assert_eq!(vendor.attribute_lists_destroyed, 1);
+                }
+            }
         }
     }
 }

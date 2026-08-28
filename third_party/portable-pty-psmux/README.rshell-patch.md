@@ -8,8 +8,9 @@ The package records upstream VCS revision
 `05cc5d4cded047bd3f3d1955299fd0bd259f2d81` at
 `crates/portable-pty-psmux`; no repository history is vendored here.
 
-rsHell changes only these four package source files:
+rsHell changes the package manifest plus these four package source files:
 
+- `Cargo.toml`: declare the opt-in containment boundary test-support feature.
 - `src/lib.rs`: add the Windows-only borrowed Job-handle spawn interface.
 - `src/win/procthreadattr.rs`: own stable heap-backed Job-list handle storage.
 - `src/win/psuedocon.rs`: add the Job list to the ConPTY creation attributes.

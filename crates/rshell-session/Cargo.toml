@@ -23,6 +23,8 @@ thiserror = "2.0"
 tokio = { version = "1", features = ["macros", "rt", "rt-multi-thread", "sync", "time"] }
 
 [dev-dependencies]
+portable-pty = { package = "portable-pty-psmux", version = "=0.9.6", features = ["containment-test-support"] }
+rshell-platform = { path = "../rshell-platform", features = ["containment-test-support"] }
 sha2 = "0.10.9"
 tempfile = "3.23"
 tokio = { version = "1", features = ["net", "test-util"] }

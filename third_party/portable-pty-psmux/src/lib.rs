@@ -49,6 +49,99 @@ use std::os::windows::io::BorrowedHandle;
 #[cfg(windows)]
 use std::os::windows::prelude::{AsRawHandle, RawHandle};
 
+#[cfg(all(windows, feature = "containment-test-support"))]
+mod containment_test_support {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
+
+    #[derive(Clone, Debug)]
+    pub struct ContainmentTestHook {
+        state: Arc<TestState>,
+        fail_job_attribute_update: bool,
+    }
+
+    #[derive(Debug, Default)]
+    struct TestState {
+        job_attribute_update_calls: AtomicUsize,
+        create_process_calls: AtomicUsize,
+        successful_process_creations: AtomicUsize,
+        attribute_lists_destroyed: AtomicUsize,
+    }
+
+    #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+    pub struct ContainmentTestSnapshot {
+        pub job_attribute_update_calls: usize,
+        pub create_process_calls: usize,
+        pub successful_process_creations: usize,
+        pub attribute_lists_destroyed: usize,
+    }
+
+    impl ContainmentTestHook {
+        pub fn observing() -> Self {
+            Self::new(false)
+        }
+
+        pub fn failing_job_attribute_update() -> Self {
+            Self::new(true)
+        }
+
+        fn new(fail_job_attribute_update: bool) -> Self {
+            Self {
+                state: Arc::new(TestState::default()),
+                fail_job_attribute_update,
+            }
+        }
+
+        pub fn snapshot(&self) -> ContainmentTestSnapshot {
+            ContainmentTestSnapshot {
+                job_attribute_update_calls: self
+                    .state
+                    .job_attribute_update_calls
+                    .load(Ordering::SeqCst),
+                create_process_calls: self.state.create_process_calls.load(Ordering::SeqCst),
+                successful_process_creations: self
+                    .state
+                    .successful_process_creations
+                    .load(Ordering::SeqCst),
+                attribute_lists_destroyed: self
+                    .state
+                    .attribute_lists_destroyed
+                    .load(Ordering::SeqCst),
+            }
+        }
+
+        pub(crate) fn record_job_attribute_update(&self) {
+            self.state
+                .job_attribute_update_calls
+                .fetch_add(1, Ordering::SeqCst);
+        }
+
+        pub(crate) fn fail_job_attribute_update(&self) -> bool {
+            self.fail_job_attribute_update
+        }
+
+        pub(crate) fn record_create_process(&self, succeeded: bool) {
+            self.state
+                .create_process_calls
+                .fetch_add(1, Ordering::SeqCst);
+            if succeeded {
+                self.state
+                    .successful_process_creations
+                    .fetch_add(1, Ordering::SeqCst);
+            }
+        }
+
+        pub(crate) fn record_attribute_list_destroyed(&self) {
+            self.state
+                .attribute_lists_destroyed
+                .fetch_add(1, Ordering::SeqCst);
+        }
+    }
+}
+
+#[cfg(all(windows, feature = "containment-test-support"))]
+pub use containment_test_support::{ContainmentTestHook, ContainmentTestSnapshot};
+
 pub mod cmdbuilder;
 pub use cmdbuilder::CommandBuilder;
 
@@ -174,6 +267,18 @@ pub trait SlavePty {
         job: BorrowedHandle<'_>,
     ) -> Result<Box<dyn Child + Send + Sync>, anyhow::Error> {
         let _ = (command, job);
+        anyhow::bail!("this PTY does not support creation-time Job containment")
+    }
+
+    /// Test-only variant that observes the owning Windows API boundaries.
+    #[cfg(all(windows, feature = "containment-test-support"))]
+    fn spawn_command_in_job_with_test_hook(
+        &self,
+        command: CommandBuilder,
+        job: BorrowedHandle<'_>,
+        hook: &ContainmentTestHook,
+    ) -> Result<Box<dyn Child + Send + Sync>, anyhow::Error> {
+        let _ = (command, job, hook);
         anyhow::bail!("this PTY does not support creation-time Job containment")
     }
 }

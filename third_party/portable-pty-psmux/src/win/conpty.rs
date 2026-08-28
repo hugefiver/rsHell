@@ -150,8 +150,42 @@ impl ConPtySlavePty {
         cmd: CommandBuilder,
         job: Option<BorrowedHandle<'_>>,
     ) -> anyhow::Result<Box<dyn Child + Send + Sync>> {
+        self.spawn_command_inner_impl(
+            cmd,
+            job,
+            #[cfg(feature = "containment-test-support")]
+            None,
+        )
+    }
+
+    #[cfg(feature = "containment-test-support")]
+    fn spawn_command_inner_with_test_hook(
+        &self,
+        cmd: CommandBuilder,
+        job: Option<BorrowedHandle<'_>>,
+        hook: &crate::ContainmentTestHook,
+    ) -> anyhow::Result<Box<dyn Child + Send + Sync>> {
+        self.spawn_command_inner_impl(cmd, job, Some(hook))
+    }
+
+    fn spawn_command_inner_impl(
+        &self,
+        cmd: CommandBuilder,
+        job: Option<BorrowedHandle<'_>>,
+        #[cfg(feature = "containment-test-support")] test_hook: Option<&crate::ContainmentTestHook>,
+    ) -> anyhow::Result<Box<dyn Child + Send + Sync>> {
         let mut inner = self.inner.lock().unwrap();
-        match inner.con.spawn_command_inner(cmd.clone(), job) {
+        #[cfg(feature = "containment-test-support")]
+        let first_spawn = if let Some(hook) = test_hook {
+            inner
+                .con
+                .spawn_command_inner_with_test_hook(cmd.clone(), job, hook)
+        } else {
+            inner.con.spawn_command_inner(cmd.clone(), job)
+        };
+        #[cfg(not(feature = "containment-test-support"))]
+        let first_spawn = inner.con.spawn_command_inner(cmd.clone(), job);
+        match first_spawn {
             Ok(child) => Ok(Box::new(child)),
             Err(e) if inner.con.used_passthrough && is_invalid_parameter(&e) => {
                 // CreateProcessW rejected the ConPTY handle that was created
@@ -187,6 +221,15 @@ impl ConPtySlavePty {
                 inner.readable = stdout_read;
                 inner.writable = Some(stdin_write);
 
+                #[cfg(feature = "containment-test-support")]
+                let child = if let Some(hook) = test_hook {
+                    inner
+                        .con
+                        .spawn_command_inner_with_test_hook(cmd, job, hook)?
+                } else {
+                    inner.con.spawn_command_inner(cmd, job)?
+                };
+                #[cfg(not(feature = "containment-test-support"))]
                 let child = inner.con.spawn_command_inner(cmd, job)?;
                 Ok(Box::new(child))
             }
@@ -206,6 +249,16 @@ impl SlavePty for ConPtySlavePty {
         job: BorrowedHandle<'_>,
     ) -> anyhow::Result<Box<dyn Child + Send + Sync>> {
         self.spawn_command_inner(cmd, Some(job))
+    }
+
+    #[cfg(feature = "containment-test-support")]
+    fn spawn_command_in_job_with_test_hook(
+        &self,
+        cmd: CommandBuilder,
+        job: BorrowedHandle<'_>,
+        hook: &crate::ContainmentTestHook,
+    ) -> anyhow::Result<Box<dyn Child + Send + Sync>> {
+        self.spawn_command_inner_with_test_hook(cmd, Some(job), hook)
     }
 }
 
