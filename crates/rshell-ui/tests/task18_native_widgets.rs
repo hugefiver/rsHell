@@ -14,8 +14,9 @@ use rshell_core::{
     AppBootstrapState, AppEvent, AppSettings, AppViewModel, AuthPrompt, CatalogMutation,
     ColorScheme, ConnectionId, ConnectionProfile, HostKeyPrompt, ImportCandidateId,
     ImportCandidateView, ImportPreviewId, ImportPreviewView, ImportSourceKind, ImportWarningView,
-    InteractionId, InteractionRequest, PaneId, PaneTree, SessionId, SessionState, SessionUiEvent,
-    TabId, TabState, TerminalProfile, UiCommand, UiCommandPort, UiPortError,
+    InteractionId, InteractionRequest, KeyBinding, KeyCode, KeyModifiers, PaneId, PaneLaunchTarget,
+    PaneTree, SessionId, SessionState, SessionUiEvent, TabId, TabState, TerminalProfile, UiCommand,
+    UiCommandPort, UiPortError,
 };
 use rshell_platform::{FileSelectionCallback, FileSelectionRequest, FileSelectionService};
 use rshell_ui::{
@@ -38,6 +39,122 @@ fn task18_dialogs_present_real_accessible_widgets_and_wipe_native_secrets() {
     assert_stale_file_selection_callbacks();
     assert_expanded_connection_overrides();
     assert_exact_interaction_handshake();
+    assert_terminal_controller_ingress();
+}
+
+fn assert_terminal_controller_ingress() {
+    let commands = Arc::new(RecordingPort::default());
+    let pane = PaneId::new();
+    let session = SessionId::new();
+    let tab = TabId::new_v4();
+    let shift = KeyModifiers {
+        shift: true,
+        ..KeyModifiers::default()
+    };
+    let reserved = KeyModifiers {
+        shift: true,
+        control: true,
+        ..KeyModifiers::default()
+    };
+    let mut view = view_with_profiles(vec![TerminalProfile::default()]);
+    view.settings.key_bindings = [
+        (KeyCode::Character('x'), KeyModifiers::default()),
+        (KeyCode::Character('X'), shift),
+        (KeyCode::F(13), KeyModifiers::default()),
+        (KeyCode::F(24), KeyModifiers::default()),
+        (KeyCode::Character('c'), reserved),
+        (KeyCode::Character('v'), reserved),
+        (KeyCode::Character('f'), reserved),
+    ]
+    .into_iter()
+    .map(|(code, modifiers)| KeyBinding {
+        code,
+        modifiers,
+        action: "new_tab".into(),
+    })
+    .collect();
+    view.workspace.tabs.push(TabState {
+        id: tab,
+        title: "Controller ingress".into(),
+        pane_tree: PaneTree::with_session(pane, session),
+        active_pane: pane,
+    });
+    view.workspace.active_tab = Some(tab);
+    view.pane_launches.insert(pane, PaneLaunchTarget::Local);
+    view.session_states.insert(session, SessionState::Connected);
+    let main = MainWindow::builder()
+        .launch(
+            MainWindowInit::new(commands.clone(), view)
+                .with_file_selection(Rc::new(CancelSelection)),
+        )
+        .detach();
+    let window = present_main(&main, 900, 700);
+    assert!(flush_gtk());
+    let canvas = css_child(main.widget(), "terminal-canvas");
+
+    assert!(press_key(
+        &canvas,
+        gtk::gdk::Key::from_name("x").unwrap(),
+        gtk::gdk::ModifierType::empty()
+    ));
+    assert!(flush_gtk());
+    assert_eq!(commands.new_tab_count(), 1);
+    assert!(press_key(
+        &canvas,
+        gtk::gdk::Key::from_name("X").unwrap(),
+        gtk::gdk::ModifierType::SHIFT_MASK
+    ));
+    assert!(flush_gtk());
+    assert_eq!(commands.new_tab_count(), 2);
+
+    assert!(!press_key(
+        &canvas,
+        gtk::gdk::Key::from_name("z").unwrap(),
+        gtk::gdk::ModifierType::empty()
+    ));
+    assert!(!press_key(
+        &canvas,
+        gtk::gdk::Key::from_name("Z").unwrap(),
+        gtk::gdk::ModifierType::SHIFT_MASK
+    ));
+    assert!(flush_gtk());
+    assert_eq!(
+        commands.new_tab_count(),
+        2,
+        "unbound characters must remain IM-driven"
+    );
+
+    assert!(press_key(
+        &canvas,
+        gtk::gdk::Key::F13,
+        gtk::gdk::ModifierType::empty()
+    ));
+    assert!(press_key(
+        &canvas,
+        gtk::gdk::Key::F24,
+        gtk::gdk::ModifierType::empty()
+    ));
+    assert!(flush_gtk());
+    assert_eq!(commands.new_tab_count(), 4);
+
+    let control_shift = gtk::gdk::ModifierType::CONTROL_MASK | gtk::gdk::ModifierType::SHIFT_MASK;
+    for character in ["c", "v", "f"] {
+        assert!(press_key(
+            &canvas,
+            gtk::gdk::Key::from_name(character).unwrap(),
+            control_shift
+        ));
+    }
+    assert!(flush_gtk());
+    assert_eq!(
+        commands.new_tab_count(),
+        4,
+        "reserved Ctrl+Shift+C/V/F must win"
+    );
+    assert!(css_child(main.widget(), "terminal-search").is_visible());
+
+    window.close();
+    assert!(flush_gtk());
 }
 
 fn assert_saved_connection_row_activation_connects_the_active_pane() {
@@ -417,7 +534,11 @@ fn assert_settings_surface() {
             .iter()
             .any(|widget| widget.has_css_class("dialog-footer"))
     );
-    press_key(settings.widget(), gtk::gdk::Key::Escape);
+    press_key(
+        settings.widget(),
+        gtk::gdk::Key::Escape,
+        gtk::gdk::ModifierType::empty(),
+    );
     assert!(flush_gtk());
     assert!(
         !settings.widget().is_visible(),
@@ -694,6 +815,15 @@ impl RecordingPort {
             })
             .collect()
     }
+
+    fn new_tab_count(&self) -> usize {
+        self.commands
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|command| matches!(command, UiCommand::NewLocalTab))
+            .count()
+    }
 }
 
 impl UiCommandPort for RecordingPort {
@@ -832,16 +962,17 @@ fn descendants(root: &impl IsA<gtk::Widget>) -> Vec<gtk::Widget> {
     output
 }
 
-fn press_key(root: &impl IsA<gtk::Widget>, key: gtk::gdk::Key) {
+fn press_key(
+    root: &impl IsA<gtk::Widget>,
+    key: gtk::gdk::Key,
+    state: gtk::gdk::ModifierType,
+) -> bool {
     let controllers = root.observe_controllers();
     let controller = (0..controllers.n_items())
         .filter_map(|index| controllers.item(index))
         .find_map(|controller| controller.downcast::<gtk::EventControllerKey>().ok())
         .expect("key controller");
-    controller.emit_by_name::<bool>(
-        "key-pressed",
-        &[&key, &0u32, &gtk::gdk::ModifierType::empty()],
-    );
+    controller.emit_by_name::<bool>("key-pressed", &[&key, &0u32, &state])
 }
 
 fn flush_gtk() -> bool {

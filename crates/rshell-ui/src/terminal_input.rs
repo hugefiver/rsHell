@@ -94,6 +94,18 @@ pub(crate) fn map_gdk_key_with_modifiers(
         Key::F10 => KeyCode::F(10),
         Key::F11 => KeyCode::F(11),
         Key::F12 => KeyCode::F(12),
+        Key::F13 => KeyCode::F(13),
+        Key::F14 => KeyCode::F(14),
+        Key::F15 => KeyCode::F(15),
+        Key::F16 => KeyCode::F(16),
+        Key::F17 => KeyCode::F(17),
+        Key::F18 => KeyCode::F(18),
+        Key::F19 => KeyCode::F(19),
+        Key::F20 => KeyCode::F(20),
+        Key::F21 => KeyCode::F(21),
+        Key::F22 => KeyCode::F(22),
+        Key::F23 => KeyCode::F(23),
+        Key::F24 => KeyCode::F(24),
         _ => KeyCode::Character(key.to_unicode()?),
     };
     Some(TerminalInput::Key { code, modifiers })

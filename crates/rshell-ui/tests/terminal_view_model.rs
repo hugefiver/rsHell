@@ -272,6 +272,8 @@ fn configured_binding_routes_through_ui_command() {
         (KeyCode::F(3), "clear_scrollback".to_owned()),
         (KeyCode::F(4), "new_tab".to_owned()),
         (KeyCode::F(5), "split_vertical".to_owned()),
+        (KeyCode::F(13), "clear_scrollback".to_owned()),
+        (KeyCode::F(24), "new_tab".to_owned()),
     ];
     let profile = TerminalSettingsV1 {
         key_bindings: bindings
@@ -318,6 +320,17 @@ fn configured_binding_routes_through_ui_command() {
             pane: target,
             axis: SplitAxis::Vertical,
         } if target == pane
+    ));
+    assert!(matches!(
+        model.key(Key::F13, ModifierType::empty()).unwrap().unwrap(),
+        UiCommand::Session {
+            session: target,
+            command: SessionUiCommand::ClearScrollback,
+        } if target == session
+    ));
+    assert!(matches!(
+        model.key(Key::F24, ModifierType::empty()).unwrap().unwrap(),
+        UiCommand::NewLocalTab
     ));
 }
 

@@ -6,7 +6,7 @@ use rshell_core::{
 use rshell_ui::{FontMetrics, TerminalViewModel, TerminalViewMsg, map_gdk_key};
 
 #[test]
-fn maps_terminal_keys_and_f1_through_f12_deterministically() {
+fn maps_terminal_keys_and_f1_through_f24_deterministically() {
     let fixed = [
         (Key::Return, KeyCode::Enter),
         (Key::Escape, KeyCode::Escape),
@@ -46,6 +46,18 @@ fn maps_terminal_keys_and_f1_through_f12_deterministically() {
         Key::F10,
         Key::F11,
         Key::F12,
+        Key::F13,
+        Key::F14,
+        Key::F15,
+        Key::F16,
+        Key::F17,
+        Key::F18,
+        Key::F19,
+        Key::F20,
+        Key::F21,
+        Key::F22,
+        Key::F23,
+        Key::F24,
     ];
     for (index, key) in functions.into_iter().enumerate() {
         assert_eq!(
