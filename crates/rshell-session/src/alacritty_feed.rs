@@ -3,6 +3,7 @@ use rshell_core::ResolvedTerminalProfile;
 
 use crate::{
     alacritty_event::EventSink,
+    alacritty_primary_rows::PrimaryRows,
     alacritty_rows,
     alacritty_tracker::{ScrollTracker, Window},
 };
@@ -11,25 +12,6 @@ struct FeedWindow<'a> {
     bytes: &'a [u8],
     maximum_shift: usize,
     track_capacity: bool,
-}
-
-#[derive(Default)]
-pub(crate) struct PrimaryRows {
-    pub(crate) origin: i64,
-    history: usize,
-}
-
-impl PrimaryRows {
-    pub(crate) fn reconcile_resize(&mut self, old_history: usize, history: usize) {
-        if history >= old_history {
-            let added = i64::try_from(history - old_history).unwrap_or(i64::MAX);
-            self.origin = self.origin.saturating_add(added);
-        } else {
-            let removed = i64::try_from(old_history - history).unwrap_or(i64::MAX);
-            self.origin = self.origin.saturating_sub(removed);
-        }
-        self.history = history;
-    }
 }
 
 pub(crate) fn advance(

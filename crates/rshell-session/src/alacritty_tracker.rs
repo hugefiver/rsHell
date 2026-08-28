@@ -40,9 +40,10 @@ impl ScrollTracker {
         }
     }
 
-    pub(crate) fn resize(&mut self, columns: usize, lines: usize) {
-        self.primary.resize(columns, lines);
+    pub(crate) fn resize(&mut self, columns: usize, lines: usize) -> usize {
+        let primary_scrolls = self.primary.resize(columns, lines);
         self.alternate.resize(columns, lines);
+        primary_scrolls
     }
 
     pub(crate) fn sync_cursor(&mut self, primary: bool, row: usize, column: usize, wrap: bool) {

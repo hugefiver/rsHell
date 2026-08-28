@@ -645,6 +645,52 @@ fn alternate_resize_reconciles_inactive_primary_stable_rows_on_restore() {
 }
 
 #[test]
+fn saturated_scrollback_shrink_preserves_retained_primary_stable_rows() {
+    let mut engine = saturated_scrollback_engine();
+    let query = SearchQuery {
+        needle: "line002".into(),
+        case_sensitive: true,
+        regex: false,
+    };
+    let before = engine.search(&query)[0];
+
+    engine.resize(size(12, 2)).unwrap();
+
+    let after = engine.search(&query)[0];
+    assert_eq!(after.start.stable_row, before.start.stable_row);
+}
+
+#[test]
+fn saturated_scrollback_shrink_in_alternate_preserves_primary_stable_rows() {
+    let mut engine = saturated_scrollback_engine();
+    let query = SearchQuery {
+        needle: "line002".into(),
+        case_sensitive: true,
+        regex: false,
+    };
+    let before = engine.search(&query)[0];
+
+    engine.input(b"\x1b[?1049halternate").unwrap();
+    engine.resize(size(12, 2)).unwrap();
+    engine.input(b"\x1b[?1049l").unwrap();
+
+    let after = engine.search(&query)[0];
+    assert_eq!(after.start.stable_row, before.start.stable_row);
+}
+
+fn saturated_scrollback_engine() -> DefaultTerminalEngine {
+    let mut engine = DefaultTerminalEngine::new(&profile(100), size(12, 3)).unwrap();
+    let input = (0..104)
+        .map(|index| format!("line{index:03}"))
+        .collect::<Vec<_>>()
+        .join("\r\n");
+    engine.input(input.as_bytes()).unwrap();
+    let bounds = engine.viewport_bounds();
+    assert_eq!(bounds.bottom_top_stable_row - bounds.first_stable_row, 100);
+    engine
+}
+
+#[test]
 fn clear_scrollback_keeps_visible_content_and_reset_restores_defaults() {
     let mut engine = DefaultTerminalEngine::new(&profile(1_000), size(20, 3)).unwrap();
     engine

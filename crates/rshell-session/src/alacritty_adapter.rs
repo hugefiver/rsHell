@@ -11,7 +11,7 @@ use rshell_core::{
 
 use crate::{
     EngineError, ViewportBounds, alacritty_event::EventSink, alacritty_feed, alacritty_key,
-    alacritty_mouse, alacritty_tracker,
+    alacritty_mouse, alacritty_primary_rows::PrimaryRows, alacritty_tracker,
 };
 
 pub(crate) struct AlacrittyAdapter {
@@ -20,7 +20,7 @@ pub(crate) struct AlacrittyAdapter {
     events: EventSink,
     settings: ResolvedTerminalProfile,
     size: TerminalSize,
-    primary_rows: alacritty_feed::PrimaryRows,
+    primary_rows: PrimaryRows,
     scroll_tracker: alacritty_tracker::ScrollTracker,
 }
 
@@ -34,7 +34,7 @@ impl AlacrittyAdapter {
             events,
             settings: settings.clone(),
             size,
-            primary_rows: alacritty_feed::PrimaryRows::default(),
+            primary_rows: PrimaryRows::default(),
             scroll_tracker: alacritty_tracker::ScrollTracker::new(
                 usize::from(size.cols),
                 usize::from(size.rows),
@@ -123,19 +123,30 @@ impl AlacrittyAdapter {
 
     pub(crate) fn resize(&mut self, size: TerminalSize) {
         let dimensions_changed = self.size.cols != size.cols || self.size.rows != size.rows;
+        let old_lines = usize::from(self.size.rows);
+        let lines = usize::from(size.rows);
+        let primary_scrolls = if dimensions_changed {
+            self.scroll_tracker.resize(usize::from(size.cols), lines)
+        } else {
+            0
+        };
         let active_primary = !self.alternate_screen();
         let old_history = active_primary.then(|| self.terminal.grid().history_size());
         self.terminal.resize(GridSize::from(size));
         if let Some(old_history) = old_history {
             let history = self.terminal.grid().history_size();
-            self.primary_rows.reconcile_resize(old_history, history);
+            self.primary_rows
+                .reconcile_resize(old_history, history, primary_scrolls);
+        } else {
+            self.primary_rows.reconcile_hidden_resize(
+                old_lines,
+                lines,
+                primary_scrolls,
+                self.settings.scrollback_lines,
+            );
         }
         self.events.resize(size);
         self.size = size;
-        if dimensions_changed {
-            self.scroll_tracker
-                .resize(usize::from(size.cols), usize::from(size.rows));
-        }
         let active_primary = !self.alternate_screen();
         let cursor = &self.terminal.grid().cursor;
         self.scroll_tracker.sync_cursor(
@@ -155,7 +166,7 @@ impl AlacrittyAdapter {
         self.events = EventSink::new(self.size);
         self.terminal = make_terminal(&self.settings, self.size, self.events.clone());
         self.processor = Processor::new();
-        self.primary_rows = alacritty_feed::PrimaryRows::default();
+        self.primary_rows = PrimaryRows::default();
         self.scroll_tracker = alacritty_tracker::ScrollTracker::new(
             usize::from(self.size.cols),
             usize::from(self.size.rows),
