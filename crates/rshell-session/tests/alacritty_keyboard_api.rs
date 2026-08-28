@@ -43,7 +43,9 @@ fn terminal_runtime_dependency_and_module_contract_is_exact() {
     let session = Path::new(env!("CARGO_MANIFEST_DIR"));
     let root = session.parent().unwrap().parent().unwrap();
     let manifest = std::fs::read_to_string(session.join("Cargo.toml")).unwrap();
-    let lock = std::fs::read_to_string(root.join("Cargo.lock")).unwrap();
+    let lock = std::fs::read_to_string(root.join("Cargo.lock"))
+        .unwrap()
+        .replace("\r\n", "\n");
     let modules = std::fs::read_to_string(session.join("src/lib.rs")).unwrap();
 
     assert_eq!(
