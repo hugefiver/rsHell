@@ -1,5 +1,5 @@
 param(
-    [ValidateSet("", "duplicate", "missing", "missing-equals", "malformed", "nan", "infinity", "negative", "candidate", "no-go", "null")]
+    [ValidateSet("", "duplicate", "missing", "missing-equals", "malformed", "nan", "infinity", "negative", "candidate", "no-go", "null", "measurement-failure")]
     [string]$RegressionProbe = ""
 )
 
@@ -131,6 +131,22 @@ function Get-ExactFields {
         $values[$field] = $value
     }
     return $values
+}
+
+function Write-SanitizedMeasurementEvidence {
+    param([Parameter(Mandatory)][string]$Text)
+
+    try {
+        $values = Get-ExactFields -Text $Text
+    }
+    catch {
+        return $false
+    }
+    [Console]::Error.WriteLine($Header)
+    foreach ($field in $FieldNames) {
+        [Console]::Error.WriteLine("$field=$($values[$field])")
+    }
+    return $true
 }
 
 function Convert-InvariantMeasurement {
@@ -302,6 +318,17 @@ function Invoke-RegressionProbe {
         exit 1
     }
 
+    if ($Probe -ceq "measurement-failure") {
+        $noGo = $valid.Replace("decision=GO", "decision=NO-GO")
+        if (-not (Write-SanitizedMeasurementEvidence -Text $noGo)) {
+            exit 1
+        }
+        if (Write-SanitizedMeasurementEvidence -Text "compiler output with a private path") {
+            exit 1
+        }
+        exit 0
+    }
+
     $invalid = $valid
     switch ($Probe) {
         "duplicate" { $invalid = "$valid`nthroughput_bytes=104857600" }
@@ -353,6 +380,7 @@ try {
         if ($null -eq $fixture.sha256) {
             New-GateFailure "terminal-engine fixture digest is unrecorded"
         }
+        $null = Write-SanitizedMeasurementEvidence -Text $measurementText
         New-GateFailure "terminal-engine measurement command failed"
     }
     $measurement = Assert-MeasurementOutput -Text $measurementText -Fixture $fixture

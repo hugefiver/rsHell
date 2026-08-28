@@ -1080,6 +1080,13 @@ fn terminal_engine_gate_contract_is_exact() {
     assert!(script.contains("$recordMedian -ne $sortedRecordSamples[2]"));
     assert!(script.contains("terminal-engine decision record thresholds were not met"));
     assert!(!script.contains("$Measurement.Values[$SampleFields[$index]]"));
+    let sanitized_failure = script
+        .find("Write-SanitizedMeasurementEvidence -Text $measurementText")
+        .expect("a failed measurement must emit only closed terminal-engine fields");
+    let generic_failure = script
+        .find("New-GateFailure \"terminal-engine measurement command failed\"")
+        .unwrap();
+    assert!(sanitized_failure < generic_failure);
     assert!(record.contains("`decision=NO-GO`"));
     match fixture_digest {
         serde_json::Value::Null => {
@@ -1108,6 +1115,7 @@ fn terminal_engine_gate_contract_is_exact() {
         "candidate",
         "no-go",
         "null",
+        "measurement-failure",
     ] {
         let output = Command::new("pwsh")
             .args([
