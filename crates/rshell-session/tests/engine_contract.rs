@@ -697,6 +697,25 @@ fn repeated_inactive_primary_resizes_preserve_saturated_stable_rows() {
     assert_eq!(after.start.stable_row, before.start.stable_row);
 }
 
+#[test]
+fn clear_scrollback_removes_history_from_later_resize_reconciliation() {
+    let mut engine = saturated_scrollback_engine();
+    let query = SearchQuery {
+        needle: "line102".into(),
+        case_sensitive: true,
+        regex: false,
+    };
+    let before = engine.search(&query)[0];
+
+    engine.input(b"\x1b7").unwrap();
+    engine.clear_scrollback();
+    engine.resize(size(12, 5)).unwrap();
+    engine.input(b"\x1b8\r\nnew").unwrap();
+
+    let after = engine.search(&query)[0];
+    assert_eq!(after.start.stable_row, before.start.stable_row);
+}
+
 fn saturated_scrollback_engine() -> DefaultTerminalEngine {
     let mut engine = DefaultTerminalEngine::new(&profile(100), size(12, 3)).unwrap();
     let input = (0..104)

@@ -159,7 +159,11 @@ impl AlacrittyAdapter {
     }
 
     pub(crate) fn clear_scrollback(&mut self) {
+        let active_primary = !self.alternate_screen();
         self.terminal.grid_mut().clear_history();
+        if active_primary {
+            self.primary_rows.clear_history();
+        }
     }
 
     pub(crate) fn reset(&mut self) {

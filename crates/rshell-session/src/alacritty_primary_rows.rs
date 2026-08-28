@@ -5,6 +5,10 @@ pub(crate) struct PrimaryRows {
 }
 
 impl PrimaryRows {
+    pub(crate) fn clear_history(&mut self) {
+        self.history = 0;
+    }
+
     pub(crate) fn reconcile_resize(
         &mut self,
         old_history: usize,
@@ -41,5 +45,23 @@ impl PrimaryRows {
                 .origin
                 .saturating_sub(i64::try_from(pulled).unwrap_or(i64::MAX));
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::PrimaryRows;
+
+    #[test]
+    fn clearing_history_preserves_the_visible_origin() {
+        let mut rows = PrimaryRows {
+            origin: 101,
+            history: 100,
+        };
+
+        rows.clear_history();
+
+        assert_eq!(rows.origin, 101);
+        assert_eq!(rows.history, 0);
     }
 }
