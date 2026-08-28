@@ -33,6 +33,24 @@ pub(crate) fn capture<T: EventListener>(
     })
 }
 
+pub(crate) fn bounded_prefix<T: EventListener>(
+    terminal: &Term<T>,
+    history_limit: usize,
+    bytes: &[u8],
+) -> Option<usize> {
+    let grid = terminal.grid();
+    if grid.history_size() != history_limit {
+        return Some(bytes.len());
+    }
+    // Stay below the active-grid length; Storage has at least that many slots,
+    // so captured physical rows cannot return to their original logical offsets.
+    largest_prefix(
+        grid.columns(),
+        bytes,
+        grid.total_lines().saturating_sub(ANCHOR_ROWS),
+    )
+}
+
 pub(crate) fn completed_shift<T: EventListener>(
     terminal: &Term<T>,
     history_limit: usize,
@@ -62,12 +80,29 @@ pub(crate) fn completed_shift<T: EventListener>(
 }
 
 fn maximum_shift(columns: usize, bytes: &[u8]) -> usize {
-    let printable_bound = bytes.len().div_ceil(columns.max(1));
     let controls = bytes
         .iter()
         .filter(|byte| matches!(byte, b'\n' | 0x0b | 0x0c))
         .count();
-    printable_bound.saturating_add(controls).saturating_add(2)
+    shift_bound(columns, bytes.len(), controls)
+}
+
+fn largest_prefix(columns: usize, bytes: &[u8], maximum: usize) -> Option<usize> {
+    let mut controls = 0;
+    for (index, byte) in bytes.iter().enumerate() {
+        controls += usize::from(matches!(byte, b'\n' | 0x0b | 0x0c));
+        if shift_bound(columns, index + 1, controls) > maximum {
+            return (index != 0).then_some(index);
+        }
+    }
+    Some(bytes.len())
+}
+
+fn shift_bound(columns: usize, bytes: usize, controls: usize) -> usize {
+    bytes
+        .div_ceil(columns.max(1))
+        .saturating_add(controls)
+        .saturating_add(2)
 }
 
 fn row_identity(grid: &Grid<Cell>, offset: usize) -> usize {

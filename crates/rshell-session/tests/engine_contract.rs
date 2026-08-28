@@ -335,9 +335,36 @@ fn all_evicted_capacity_anchor_reserves_a_disjoint_stable_range() {
 
     assert_eq!(
         after.bottom_top_stable_row,
-        before.bottom_top_stable_row + 103
+        before.bottom_top_stable_row + 101
     );
     assert!(after.first_stable_row > before.bottom_top_stable_row);
+}
+
+#[test]
+fn tiny_saturated_grid_reserves_a_disjoint_range_when_no_window_is_safe() {
+    let mut settings = profile(100);
+    settings.scrollback_lines = 1;
+    let mut engine = DefaultTerminalEngine::new(&settings, size(12, 3)).unwrap();
+    engine.input(b"same\r\nsame\r\nsame\r\n").unwrap();
+    let before = engine.viewport_bounds();
+    engine.input(b"same\r\n").unwrap();
+    let after = engine.viewport_bounds();
+
+    assert_eq!(
+        after.bottom_top_stable_row,
+        before.bottom_top_stable_row + 4
+    );
+    assert!(after.first_stable_row > before.bottom_top_stable_row);
+}
+
+#[test]
+fn single_input_full_ring_rotation_keeps_identical_rows_monotonic() {
+    assert_full_ring_rotations(1);
+}
+
+#[test]
+fn single_input_multiple_ring_rotations_keep_identical_rows_monotonic() {
+    assert_full_ring_rotations(2);
 }
 
 #[test]
@@ -724,6 +751,31 @@ fn repeated_rows_at_capacity() -> DefaultTerminalEngine {
     engine
 }
 
+fn assert_full_ring_rotations(rotations: usize) {
+    const RING_LINES: usize = 1_003;
+
+    let mut engine = repeated_rows_at_capacity();
+    let before = engine.viewport_bounds();
+    let output = b"same\r\n".repeat(RING_LINES * rotations);
+    engine.input(&output).unwrap();
+    let after = engine.viewport_bounds();
+
+    assert_eq!(
+        after.first_stable_row,
+        before.first_stable_row + (RING_LINES * rotations) as i64
+    );
+    assert_eq!(
+        after.bottom_top_stable_row,
+        before.bottom_top_stable_row + (RING_LINES * rotations) as i64
+    );
+    assert!(after.first_stable_row > before.bottom_top_stable_row);
+    let frame = engine.snapshot(viewport(after.bottom_top_stable_row, 3), None);
+    assert_eq!(
+        trimmed_rows(&frame),
+        vec!["same".to_owned(), "same".to_owned(), String::new()]
+    );
+}
+
 fn mouse_event(
     kind: MouseEventKind,
     button: MouseButton,
@@ -741,6 +793,21 @@ fn mouse_event(
         pixel_y: 32,
         modifiers,
     }
+}
+
+fn trimmed_rows(frame: &RenderFrame) -> Vec<String> {
+    frame
+        .rows
+        .iter()
+        .map(|row| {
+            row.cells
+                .iter()
+                .map(|cell| cell.text.as_str())
+                .collect::<String>()
+                .trim_end()
+                .to_owned()
+        })
+        .collect()
 }
 
 #[test]

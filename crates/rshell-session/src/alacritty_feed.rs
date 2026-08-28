@@ -53,30 +53,82 @@ fn advance_segment(
     if bytes.is_empty() {
         return;
     }
-    let was_primary = !terminal.mode().contains(TermMode::ALT_SCREEN);
-    let old_history = terminal.grid().history_size();
-    let capacity_anchor = was_primary
-        .then(|| alacritty_rows::capture(terminal, settings.scrollback_lines, bytes))
-        .flatten();
-
     let mut remaining = bytes;
     while let Some(index) = remaining.iter().position(|byte| *byte == 0x05) {
-        processor.advance(terminal, &remaining[..=index]);
+        advance_windows(
+            processor,
+            terminal,
+            settings,
+            primary_origin,
+            &remaining[..=index],
+        );
         events.push_outbound(settings.answerback.as_bytes());
         remaining = &remaining[index + 1..];
     }
-    processor.advance(terminal, remaining);
+    advance_windows(processor, terminal, settings, primary_origin, remaining);
+}
+
+fn advance_windows(
+    processor: &mut Processor,
+    terminal: &mut Term<EventSink>,
+    settings: &ResolvedTerminalProfile,
+    primary_origin: &mut i64,
+    mut remaining: &[u8],
+) {
+    while !remaining.is_empty() {
+        let was_primary = !terminal.mode().contains(TermMode::ALT_SCREEN);
+        let saturated = was_primary && terminal.grid().history_size() == settings.scrollback_lines;
+        let (length, track_capacity) = if saturated {
+            match alacritty_rows::bounded_prefix(terminal, settings.scrollback_lines, remaining) {
+                Some(length) => (length, true),
+                None => (remaining.len(), false),
+            }
+        } else {
+            (remaining.len(), true)
+        };
+        advance_window(
+            processor,
+            terminal,
+            settings,
+            primary_origin,
+            &remaining[..length],
+            track_capacity,
+        );
+        remaining = &remaining[length..];
+    }
+}
+
+fn advance_window(
+    processor: &mut Processor,
+    terminal: &mut Term<EventSink>,
+    settings: &ResolvedTerminalProfile,
+    primary_origin: &mut i64,
+    bytes: &[u8],
+    track_capacity: bool,
+) {
+    let was_primary = !terminal.mode().contains(TermMode::ALT_SCREEN);
+    let old_history = terminal.grid().history_size();
+    let capacity_anchor = (was_primary && track_capacity)
+        .then(|| alacritty_rows::capture(terminal, settings.scrollback_lines, bytes))
+        .flatten();
+
+    processor.advance(terminal, bytes);
 
     if !terminal.mode().contains(TermMode::ALT_SCREEN) {
         let history = terminal.grid().history_size();
         if was_primary {
-            let shift = history.saturating_sub(old_history).saturating_add(
+            let completed = if old_history == settings.scrollback_lines && !track_capacity {
+                terminal.grid().total_lines()
+            } else {
                 alacritty_rows::completed_shift(
                     terminal,
                     settings.scrollback_lines,
                     capacity_anchor,
-                ),
-            );
+                )
+            };
+            let shift = history
+                .saturating_sub(old_history)
+                .saturating_add(completed);
             *primary_origin = primary_origin.saturating_add(shift as i64);
         }
     }
