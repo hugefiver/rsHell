@@ -601,6 +601,50 @@ fn resize_preserves_content_and_updates_frame_geometry() {
 }
 
 #[test]
+fn taller_resize_preserves_stable_rows_promoted_from_history() {
+    let mut engine = DefaultTerminalEngine::new(&profile(1_000), size(12, 3)).unwrap();
+    engine.input(b"alpha\r\nbeta\r\ngamma\r\ndelta").unwrap();
+    let query = SearchQuery {
+        needle: "alpha".into(),
+        case_sensitive: true,
+        regex: false,
+    };
+    let before = engine.search(&query)[0];
+
+    engine.resize(size(12, 5)).unwrap();
+
+    let after = engine.search(&query)[0];
+    assert_eq!(after.start.stable_row, before.start.stable_row);
+    let historical = engine.snapshot(viewport(before.start.stable_row, 1), None);
+    assert!(frame_text(&historical).contains("alpha"));
+
+    engine.resize(size(12, 3)).unwrap();
+    let after_shrink = engine.search(&query)[0];
+    assert_eq!(after_shrink.start.stable_row, before.start.stable_row);
+}
+
+#[test]
+fn alternate_resize_reconciles_inactive_primary_stable_rows_on_restore() {
+    let mut engine = DefaultTerminalEngine::new(&profile(1_000), size(12, 3)).unwrap();
+    engine.input(b"alpha\r\nbeta\r\ngamma\r\ndelta").unwrap();
+    let query = SearchQuery {
+        needle: "alpha".into(),
+        case_sensitive: true,
+        regex: false,
+    };
+    let before = engine.search(&query)[0];
+
+    engine.input(b"\x1b[?1049halternate").unwrap();
+    engine.resize(size(12, 5)).unwrap();
+    engine.input(b"\x1b[?1049l").unwrap();
+
+    let after = engine.search(&query)[0];
+    assert_eq!(after.start.stable_row, before.start.stable_row);
+    let restored = engine.snapshot(viewport(before.start.stable_row, 1), None);
+    assert!(frame_text(&restored).contains("alpha"));
+}
+
+#[test]
 fn clear_scrollback_keeps_visible_content_and_reset_restores_defaults() {
     let mut engine = DefaultTerminalEngine::new(&profile(1_000), size(20, 3)).unwrap();
     engine

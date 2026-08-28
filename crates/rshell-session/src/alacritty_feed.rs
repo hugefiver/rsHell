@@ -13,12 +13,31 @@ struct FeedWindow<'a> {
     track_capacity: bool,
 }
 
+#[derive(Default)]
+pub(crate) struct PrimaryRows {
+    pub(crate) origin: i64,
+    history: usize,
+}
+
+impl PrimaryRows {
+    pub(crate) fn reconcile_resize(&mut self, old_history: usize, history: usize) {
+        if history >= old_history {
+            let added = i64::try_from(history - old_history).unwrap_or(i64::MAX);
+            self.origin = self.origin.saturating_add(added);
+        } else {
+            let removed = i64::try_from(old_history - history).unwrap_or(i64::MAX);
+            self.origin = self.origin.saturating_sub(removed);
+        }
+        self.history = history;
+    }
+}
+
 pub(crate) fn advance(
     processor: &mut Processor,
     terminal: &mut Term<EventSink>,
     events: &EventSink,
     settings: &ResolvedTerminalProfile,
-    primary_origin: &mut i64,
+    primary_rows: &mut PrimaryRows,
     tracker: &mut ScrollTracker,
     bytes: &[u8],
 ) -> Vec<u8> {
@@ -29,7 +48,7 @@ pub(crate) fn advance(
             terminal,
             events,
             settings,
-            primary_origin,
+            primary_rows,
             tracker,
             &remaining[..sequence.start],
         );
@@ -38,7 +57,7 @@ pub(crate) fn advance(
             terminal,
             events,
             settings,
-            primary_origin,
+            primary_rows,
             tracker,
             &remaining[sequence.clone()],
         );
@@ -49,7 +68,7 @@ pub(crate) fn advance(
         terminal,
         events,
         settings,
-        primary_origin,
+        primary_rows,
         tracker,
         remaining,
     );
@@ -61,7 +80,7 @@ fn advance_segment(
     terminal: &mut Term<EventSink>,
     events: &EventSink,
     settings: &ResolvedTerminalProfile,
-    primary_origin: &mut i64,
+    primary_rows: &mut PrimaryRows,
     tracker: &mut ScrollTracker,
     bytes: &[u8],
 ) {
@@ -74,7 +93,7 @@ fn advance_segment(
             processor,
             terminal,
             settings,
-            primary_origin,
+            primary_rows,
             tracker,
             &remaining[..=index],
         );
@@ -85,7 +104,7 @@ fn advance_segment(
         processor,
         terminal,
         settings,
-        primary_origin,
+        primary_rows,
         tracker,
         remaining,
     );
@@ -95,7 +114,7 @@ fn advance_windows(
     processor: &mut Processor,
     terminal: &mut Term<EventSink>,
     settings: &ResolvedTerminalProfile,
-    primary_origin: &mut i64,
+    primary_rows: &mut PrimaryRows,
     tracker: &mut ScrollTracker,
     mut remaining: &[u8],
 ) {
@@ -126,7 +145,7 @@ fn advance_windows(
             processor,
             terminal,
             settings,
-            primary_origin,
+            primary_rows,
             tracker,
             FeedWindow {
                 bytes: &remaining[..length],
@@ -142,7 +161,7 @@ fn advance_window(
     processor: &mut Processor,
     terminal: &mut Term<EventSink>,
     settings: &ResolvedTerminalProfile,
-    primary_origin: &mut i64,
+    primary_rows: &mut PrimaryRows,
     tracker: &mut ScrollTracker,
     window: FeedWindow<'_>,
 ) {
@@ -185,8 +204,19 @@ fn advance_window(
             let shift = history
                 .saturating_sub(old_history)
                 .saturating_add(completed);
-            *primary_origin = primary_origin.saturating_add(shift as i64);
+            primary_rows.origin = primary_rows.origin.saturating_add(shift as i64);
+        } else if history >= primary_rows.history {
+            primary_rows.origin = primary_rows
+                .origin
+                .saturating_add(i64::try_from(history - primary_rows.history).unwrap_or(i64::MAX));
+        } else {
+            primary_rows.origin = primary_rows
+                .origin
+                .saturating_sub(i64::try_from(primary_rows.history - history).unwrap_or(i64::MAX));
         }
+        primary_rows.history = history;
+    } else if was_primary {
+        primary_rows.history = old_history;
     }
 }
 
