@@ -9,14 +9,15 @@ pub(crate) fn encode(event: TerminalMouseEvent, mode: TermMode) -> Result<Vec<u8
         return Err(EngineError::UnsupportedMouse("mouse event is not tracked"));
     }
 
-    let mut button = button_code(event.kind, event.button)?;
+    let sgr = mode.contains(TermMode::SGR_MOUSE);
+    let mut button = button_code(event.kind, event.button, sgr)?;
     button += modifier_bits(event);
     if event.kind == MouseEventKind::Move {
         button += 32;
     }
     let x = u32::from(event.cell.column) + 1;
     let y = u32::from(event.viewport_row) + 1;
-    if mode.contains(TermMode::SGR_MOUSE) {
+    if sgr {
         let suffix = if event.kind == MouseEventKind::Release {
             'm'
         } else {
@@ -61,8 +62,12 @@ fn validate(event: TerminalMouseEvent) -> Result<(), EngineError> {
     }
 }
 
-fn button_code(kind: MouseEventKind, button: Option<MouseButton>) -> Result<u8, EngineError> {
-    if kind == MouseEventKind::Release && button.is_none() {
+fn button_code(
+    kind: MouseEventKind,
+    button: Option<MouseButton>,
+    sgr: bool,
+) -> Result<u8, EngineError> {
+    if kind == MouseEventKind::Release && !sgr {
         return Ok(3);
     }
     Ok(match button {

@@ -1,10 +1,8 @@
-use std::hash::{Hash, Hasher};
-
 use alacritty_terminal::{
     Term,
     event::EventListener,
     grid::{Dimensions, Grid},
-    index::{Column, Line},
+    index::Line,
     term::cell::Cell,
 };
 
@@ -13,7 +11,7 @@ const ANCHOR_ROWS: usize = 3;
 pub(crate) struct CapacityAnchor {
     start: usize,
     maximum_shift: usize,
-    hashes: [u64; ANCHOR_ROWS],
+    identities: [usize; ANCHOR_ROWS],
 }
 
 pub(crate) fn capture<T: EventListener>(
@@ -23,15 +21,15 @@ pub(crate) fn capture<T: EventListener>(
 ) -> Option<CapacityAnchor> {
     let grid = terminal.grid();
     let history = grid.history_size();
-    if history != history_limit || history < ANCHOR_ROWS {
+    if history != history_limit || grid.total_lines() < ANCHOR_ROWS {
         return None;
     }
-    let start = history - ANCHOR_ROWS;
+    let start = grid.total_lines() - ANCHOR_ROWS;
     let maximum_shift = maximum_shift(grid.columns(), bytes).min(start);
     Some(CapacityAnchor {
         start,
         maximum_shift,
-        hashes: std::array::from_fn(|offset| row_hash(grid, start + offset)),
+        identities: std::array::from_fn(|offset| row_identity(grid, start + offset)),
     })
 }
 
@@ -49,15 +47,17 @@ pub(crate) fn completed_shift<T: EventListener>(
     }
     let lower = anchor.start.saturating_sub(anchor.maximum_shift);
     for candidate in (lower..=anchor.start).rev() {
-        let matches = (0..ANCHOR_ROWS)
-            .all(|offset| row_hash(grid, candidate + offset) == anchor.hashes[offset]);
+        let identities = std::array::from_fn(|offset| row_identity(grid, candidate + offset));
+        let matches = identities == anchor.identities;
         if matches {
             return anchor.start - candidate;
         }
     }
 
-    // No retained row can be identified. Allocate a disjoint stable range;
-    // every prior row is treated as evicted rather than reusing an identity.
+    // At saturated history, rotating the grid ring does not reallocate a Row. We
+    // copy addresses only within this feed window and never dereference them after
+    // mutation, so equal contents cannot reuse an identity. If no retained anchor
+    // is observed, reserve a disjoint stable range rather than reusing IDs.
     grid.total_lines()
 }
 
@@ -70,15 +70,8 @@ fn maximum_shift(columns: usize, bytes: &[u8]) -> usize {
     printable_bound.saturating_add(controls).saturating_add(2)
 }
 
-fn row_hash(grid: &Grid<Cell>, offset: usize) -> u64 {
+fn row_identity(grid: &Grid<Cell>, offset: usize) -> usize {
     let history = grid.history_size();
     let line = Line(offset as i32 - history as i32);
-    let mut hasher = std::collections::hash_map::DefaultHasher::new();
-    for column in 0..grid.columns() {
-        let cell = &grid[line][Column(column)];
-        cell.c.hash(&mut hasher);
-        cell.flags.bits().hash(&mut hasher);
-        cell.zerowidth().hash(&mut hasher);
-    }
-    hasher.finish()
+    std::ptr::from_ref(&grid[line]) as usize
 }

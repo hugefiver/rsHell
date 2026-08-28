@@ -270,6 +270,77 @@ fn stable_row_ids_survive_output_after_scrollback_reaches_its_limit() {
 }
 
 #[test]
+fn identical_rows_at_capacity_receive_new_monotonic_stable_rows() {
+    let mut engine = repeated_rows_at_capacity();
+    let before = engine.viewport_bounds();
+    let history_span = before.bottom_top_stable_row - before.first_stable_row;
+    let mut bottom_rows = BTreeSet::new();
+    for cycle in 1..=12 {
+        engine.input(b"same\r\n").unwrap();
+        let bounds = engine.viewport_bounds();
+        assert_eq!(
+            bounds.first_stable_row,
+            before.first_stable_row + cycle,
+            "capacity eviction must not reuse the oldest row identity"
+        );
+        assert_eq!(
+            bounds.bottom_top_stable_row,
+            before.bottom_top_stable_row + cycle,
+            "follow-bottom must advance one stable row per full-history eviction"
+        );
+        assert_eq!(
+            bounds.bottom_top_stable_row - bounds.first_stable_row,
+            history_span,
+            "capacity eviction must not make the viewport jump"
+        );
+        assert!(bottom_rows.insert(bounds.bottom_top_stable_row));
+    }
+}
+
+#[test]
+fn unsaturated_output_advances_stable_rows_without_a_capacity_anchor() {
+    let mut engine = DefaultTerminalEngine::new(&profile(100), size(12, 3)).unwrap();
+    engine.input(b"same\r\nsame\r\nsame\r\n").unwrap();
+    let first = engine.viewport_bounds();
+    assert_eq!(first.first_stable_row, 0);
+    assert_eq!(first.bottom_top_stable_row, 1);
+
+    engine.input(b"same\r\nsame\r\n").unwrap();
+    let second = engine.viewport_bounds();
+    assert_eq!(second.first_stable_row, 0);
+    assert_eq!(second.bottom_top_stable_row, 3);
+}
+
+#[test]
+fn multi_line_chunk_at_capacity_tracks_each_identical_row_eviction() {
+    let mut engine = repeated_rows_at_capacity();
+    let before = engine.viewport_bounds();
+    engine.input(b"same\r\nsame\r\nsame\r\n").unwrap();
+    let after = engine.viewport_bounds();
+
+    assert_eq!(after.first_stable_row, before.first_stable_row + 3);
+    assert_eq!(
+        after.bottom_top_stable_row,
+        before.bottom_top_stable_row + 3
+    );
+}
+
+#[test]
+fn all_evicted_capacity_anchor_reserves_a_disjoint_stable_range() {
+    let mut engine = repeated_rows_at_capacity();
+    let before = engine.viewport_bounds();
+    let output = b"same\r\n".repeat(101);
+    engine.input(&output).unwrap();
+    let after = engine.viewport_bounds();
+
+    assert_eq!(
+        after.bottom_top_stable_row,
+        before.bottom_top_stable_row + 103
+    );
+    assert!(after.first_stable_row > before.bottom_top_stable_row);
+}
+
+#[test]
 fn cursor_shape_canary_maps_fixed_revision_variants() {
     let mut engine = DefaultTerminalEngine::new(&profile(1_000), size(20, 3)).unwrap();
 
@@ -551,6 +622,71 @@ fn mouse_sgr_requires_tracking_and_sgr_negotiation() {
     assert_eq!(engine.encode_mouse(left_press()).unwrap(), b"\x1b[<0;4;2M");
 }
 
+#[test]
+fn legacy_mouse_releases_use_code_three_while_sgr_keeps_button_codes() {
+    let mut engine = DefaultTerminalEngine::new(&profile(1_000), size(20, 3)).unwrap();
+    engine.input(b"\x1b[?1002h").unwrap();
+    for (button, modifiers, expected) in [
+        (MouseButton::Left, KeyModifiers::default(), b"\x1b[M#$\""),
+        (
+            MouseButton::Middle,
+            KeyModifiers {
+                shift: true,
+                ..KeyModifiers::default()
+            },
+            b"\x1b[M'$\"",
+        ),
+        (
+            MouseButton::Right,
+            KeyModifiers {
+                alt: true,
+                control: true,
+                ..KeyModifiers::default()
+            },
+            b"\x1b[M;$\"",
+        ),
+    ] {
+        assert_eq!(
+            engine
+                .encode_mouse(mouse_event(MouseEventKind::Release, button, modifiers))
+                .unwrap(),
+            expected
+        );
+    }
+
+    engine.input(b"\x1b[?1006h").unwrap();
+    for (button, code) in [
+        (MouseButton::Left, 0),
+        (MouseButton::Middle, 1),
+        (MouseButton::Right, 2),
+    ] {
+        assert_eq!(
+            engine
+                .encode_mouse(mouse_event(
+                    MouseEventKind::Release,
+                    button,
+                    KeyModifiers::default(),
+                ))
+                .unwrap(),
+            format!("\x1b[<{code};4;2m").as_bytes()
+        );
+    }
+    assert_eq!(
+        engine
+            .encode_mouse(mouse_event(
+                MouseEventKind::Release,
+                MouseButton::Right,
+                KeyModifiers {
+                    alt: true,
+                    control: true,
+                    ..KeyModifiers::default()
+                },
+            ))
+            .unwrap(),
+        b"\x1b[<26;4;2m"
+    );
+}
+
 fn key(code: KeyCode, modifiers: KeyModifiers) -> TerminalInput {
     TerminalInput::Key { code, modifiers }
 }
@@ -573,9 +709,29 @@ fn engine_with(change: impl FnOnce(&mut TerminalSettingsV1)) -> DefaultTerminalE
 }
 
 fn left_press() -> TerminalMouseEvent {
+    mouse_event(
+        MouseEventKind::Press,
+        MouseButton::Left,
+        KeyModifiers::default(),
+    )
+}
+
+fn repeated_rows_at_capacity() -> DefaultTerminalEngine {
+    let mut engine = DefaultTerminalEngine::new(&profile(100), size(12, 3)).unwrap();
+    for _ in 0..102 {
+        engine.input(b"same\r\n").unwrap();
+    }
+    engine
+}
+
+fn mouse_event(
+    kind: MouseEventKind,
+    button: MouseButton,
+    modifiers: KeyModifiers,
+) -> TerminalMouseEvent {
     TerminalMouseEvent {
-        kind: MouseEventKind::Press,
-        button: Some(MouseButton::Left),
+        kind,
+        button: Some(button),
         cell: CellPosition {
             stable_row: 101,
             column: 3,
@@ -583,7 +739,7 @@ fn left_press() -> TerminalMouseEvent {
         viewport_row: 1,
         pixel_x: 24,
         pixel_y: 32,
-        modifiers: KeyModifiers::default(),
+        modifiers,
     }
 }
 
