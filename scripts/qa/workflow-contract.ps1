@@ -465,18 +465,7 @@ Assert-StepHasNoYamlCondition -Step $releaseBuildStep -Name "Build release" -Fai
 Assert-StepLine -Step $releaseBuildStep -Line 'cargo build --release --workspace --target ${{ matrix.target }} --locked' -Name "Build release" -Failures $failures
 Assert-StepLineCount -Step $releaseBuildStep -Line $failureCheck -Expected 1 -Name "Build release" -Failures $failures
 
-$releaseTerminalGate = Assert-TerminalEngineGateStep -Text $release -Workflow "Release" -FailureCheck $failureCheck -Failures $failures
-$releaseBuildMatches = @(Get-NamedStepBlock -Text $release -Name "Build release")
-if ($null -ne $releaseTerminalGate -and $releaseBuildMatches.Count -eq 1 -and $releaseTerminalGate.Index -ge $releaseBuildMatches[0].Index) {
-    Add-ContractFailure -Failures $failures -Message "Release terminal-engine gate must run before the release build."
-}
-$publisherOffset = $release.IndexOf("  release:", [System.StringComparison]::Ordinal)
-if ($publisherOffset -lt 0) {
-    Add-ContractFailure -Failures $failures -Message "Release publisher job is missing."
-} else {
-    $publisher = $release.Substring($publisherOffset)
-    Assert-Absent -Text $publisher -Pattern "Run terminal engine gate|terminal-engine-gate\.ps1" -Label "Release publisher terminal-engine gate" -Failures $failures
-}
+Assert-Absent -Text $release -Pattern "Run terminal engine gate|terminal-engine-gate\.ps1" -Label "Release terminal-engine gate" -Failures $failures
 
 $packageProbe = 'pwsh -NoProfile -File scripts/qa/assert-package.ps1 -Target $env:RSHELL_TARGET -Package $env:RSHELL_PACKAGE'
 foreach ($packageStep in @(
@@ -488,10 +477,6 @@ foreach ($packageStep in @(
         Add-ContractFailure -Failures $failures -Message "Workflow step '$($packageStep.Name)' must have its exact platform condition."
     }
     Assert-StepLine -Step $step -Line $packageProbe -Name $packageStep.Name -Failures $failures
-    $packageMatches = @(Get-NamedStepBlock -Text $release -Name $packageStep.Name)
-    if ($null -ne $releaseTerminalGate -and $packageMatches.Count -eq 1 -and $releaseTerminalGate.Index -ge $packageMatches[0].Index) {
-        Add-ContractFailure -Failures $failures -Message "Release terminal-engine gate must run before '$($packageStep.Name)'."
-    }
 }
 foreach ($runtimeInvocation in @(
         "(?im)^\s*(?:&\s*)?wezterm(?:[-_.][A-Za-z0-9_]+)?(?:\.exe)?(?:\s|$)",

@@ -408,19 +408,19 @@ fn workflow_and_cleanup_evidence_contracts_are_fail_closed() {
     );
     let ci_gate_contract = ci.replace("\r\n", "\n");
     let release_gate_contract = release.replace("\r\n", "\n");
-    for workflow in [&ci_gate_contract, &release_gate_contract] {
-        assert_eq!(
-            workflow
-                .matches("      - name: Run terminal engine gate")
-                .count(),
-            1
-        );
-        assert!(
-            workflow.contains(terminal_gate_step),
-            "workflow must retain the exact fail-closed terminal-engine gate step"
-        );
-        assert!(!workflow.contains("continue-on-error"));
-    }
+    assert_eq!(
+        ci_gate_contract
+            .matches("      - name: Run terminal engine gate")
+            .count(),
+        1
+    );
+    assert!(
+        ci_gate_contract.contains(terminal_gate_step),
+        "CI must retain the exact fail-closed terminal-engine gate step"
+    );
+    assert!(!ci_gate_contract.contains("continue-on-error"));
+    assert!(!release_gate_contract.contains("Run terminal engine gate"));
+    assert!(!release_gate_contract.contains("terminal-engine-gate.ps1"));
     let ci_terminal_gate = ci_gate_contract.find(terminal_gate_step).unwrap();
     assert!(
         ci_gate_contract
@@ -432,24 +432,6 @@ fn workflow_and_cleanup_evidence_contracts_are_fail_closed() {
                     .find("      - name: Run Secret Service vault probe and P0 All smoke (Linux)")
                     .unwrap()
     );
-    let release_terminal_gate = release_gate_contract.find(terminal_gate_step).unwrap();
-    assert!(
-        release_terminal_gate
-            < release_gate_contract
-                .find("      - name: Build release")
-                .unwrap()
-            && release_terminal_gate
-                < release_gate_contract
-                    .find("      - name: Package (Linux/macOS)")
-                    .unwrap()
-            && release_terminal_gate
-                < release_gate_contract
-                    .find("      - name: Package (Windows)")
-                    .unwrap()
-    );
-    let publisher = &release_gate_contract[release_gate_contract.find("  release:").unwrap()..];
-    assert!(!publisher.contains("terminal-engine-gate.ps1"));
-
     let local_pty = include_str!("../crates/rshell-session/tests/local_pty.rs");
     assert!(local_pty.contains("#[cfg(windows)]"));
     assert!(

@@ -110,7 +110,7 @@
 - `scripts/qa/terminal-engine-gate.ps1`: execute and validate the machine-stable gate protocol.
 - `scripts/qa/workflow-contract.ps1`: require the engine gate and three-platform fail-closed wiring.
 - `.github/workflows/ci.yml`: execute the gate in each Linux/macOS/Windows CI matrix job.
-- `.github/workflows/release.yml`: execute the gate before each Linux/macOS/Windows package build.
+- `.github/workflows/release.yml`: keep release builds and package startup validation deterministic; performance measurement remains a CI-only gate.
 - `README.md`: current local P0 verification commands and honest process-tree evidence semantics.
 - `docs/superpowers/plans/2026-08-01-rshell-p0-rebuild.md`: update only Task22 commands/evidence affected by these corrections.
 
@@ -1254,7 +1254,7 @@
   if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
   ```
 
-  CI must run it once in each existing matrix job after workspace quality gates and before P0 All. Release must run it once in each package matrix job before `cargo build --release`. Require the exact Windows descendant test to remain discoverable under workspace tests and prevent the exact legacy serialized key `"session_child_count"` from returning while allowing `"direct_session_child_count"`.
+  CI must run it once in each existing matrix job after workspace quality gates and before P0 All. Release must not run the timing-sensitive performance gate; it remains responsible for deterministic build, package, startup, dependency and payload validation. Require the exact Windows descendant test to remain discoverable under workspace tests and prevent the exact legacy serialized key `"session_child_count"` from returning while allowing `"direct_session_child_count"`.
 
 - [ ] **Step 2: Run RED**
 
@@ -1269,7 +1269,7 @@
 
 - [ ] **Step 3: Wire CI and release without weakening existing gates**
 
-  Add the engine gate to the shared matrix path, not an OS-conditional path, and name the step exactly `Run terminal engine gate` in both workflows. Preserve all current fmt/check/test/clippy, real vault, Mode All, redaction, startup, package, and cleanup steps. Do not use `continue-on-error`; immediately exit on a nonzero gate. Hosted output must retain the stable gate lines so Task 11 can bind logs to `headSha`.
+  Add the engine gate to the shared CI matrix path, not an OS-conditional path, and name the step exactly `Run terminal engine gate`. Keep it absent from Release so noisy runner timing cannot block deterministic package publication. Preserve all current fmt/check/test/clippy, real vault, Mode All, redaction, startup, package, and cleanup steps. Do not use `continue-on-error`; immediately exit on a nonzero CI gate. Hosted output must retain the stable gate lines so Task 11 can bind logs to `headSha`.
 
 - [ ] **Step 4: Update README and only Task22's affected passages**
 
@@ -1484,9 +1484,9 @@
   Assert-WorkflowJobs -Run $releaseRun -ExpectedNames @(
       'Build linux-x86_64', 'Build macos-arm64', 'Build windows-x86_64', 'Release'
   ) -RequiredSteps @{
-      'Build linux-x86_64' = @('Run terminal engine gate', 'Package (Linux/macOS)', 'Upload artifact (Unix)')
-      'Build macos-arm64' = @('Run terminal engine gate', 'Package (Linux/macOS)', 'Upload artifact (Unix)')
-      'Build windows-x86_64' = @('Run terminal engine gate', 'Package (Windows)', 'Upload artifact (Windows)')
+      'Build linux-x86_64' = @('Package (Linux/macOS)', 'Upload artifact (Unix)')
+      'Build macos-arm64' = @('Package (Linux/macOS)', 'Upload artifact (Unix)')
+      'Build windows-x86_64' = @('Package (Windows)', 'Upload artifact (Windows)')
       'Release' = @('Download all artifacts', 'Update Nightly')
   }
   [ordered]@{
