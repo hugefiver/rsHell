@@ -8,6 +8,7 @@ use crate::{terminal_font, terminal_font_availability::requested_family_is_exact
 const MEASURED_FALLBACK_FAMILY: &str = "Monospace";
 const MEASURED_FALLBACK_SIZE: f32 = 10.0;
 pub const TERMINAL_LINE_SPACING: f64 = 2.0;
+const TERMINAL_COLUMN_SPACING: f64 = 2.0;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct FontMetricSample {
@@ -27,7 +28,7 @@ impl FontMetricSample {
             return Err(TerminalViewError::InvalidFontMetrics);
         }
         FontMetrics::new(
-            self.approximate_char_width.max(self.ascii_advance).ceil(),
+            (self.ascii_advance + TERMINAL_COLUMN_SPACING).ceil(),
             (self.ascent + self.descent + TERMINAL_LINE_SPACING).ceil(),
         )
     }
@@ -252,7 +253,6 @@ fn measured_render_ink(
         layout.set_text("M");
         let (ink, _) = layout.extents();
         let pango_scale = f64::from(pango::SCALE);
-        max_cell_width = max_cell_width.max(f64::from(ink.width()) / pango_scale);
         max_ink_height = max_ink_height.max(f64::from(ink.height()) / pango_scale);
     }
     if !positive_finite(max_cell_width) || !positive_finite(max_ink_height) {

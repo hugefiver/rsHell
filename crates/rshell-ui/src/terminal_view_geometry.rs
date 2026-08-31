@@ -29,6 +29,11 @@ impl TerminalViewModel {
         })
     }
 
+    pub(crate) fn replay_geometry(&self) -> Option<UiCommand> {
+        self.last_emitted_size
+            .map(|size| self.command(SessionUiCommand::Resize(size)))
+    }
+
     pub fn cursor_rect(&self) -> Option<ViewRect> {
         let frame = self.frame.as_ref()?;
         let cursor = frame.cursor.filter(|cursor| cursor.visible)?;
@@ -143,5 +148,58 @@ fn pointer_button(event: PointerEvent) -> Option<MouseButton> {
         std::cmp::Ordering::Less => Some(MouseButton::WheelUp),
         std::cmp::Ordering::Greater => Some(MouseButton::WheelDown),
         std::cmp::Ordering::Equal => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use gtk::pango;
+    use rshell_core::{ColorScheme, SessionId};
+
+    use super::*;
+    use crate::{FontMetricEnvironment, FontMetricKey, MeasuredFontMetrics};
+
+    #[test]
+    fn measured_geometry_can_be_replayed_after_an_early_output_is_lost() {
+        let environment = FontMetricEnvironment::new(1.0, 96.0).unwrap();
+        let measured = MeasuredFontMetrics {
+            metrics: FontMetrics::new(11.0, 20.0).unwrap(),
+            key: FontMetricKey {
+                family: "Monospace".into(),
+                font_size_bits: 15.0_f32.to_bits(),
+                effective_scale_bits: 1.0_f64.to_bits(),
+                effective_dpi_bits: 96.0_f64.to_bits(),
+                dpi_fallback_used: false,
+                color_scheme: ColorScheme::default(),
+            },
+            environment,
+            fallback_used: false,
+            font_description: pango::FontDescription::from_string("Monospace 15"),
+            minimum_line_separation: 2.0,
+        };
+        let mut model = TerminalViewModel::new(SessionId::new(), measured);
+        let input = TerminalGeometryInput {
+            logical_width: 110,
+            logical_height: 80,
+            metrics: model.metrics(),
+            environment,
+        };
+
+        let initial = model.apply_geometry(input).unwrap().unwrap();
+        let (expected_session, expected_size) = match initial {
+            UiCommand::Session {
+                session,
+                command: SessionUiCommand::Resize(size),
+            } => (session, size),
+            _ => panic!("initial geometry command must be a session resize"),
+        };
+        assert!(model.apply_geometry(input).unwrap().is_none());
+        assert!(matches!(
+            model.replay_geometry(),
+            Some(UiCommand::Session {
+                session,
+                command: SessionUiCommand::Resize(size),
+            }) if session == expected_session && size == expected_size
+        ));
     }
 }

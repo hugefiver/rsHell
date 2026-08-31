@@ -269,6 +269,7 @@ fn hosted_native_contracts_keep_selection_thread_and_geometry_boundaries() {
     assert!(geometry.contains("acknowledge"));
     assert!(geometry.contains("positive_terminal_geometry"));
     assert!(geometry.contains("TerminalViewMsg::RefreshGeometry"));
+    assert!(geometry.contains("TerminalViewMsg::ReplayGeometry"));
     let widgets = fs::read_to_string(src.join("terminal_view_widgets.rs")).unwrap();
     for required in [
         "canvas.add_tick_callback",

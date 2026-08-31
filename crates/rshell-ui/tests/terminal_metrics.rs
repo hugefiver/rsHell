@@ -75,6 +75,19 @@ fn metric_identity_invalidates_without_recreating_session() {
 
 #[test]
 fn pure_metric_and_geometry_matrix_is_positive_ceil_rounded_and_exact() {
+    let terminal_advance = FontMetricSample {
+        approximate_char_width: 13.0,
+        ascii_advance: 9.0,
+        ascent: 13.0,
+        descent: 4.0,
+    }
+    .to_metrics()
+    .expect("terminal advance metrics");
+    assert_eq!(
+        terminal_advance.cell_width, 11.0,
+        "Pango's proportional approximate width must not inflate the terminal grid"
+    );
+
     for effective_dpi in [96.0, 120.0, 144.0, 192.0] {
         for font_size in [6.0_f64, 15.0, 72.0] {
             let metrics = FontMetricSample {

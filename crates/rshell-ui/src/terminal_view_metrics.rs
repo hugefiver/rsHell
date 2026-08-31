@@ -88,6 +88,14 @@ pub(crate) fn refresh_current_geometry(
     )
 }
 
+pub(crate) fn replay_current_geometry(
+    service: &mut FontMetricsService,
+    widget: &gtk::DrawingArea,
+    model: &mut TerminalViewModel,
+) -> Result<Option<UiCommand>, TerminalViewError> {
+    Ok(refresh_current_geometry(service, widget, model)?.or_else(|| model.replay_geometry()))
+}
+
 pub(crate) fn refresh_geometry(
     service: &mut FontMetricsService,
     widget: &gtk::DrawingArea,

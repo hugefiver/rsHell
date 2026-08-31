@@ -19,6 +19,7 @@ pub enum TerminalViewMsg {
     ApplyFrame(Arc<RenderFrame>),
     RefreshMetrics(FontMetricEnvironment),
     RefreshGeometry,
+    ReplayGeometry,
     UpdateProfile(ResolvedTerminalProfile),
     Key {
         key: gdk::Key,
@@ -63,6 +64,7 @@ impl fmt::Debug for TerminalViewMsg {
                 .field(environment)
                 .finish(),
             Self::RefreshGeometry => formatter.write_str("RefreshGeometry"),
+            Self::ReplayGeometry => formatter.write_str("ReplayGeometry"),
             Self::UpdateProfile(_) => formatter.write_str("UpdateProfile(..)"),
             Self::Key { key, state } => formatter
                 .debug_struct("Key")

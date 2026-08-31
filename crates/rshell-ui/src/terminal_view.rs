@@ -80,6 +80,14 @@ impl SimpleComponent for TerminalView {
                 ),
                 &sender,
             ),
+            TerminalViewMsg::ReplayGeometry => output_optional(
+                metric_refresh::replay_current_geometry(
+                    &mut self.metrics_service,
+                    &self.metric_widget,
+                    &mut self.model,
+                ),
+                &sender,
+            ),
             TerminalViewMsg::UpdateProfile(profile) => output_optional(
                 metric_refresh::refresh_profile(
                     &mut self.metrics_service,

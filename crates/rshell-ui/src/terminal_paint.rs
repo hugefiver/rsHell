@@ -143,13 +143,16 @@ fn text_extents(layout: &pango::Layout) -> TextExtents {
 }
 
 fn fit_ratio(extents: TextExtents, rect: CellRect) -> f64 {
+    const RASTER_EDGE_MARGIN: f64 = 1.0;
+    let available_width = (rect.width - RASTER_EDGE_MARGIN).max(1.0);
+    let available_height = (rect.height - RASTER_EDGE_MARGIN).max(1.0);
     let horizontal = if extents.ink_width > 0.0 {
-        rect.width / extents.ink_width
+        available_width / extents.ink_width
     } else {
         1.0
     };
     let vertical = if extents.ink_height > 0.0 {
-        rect.height / extents.ink_height
+        available_height / extents.ink_height
     } else {
         1.0
     };

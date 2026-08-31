@@ -20,6 +20,7 @@ pub(crate) struct PaneHostGeometryAck {
 struct GeometryAckState {
     current: BTreeSet<SessionId>,
     acknowledged: BTreeSet<SessionId>,
+    probed: BTreeSet<SessionId>,
 }
 
 impl PaneHostGeometryAck {
@@ -34,6 +35,9 @@ impl PaneHostGeometryAck {
         let current = state.current.clone();
         state
             .acknowledged
+            .retain(|session| current.contains(session) && !replaced.contains(session));
+        state
+            .probed
             .retain(|session| current.contains(session) && !replaced.contains(session));
     }
 
@@ -50,15 +54,21 @@ impl PaneHostGeometryAck {
         if !state.current.contains(&session) {
             return false;
         }
+        state.probed.remove(&session);
         state.acknowledged.insert(session);
         true
     }
 
     pub(crate) fn refresh(&self, terminals: &mut BTreeMap<SessionId, Controller<TerminalView>>) {
         for session in self.unacknowledged() {
-            let delivered = terminals.get(&session).is_some_and(|terminal| {
-                send_terminal_message(terminal, crate::TerminalViewMsg::RefreshGeometry)
-            });
+            let message = if self.mark_probed(session) {
+                crate::TerminalViewMsg::RefreshGeometry
+            } else {
+                crate::TerminalViewMsg::ReplayGeometry
+            };
+            let delivered = terminals
+                .get(&session)
+                .is_some_and(|terminal| send_terminal_message(terminal, message));
             if !delivered {
                 terminals.remove(&session);
                 self.forget(session);
@@ -109,6 +119,11 @@ impl PaneHostGeometryAck {
         let mut state = self.state.borrow_mut();
         state.current.remove(&session);
         state.acknowledged.remove(&session);
+        state.probed.remove(&session);
+    }
+
+    fn mark_probed(&self, session: SessionId) -> bool {
+        self.state.borrow_mut().probed.insert(session)
     }
 }
 
