@@ -207,9 +207,11 @@ fn install_shortcuts(root: &gtk::Box, sender: &ComponentSender<SessionTabBar>) {
 
 fn reveal_after_allocation(scroll: &gtk::ScrolledWindow, group: &gtk::Box) {
     let scroll = scroll.clone();
-    let group = group.clone();
-    gtk::glib::idle_add_local_once(move || {
+    group.add_tick_callback(move |group, _| {
         let adjustment = scroll.hadjustment();
+        if group.width() <= 0 || adjustment.page_size() <= 0.0 {
+            return gtk::glib::ControlFlow::Continue;
+        }
         let start = f64::from(group.allocation().x());
         let end = start + f64::from(group.width());
         let value = adjustment.value();
@@ -219,6 +221,7 @@ fn reveal_after_allocation(scroll: &gtk::ScrolledWindow, group: &gtk::Box) {
         } else if end > page_end {
             adjustment.set_value(end - adjustment.page_size());
         }
+        gtk::glib::ControlFlow::Break
     });
 }
 

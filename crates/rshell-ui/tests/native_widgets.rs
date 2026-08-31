@@ -290,7 +290,10 @@ fn assert_twenty_tab_overflow_and_keyboard_reachability() {
     ));
     assert!(flush_gtk());
     assert!(
-        wait_for_gtk(|| !scroll_required || scroll.hadjustment().value() > 0.0),
+        wait_for_gtk(|| {
+            let adjustment = scroll.hadjustment();
+            adjustment.upper() <= adjustment.page_size() || adjustment.value() > 0.0
+        }),
         "active tab must auto-reveal when scrolling is required"
     );
     window.close();
