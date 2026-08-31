@@ -116,10 +116,6 @@ impl StartupProbe {
         });
     }
 
-    pub fn observe_measured_terminal_geometry(&self) {
-        self.update(|state| state.measured_terminal_geometry_ready = true);
-    }
-
     pub fn report(&self, shutdown_clean: bool) -> StartupReport {
         let state = self.state.borrow();
         let icon_backend = crate::ProductIcon::backend().as_str();

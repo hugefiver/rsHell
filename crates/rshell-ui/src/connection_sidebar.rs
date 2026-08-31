@@ -21,6 +21,7 @@ pub enum ConnectionSidebarMsg {
     Search(String),
     Select(usize),
     SelectConnection(ConnectionId),
+    RefreshPresentation,
     Activate(usize),
     CreateConnection,
     CreateGroup,
@@ -115,6 +116,7 @@ impl SimpleComponent for ConnectionSidebar {
                     self.selected_connection().map(|(id, _)| id),
                 ));
             }
+            ConnectionSidebarMsg::RefreshPresentation => {}
             ConnectionSidebarMsg::Activate(index) => self.connect_index(index, &sender),
             ConnectionSidebarMsg::CreateConnection => {
                 let group = self.selected_group();

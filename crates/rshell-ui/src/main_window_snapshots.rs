@@ -13,6 +13,7 @@ impl MainWindow {
     pub(crate) fn apply_shell_layout(&mut self, width: i32) {
         let sidebar: gtk::Widget = self.sidebar.widget().clone().upcast();
         self.shell.apply(ShellLayout::for_width(width), &sidebar);
+        self.send_sidebar(ConnectionSidebarMsg::RefreshPresentation);
     }
 
     pub(crate) fn replace_view_model(&mut self, view_model: rshell_core::AppViewModel) {

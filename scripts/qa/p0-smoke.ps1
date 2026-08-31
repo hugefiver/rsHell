@@ -1287,8 +1287,10 @@ try {
         else {
             "RSHELL_P0_SECURE_PASTE`r"
         }
-        $selectionStartX = if ($platformIsWindows) { 32.5 } else { 22.5 }
-        $selectionEndX = if ($platformIsWindows) { 39.1 } else { 27.1 }
+        # The measured default grid is 15 logical pixels wide on every supported hosted image.
+        # These points both land in the right half of the wide cell at columns 1-2.
+        $selectionStartX = 32.5
+        $selectionEndX = 39.1
         $actions = [System.Collections.Generic.List[object]]::new()
         Set-ActionBinding -Surface "gtk"
         Add-Action $actions ([ordered]@{ action = "wait_window_realized" })

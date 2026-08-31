@@ -142,7 +142,6 @@ pub(crate) fn sync_terminals(
             model.observe_frame(frame);
         }
         terminals.insert(session, controller);
-        model.observe_measured_terminal_geometry();
     }
 }
 

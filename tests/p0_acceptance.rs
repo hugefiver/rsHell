@@ -1057,6 +1057,9 @@ fn mode_all_declares_every_task20_regression_case() {
 #[test]
 fn powershell_tui_exit_waits_for_a_fresh_post_alternate_screen_frame() {
     let harness = include_str!("../scripts/qa/p0-smoke.ps1");
+    assert!(harness.contains("$selectionStartX = 32.5"));
+    assert!(harness.contains("$selectionEndX = 39.1"));
+    assert!(!harness.contains("$selectionStartX = if ($platformIsWindows)"));
     let tui_exit_wait = harness
         .find("P0-TUI-EXITED")
         .expect("Mode All must wait for the TUI exit marker");
