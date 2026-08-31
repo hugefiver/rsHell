@@ -121,9 +121,17 @@ fn task18_native_contracts_run_on_one_gtk_thread() {
     assert_eq!(commands.connects(), [(pane, connection_id)]);
     assert!(!sidebar.is_visible(), "delivery precedes drawer close");
 
-    main.emit(MainWindowMsg::Allocated { width: 1_360 });
-    assert!(flush_gtk());
-    assert!(sidebar.is_visible());
+    window.set_size_request(1_360, 700);
+    let standard_settled = wait_for_gtk(|| {
+        descendants(main.widget())
+            .into_iter()
+            .any(|widget| widget.has_css_class("shell-standard") && widget.is_visible())
+            && sidebar.is_visible()
+    });
+    assert!(
+        standard_settled,
+        "realized Standard allocation must reattach the sidebar"
+    );
     assert_eq!(
         descendants(main.widget())
             .into_iter()
