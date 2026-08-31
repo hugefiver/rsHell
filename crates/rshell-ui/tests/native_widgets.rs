@@ -1,24 +1,28 @@
 #![cfg(not(target_os = "macos"))]
 
 use std::{
+    cell::RefCell,
+    rc::Rc,
     sync::Arc,
     time::{Duration, Instant},
 };
 
 use gtk::prelude::*;
-use relm4::{Component, ComponentController};
+use relm4::{
+    Component, ComponentController, ComponentParts, ComponentSender, Controller, SimpleComponent,
+};
 use rshell_core::{
     AppBootstrapState, AppViewModel, AuthenticationKind, ConnectionCatalog, ConnectionProfile,
     DisplayRecoveryNotice, ErrorPaneView, PaneId, PaneLaunchTarget, PaneTree, RenderFrame,
-    SessionFailure, SessionId, SessionState, SessionUiEvent, SplitAxis, TabId, TabState,
-    TerminalDisplayModes, TerminalOverrides, TerminalProfile, TerminalSettingsV1, TerminalSize,
-    TransportKind, UiPortError, WorkspaceState,
+    SessionFailure, SessionId, SessionState, SessionUiCommand, SessionUiEvent, SplitAxis, TabId,
+    TabState, TerminalDisplayModes, TerminalOverrides, TerminalProfile, TerminalSettingsV1,
+    TerminalSize, TransportKind, UiCommand, UiPortError, WorkspaceState,
 };
 use rshell_ui::{
     ConnectionEditor, ConnectionEditorInit, ConnectionEditorMsg, ConnectionSidebar,
     ConnectionSidebarInit, ConnectionSidebarMsg, FontMetricEnvironment, FontMetricsService,
     MetricsChange, PaneHost, PaneHostInit, PaneHostMsg, SessionTabBar, SessionTabBarInit,
-    SessionTabBarMsg, TerminalView, TerminalViewInit, TerminalViewMsg,
+    SessionTabBarMsg, TerminalView, TerminalViewInit, TerminalViewMsg, TerminalViewOutput,
 };
 
 #[test]
@@ -29,6 +33,7 @@ fn twenty_tabs_are_keyboard_and_overflow_reachable() {
     }
     assert_twenty_tab_overflow_and_keyboard_reachability();
     assert_terminal_view_native_boundary();
+    assert_mapped_terminal_retries_geometry_after_zero_allocation();
     assert_native_workspace_boundary();
     assert_sidebar_catalog_refresh_preserves_only_the_same_visible_identity();
     assert_catalog_rebuild_then_identity_switch_quiesces();
@@ -815,6 +820,127 @@ fn assert_terminal_view_native_boundary() {
     assert!(search.is_visible());
     window.close();
     assert!(flush_gtk(), "terminal native window close must quiesce");
+}
+
+#[derive(Debug)]
+enum GeometryHarnessMsg {
+    Terminal(TerminalViewOutput),
+    RefreshGeometry,
+}
+
+struct GeometryHarnessInit {
+    terminal: TerminalViewInit,
+    sizes: Rc<RefCell<Vec<TerminalSize>>>,
+}
+
+struct GeometryHarness {
+    terminal: Controller<TerminalView>,
+    sizes: Rc<RefCell<Vec<TerminalSize>>>,
+}
+
+struct GeometryHarnessWidgets;
+
+impl SimpleComponent for GeometryHarness {
+    type Init = GeometryHarnessInit;
+    type Input = GeometryHarnessMsg;
+    type Output = ();
+    type Root = gtk::Box;
+    type Widgets = GeometryHarnessWidgets;
+
+    fn init_root() -> Self::Root {
+        gtk::Box::new(gtk::Orientation::Vertical, 0)
+    }
+
+    fn init(
+        init: Self::Init,
+        root: Self::Root,
+        sender: ComponentSender<Self>,
+    ) -> ComponentParts<Self> {
+        let terminal = TerminalView::builder()
+            .launch(init.terminal)
+            .forward(sender.input_sender(), GeometryHarnessMsg::Terminal);
+        root.append(terminal.widget());
+        ComponentParts {
+            model: Self {
+                terminal,
+                sizes: init.sizes,
+            },
+            widgets: GeometryHarnessWidgets,
+        }
+    }
+
+    fn update(&mut self, message: Self::Input, _sender: ComponentSender<Self>) {
+        match message {
+            GeometryHarnessMsg::Terminal(TerminalViewOutput::Command(command)) => {
+                if let UiCommand::Session {
+                    command: SessionUiCommand::Resize(size),
+                    ..
+                } = *command
+                {
+                    self.sizes.borrow_mut().push(size);
+                }
+            }
+            GeometryHarnessMsg::Terminal(_) => {}
+            GeometryHarnessMsg::RefreshGeometry => {
+                self.terminal.emit(TerminalViewMsg::RefreshGeometry);
+            }
+        }
+    }
+}
+
+fn assert_mapped_terminal_retries_geometry_after_zero_allocation() {
+    let profile = TerminalSettingsV1::default().resolve(&TerminalOverrides::default());
+    let metric_probe = gtk::Label::new(None);
+    let context = metric_probe.pango_context();
+    let environment =
+        FontMetricEnvironment::from_context(&context, f64::from(metric_probe.scale_factor()))
+            .expect("native metric environment");
+    let metrics = match FontMetricsService::default()
+        .measure(&context, &profile, environment)
+        .expect("native terminal metrics")
+    {
+        MetricsChange::Changed(metrics) | MetricsChange::Unchanged(metrics) => metrics,
+    };
+    let sizes = Rc::new(RefCell::new(Vec::new()));
+    let terminal = GeometryHarness::builder()
+        .launch(GeometryHarnessInit {
+            terminal: TerminalViewInit {
+                pane: PaneId::new(),
+                session: SessionId::new(),
+                profile,
+                metrics,
+            },
+            sizes: Rc::clone(&sizes),
+        })
+        .detach();
+    let canvas = descendants(terminal.widget())
+        .into_iter()
+        .find_map(|widget| widget.downcast::<gtk::DrawingArea>().ok())
+        .expect("terminal geometry canvas");
+    assert_eq!(canvas.width(), 0);
+    assert_eq!(canvas.height(), 0);
+
+    let window = gtk::Window::new();
+    window.set_default_size(640, 360);
+    window.set_child(Some(terminal.widget()));
+    window.present();
+    assert!(
+        wait_for_gtk(|| !sizes.borrow().is_empty()),
+        "mapped terminal must emit geometry after a positive allocation"
+    );
+    let emitted = sizes.borrow().clone();
+    assert_eq!(emitted.len(), 1, "positive geometry must emit once");
+    assert!(
+        emitted[0].pixel_width > 0 && emitted[0].pixel_height > 0,
+        "emitted geometry must have positive physical dimensions"
+    );
+
+    terminal.emit(GeometryHarnessMsg::RefreshGeometry);
+    terminal.emit(GeometryHarnessMsg::RefreshGeometry);
+    assert!(flush_gtk());
+    assert_eq!(sizes.borrow().len(), 1, "duplicate refreshes are deduped");
+    window.close();
+    assert!(flush_gtk(), "geometry retry window close must quiesce");
 }
 
 fn flush_gtk() -> bool {

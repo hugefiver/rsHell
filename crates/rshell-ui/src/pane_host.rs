@@ -1,9 +1,7 @@
 use std::{cell::Cell, collections::BTreeMap};
 
 use gtk::{gdk, prelude::*};
-use relm4::{
-    ComponentController, ComponentParts, ComponentSender, Controller, SimpleComponent, gtk,
-};
+use relm4::{ComponentParts, ComponentSender, Controller, SimpleComponent, gtk};
 use rshell_core::{
     AppViewModel, ConnectionId, PaneId, SessionId, SessionUiCommand, SessionUiEvent, TabId,
     UiCommand, UiPortError,
@@ -235,16 +233,5 @@ impl PaneHost {
                 surface.queue_render();
             }
         }
-        let terminals = self
-            .terminals
-            .values()
-            .map(|terminal| terminal.sender().clone())
-            .collect::<Vec<_>>();
-        let _ = self.content.add_tick_callback(move |_, _| {
-            for terminal in &terminals {
-                let _ = terminal.send(TerminalViewMsg::RefreshGeometry);
-            }
-            gtk::glib::ControlFlow::Break
-        });
     }
 }

@@ -240,6 +240,12 @@ fn hosted_native_contracts_keep_selection_thread_and_geometry_boundaries() {
     assert!(!draw.contains("Mutex"));
 
     let src = root.join("src");
+    let main_window = fs::read_to_string(src.join("main_window.rs")).unwrap();
+    assert!(main_window.contains("stable_sidebar_selection: Option<ConnectionId>"));
+    let snapshots = fs::read_to_string(src.join("main_window_snapshots.rs")).unwrap();
+    assert!(snapshots.contains("if let Some(connection) = self.stable_sidebar_selection"));
+    assert!(!snapshots.contains("RefreshPresentation"));
+
     let probe = fs::read_to_string(src.join("startup_probe.rs")).unwrap();
     assert!(probe.contains("pub fn observe_terminal_geometry(&self, size: TerminalSize)"));
     assert!(probe.contains("self.observe_terminal_geometry(frame.size);"));
@@ -248,6 +254,19 @@ fn hosted_native_contracts_keep_selection_thread_and_geometry_boundaries() {
     let pane_host = fs::read_to_string(src.join("pane_host.rs")).unwrap();
     assert!(pane_host.contains("SessionUiCommand::Resize(size)"));
     assert!(pane_host.contains("self.model.observe_terminal_geometry(*size);"));
+    assert!(!pane_host.contains("TerminalViewMsg::RefreshGeometry"));
+    let widgets = fs::read_to_string(src.join("terminal_view_widgets.rs")).unwrap();
+    for required in [
+        "canvas.add_tick_callback",
+        "if !canvas.is_mapped()",
+        "gtk::glib::ControlFlow::Continue",
+        "gtk::glib::ControlFlow::Break",
+    ] {
+        assert!(
+            widgets.contains(required),
+            "missing geometry retry contract: {required}"
+        );
+    }
 }
 
 #[test]

@@ -33,6 +33,7 @@ impl MainWindow {
                 self.open_editor(ConnectionEditorMsg::OpenEdit(Box::new(profile)));
             }
             ConnectionSidebarOutput::SelectionChanged(selection) => {
+                self.stable_sidebar_selection = selection;
                 self.smoke_state.sidebar_selection = selection;
             }
         }

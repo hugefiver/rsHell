@@ -181,11 +181,24 @@ fn connect_search(search: &gtk::SearchEntry, sender: &ComponentSender<TerminalVi
 fn connect_resize(canvas: &gtk::DrawingArea, sender: &ComponentSender<TerminalView>) {
     let input = sender.input_sender().clone();
     canvas.connect_map(move |canvas| {
-        send_resize(canvas, canvas.width(), canvas.height(), &input);
+        let input = input.clone();
+        if send_resize(canvas, canvas.width(), canvas.height(), &input) {
+            return;
+        }
+        let _ = canvas.add_tick_callback(move |canvas, _| {
+            if !canvas.is_mapped() {
+                return gtk::glib::ControlFlow::Break;
+            }
+            if send_resize(canvas, canvas.width(), canvas.height(), &input) {
+                gtk::glib::ControlFlow::Break
+            } else {
+                gtk::glib::ControlFlow::Continue
+            }
+        });
     });
     let input = sender.input_sender().clone();
     canvas.connect_resize(move |canvas, width, height| {
-        send_resize(canvas, width, height, &input);
+        let _ = send_resize(canvas, width, height, &input);
     });
 }
 
@@ -194,12 +207,15 @@ fn send_resize(
     width: i32,
     height: i32,
     input: &relm4::Sender<TerminalViewMsg>,
-) {
+) -> bool {
     if width > 0 && height > 0 {
         let _ = input.send(TerminalViewMsg::Resize {
             width,
             height,
             scale: f64::from(canvas.scale_factor()),
         });
+        true
+    } else {
+        false
     }
 }

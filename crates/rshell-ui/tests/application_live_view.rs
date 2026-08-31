@@ -47,6 +47,8 @@ fn assert_breakpoint_crossing_preserves_controller_and_reducer_identity() {
     sidebar_search.set_text("Retained");
     assert!(flush_gtk());
     select_retained_connection(window.widget());
+    window.emit(MainWindowMsg::Allocated { width: 900 });
+    window.emit(MainWindowMsg::Allocated { width: 800 });
     assert!(
         wait_for_gtk(|| {
             selected_connection_name(window.widget()).as_deref() == Some("Retained connection")

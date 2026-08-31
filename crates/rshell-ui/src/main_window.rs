@@ -21,7 +21,7 @@ use relm4::{
     Component, ComponentController, ComponentParts, ComponentSender, Controller, SimpleComponent,
     gtk,
 };
-use rshell_core::{AppViewModel, InteractionId, SessionId, UiCommandPort};
+use rshell_core::{AppViewModel, ConnectionId, InteractionId, SessionId, UiCommandPort};
 
 pub struct MainWindow {
     pub(crate) command_port: Arc<dyn UiCommandPort>,
@@ -38,6 +38,7 @@ pub struct MainWindow {
     pub(crate) authoritative_view: bool,
     pub(crate) pending_dialog: Option<DialogCommandSource>,
     pub(crate) pending_interaction: Option<(SessionId, InteractionId)>,
+    pub(crate) stable_sidebar_selection: Option<ConnectionId>,
     pub(crate) startup_probe: Option<crate::StartupProbe>,
     pub(crate) smoke: Option<SmokeDriver>,
     pub(crate) smoke_state: SmokeUiState,
@@ -163,6 +164,7 @@ impl SimpleComponent for MainWindow {
             authoritative_view,
             pending_dialog: None,
             pending_interaction: None,
+            stable_sidebar_selection: None,
             startup_probe,
             smoke,
             smoke_state: SmokeUiState::default(),
