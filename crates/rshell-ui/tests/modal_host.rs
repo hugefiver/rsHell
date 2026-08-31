@@ -202,16 +202,17 @@ fn assert_surface_contract(kind: Kind) {
         gtk::gdk::Key::Tab,
         gtk::gdk::ModifierType::empty()
     ));
-    assert!(flush_gtk());
-    assert!(has_focus_within(&first), "{kind:?} Tab must wrap to first");
+    assert!(
+        wait_for_gtk(|| has_focus_within(&first)),
+        "{kind:?} Tab must wrap to first"
+    );
     assert!(press_key(
         &surface,
         gtk::gdk::Key::Tab,
         gtk::gdk::ModifierType::SHIFT_MASK
     ));
-    assert!(flush_gtk());
     assert!(
-        has_focus_within(&last),
+        wait_for_gtk(|| has_focus_within(&last)),
         "{kind:?} Shift+Tab must wrap to last"
     );
 
@@ -506,6 +507,19 @@ fn controller_count<T: IsA<gtk::EventController> + Clone + 'static>(
         .filter_map(|index| controllers.item(index))
         .filter(|controller| controller.is::<T>())
         .count() as u32
+}
+
+fn wait_for_gtk(mut condition: impl FnMut() -> bool) -> bool {
+    let context = gtk::glib::MainContext::default();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+    while std::time::Instant::now() < deadline {
+        if condition() {
+            return true;
+        }
+        while context.iteration(false) {}
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    condition()
 }
 
 fn flush_gtk() -> bool {

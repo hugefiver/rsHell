@@ -12,6 +12,9 @@ use crate::{
     session_diagnostics::emit_session_failure,
 };
 
+#[path = "main_window_geometry.rs"]
+mod geometry;
+
 impl MainWindow {
     pub(crate) fn new_local_tab(&mut self) {
         self.dispatch(UiCommand::NewLocalTab, CommandSource::TabBar);
@@ -75,6 +78,7 @@ impl MainWindow {
     pub(crate) fn handle_pane_host(&mut self, output: PaneHostOutput) {
         match output {
             PaneHostOutput::Command(command) => {
+                geometry::observe(self.startup_probe.as_ref(), command.as_ref());
                 if matches!(command.as_ref(), UiCommand::Session { .. }) {
                     self.smoke_state.terminal_commands =
                         self.smoke_state.terminal_commands.saturating_add(1);
