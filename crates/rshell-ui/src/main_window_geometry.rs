@@ -36,6 +36,6 @@ mod tests {
         };
 
         observe(Some(&probe), &command);
-        assert!(probe.report(false).measured_terminal_geometry_ready);
+        assert!(probe.terminal_geometry_ready());
     }
 }

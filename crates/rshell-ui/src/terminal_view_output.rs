@@ -20,6 +20,7 @@ pub(crate) fn optional(
 pub(crate) fn geometry(
     result: Result<Option<UiCommand>, TerminalViewError>,
     model: &mut TerminalViewModel,
+    startup_probe: Option<&crate::StartupProbe>,
     sender: &ComponentSender<TerminalView>,
 ) {
     match result {
@@ -35,6 +36,9 @@ pub(crate) fn geometry(
                 && let Some(size) = size
             {
                 model.confirm_geometry_delivery(size);
+                if let Some(probe) = startup_probe {
+                    probe.observe_terminal_geometry(size);
+                }
             }
         }
         Ok(None) => {}

@@ -133,6 +133,7 @@ pub(crate) fn sync_terminals(
                 session,
                 profile,
                 metrics,
+                startup_probe: model.startup_probe(),
             })
             .forward(sender.input_sender(), move |output| {
                 crate::PaneHostMsg::Terminal(session, output)

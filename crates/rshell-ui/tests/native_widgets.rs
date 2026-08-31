@@ -777,6 +777,7 @@ fn assert_terminal_view_native_boundary() {
             session: SessionId::new(),
             profile,
             metrics,
+            startup_probe: None,
         })
         .detach();
     let window = gtk::Window::new();
@@ -981,6 +982,7 @@ fn assert_mapped_terminal_retries_geometry_after_zero_allocation() {
                 session: SessionId::new(),
                 profile,
                 metrics,
+                startup_probe: None,
             },
             sizes: Rc::clone(&sizes),
         })

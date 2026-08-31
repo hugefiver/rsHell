@@ -115,6 +115,11 @@ impl StartupProbe {
         }
     }
 
+    #[cfg(test)]
+    pub(crate) fn terminal_geometry_ready(&self) -> bool {
+        self.state.borrow().measured_terminal_geometry_ready
+    }
+
     pub fn report(&self, shutdown_clean: bool) -> StartupReport {
         let state = self.state.borrow();
         let icon_backend = crate::ProductIcon::backend().as_str();

@@ -17,6 +17,7 @@ pub struct TerminalView {
     model: TerminalViewModel,
     metrics_service: FontMetricsService,
     metric_widget: gtk::DrawingArea,
+    startup_probe: Option<crate::StartupProbe>,
     clipboard: gdk::Clipboard,
     selection_anchor: Option<(f64, f64)>,
     pressed_button: Option<MouseButton>,
@@ -52,6 +53,7 @@ impl SimpleComponent for TerminalView {
             ),
             metrics_service,
             metric_widget: widgets.canvas.clone(),
+            startup_probe: init.startup_probe,
             clipboard: root.display().clipboard(),
             selection_anchor: None,
             pressed_button: None,
@@ -73,6 +75,7 @@ impl SimpleComponent for TerminalView {
                         environment,
                     ),
                     &mut self.model,
+                    self.startup_probe.as_ref(),
                     &sender,
                 );
             }
@@ -83,6 +86,7 @@ impl SimpleComponent for TerminalView {
                     &mut self.model,
                 ),
                 &mut self.model,
+                self.startup_probe.as_ref(),
                 &sender,
             ),
             TerminalViewMsg::ReplayGeometry => output::geometry(
@@ -92,6 +96,7 @@ impl SimpleComponent for TerminalView {
                     &mut self.model,
                 ),
                 &mut self.model,
+                self.startup_probe.as_ref(),
                 &sender,
             ),
             TerminalViewMsg::UpdateProfile(profile) => output::geometry(
@@ -102,6 +107,7 @@ impl SimpleComponent for TerminalView {
                     profile,
                 ),
                 &mut self.model,
+                self.startup_probe.as_ref(),
                 &sender,
             ),
             TerminalViewMsg::Key { key, state } => self.handle_key(key, state, &sender),
@@ -126,6 +132,7 @@ impl SimpleComponent for TerminalView {
                     scale,
                 ),
                 &mut self.model,
+                self.startup_probe.as_ref(),
                 &sender,
             ),
             TerminalViewMsg::Selection {

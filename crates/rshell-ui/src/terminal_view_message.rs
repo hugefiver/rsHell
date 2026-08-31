@@ -13,6 +13,7 @@ pub struct TerminalViewInit {
     pub session: SessionId,
     pub profile: ResolvedTerminalProfile,
     pub metrics: MeasuredFontMetrics,
+    pub startup_probe: Option<crate::StartupProbe>,
 }
 
 pub enum TerminalViewMsg {
