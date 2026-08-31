@@ -15,9 +15,10 @@ use rshell_core::{
     AppBootstrapState, AppEvent, AppSettings, AppViewModel, AuthPrompt, CatalogMutation,
     ColorScheme, ConnectionId, ConnectionProfile, HostKeyPrompt, ImportCandidateId,
     ImportCandidateView, ImportPreviewId, ImportPreviewView, ImportSourceKind, ImportWarningView,
-    InteractionId, InteractionRequest, KeyBinding, KeyCode, KeyModifiers, PaneId, PaneLaunchTarget,
-    PaneTree, SessionId, SessionState, SessionUiEvent, SplitAxis, TabId, TabState, TerminalProfile,
-    UiCommand, UiCommandPort, UiPortError, WorkspaceState,
+    InteractionId, InteractionRequest, KeyBinding, KeyCode, KeyModifiers,
+    KeyboardInteractivePrompt, PaneId, PaneLaunchTarget, PaneTree, SessionId, SessionState,
+    SessionUiEvent, SplitAxis, TabId, TabState, TerminalProfile, UiCommand, UiCommandPort,
+    UiPortError, WorkspaceState,
 };
 use rshell_platform::{FileSelectionCallback, FileSelectionRequest, FileSelectionService};
 use rshell_ui::{
@@ -1014,6 +1015,44 @@ fn assert_interaction_surface() {
     );
     assert!(!button(interaction.widget(), "Submit").is_sensitive());
     interaction.emit(InteractionDialogMsg::ResponseAccepted(password_interaction));
+    assert!(flush_gtk());
+    assert!(!interaction.widget().is_visible());
+
+    let keyboard_interaction = InteractionId::new();
+    interaction.emit(InteractionDialogMsg::Open {
+        session: SessionId::new(),
+        request: InteractionRequest::KeyboardInteractive(KeyboardInteractivePrompt {
+            id: keyboard_interaction,
+            name: "Two-step challenge".into(),
+            instruction: "Answer both prompts".into(),
+            prompts: vec![
+                AuthPrompt {
+                    id: InteractionId::new(),
+                    label: "Visible answer".into(),
+                    echo: true,
+                },
+                AuthPrompt {
+                    id: InteractionId::new(),
+                    label: "Secret answer".into(),
+                    echo: false,
+                },
+            ],
+        }),
+    });
+    interaction.emit(InteractionDialogMsg::Answer(0, "visible".into()));
+    assert!(flush_gtk());
+    interaction.emit(InteractionDialogMsg::Answer(1, "secret".into()));
+    interaction.emit(InteractionDialogMsg::Action(InteractionAction::Submit));
+    assert!(flush_gtk(), "two-prompt KBI submission must not block GTK");
+    assert!(!button(interaction.widget(), "Submit").is_sensitive());
+    assert!(
+        descendants(interaction.widget())
+            .into_iter()
+            .filter_map(|widget| widget.downcast::<gtk::Editable>().ok())
+            .all(|entry| entry.text().is_empty()),
+        "KBI submission must wipe every answer widget"
+    );
+    interaction.emit(InteractionDialogMsg::ResponseAccepted(keyboard_interaction));
     assert!(flush_gtk());
     assert!(!interaction.widget().is_visible());
     window.close();
