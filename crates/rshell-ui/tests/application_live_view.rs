@@ -28,8 +28,7 @@ use rshell_ui::{
 use secrecy::SecretString;
 use tokio::time::timeout;
 
-#[test]
-fn breakpoint_crossing_preserves_controller_and_reducer_identity() {
+fn assert_breakpoint_crossing_preserves_controller_and_reducer_identity() {
     if let Err(error) = gtk::init() {
         eprintln!("live adaptive shell regression skipped: {error}");
         return;
@@ -318,7 +317,8 @@ fn press_key(
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn application_stream_drives_authoritative_connection_retry_and_failure_ui() {
+async fn application_live_view_contracts_run_on_one_gtk_thread() {
+    assert_breakpoint_crossing_preserves_controller_and_reducer_identity();
     if let Err(error) = gtk::init() {
         eprintln!("live MainWindow stream regression skipped: {error}");
         return;

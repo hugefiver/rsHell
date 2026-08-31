@@ -1,7 +1,7 @@
 param(
     [AllowEmptyString()][string]$Target = "",
     [AllowEmptyString()][string]$Package = "",
-    [ValidateSet("", "invalid-target", "incomplete-report", "forbidden-binary-marker", "external-icon-payload", "external-resource-directory", "external-icons-directory", "runtime-icon-backends", "missing-recovery-hidpi-fields")]
+    [ValidateSet("", "invalid-target", "incomplete-report", "forbidden-binary-marker", "external-icon-payload", "external-resource-directory", "external-icons-directory", "runtime-icon-backends", "missing-recovery-hidpi-fields", "startup-evidence")]
     [string]$RegressionProbe = ""
 )
 
@@ -71,6 +71,56 @@ function Assert-StartupReport {
     if ($null -eq $adaptiveLayoutModes -or $adaptiveLayoutModes.Value -isnot [long] -or $adaptiveLayoutModes.Value -ne 3) {
         throw "Startup smoke report has an invalid adaptive layout mode count."
     }
+}
+
+function Format-StartupReportEvidence {
+    param([Parameter(Mandatory)]$Report)
+
+    $booleanNames = @(
+        "window_realized", "local_session_connected", "non_empty_render_frame",
+        "shutdown_clean", "embedded_css_loaded", "embedded_icons_renderable",
+        "measured_terminal_geometry_ready", "scale_aware_icons_ready"
+    )
+    foreach ($name in $booleanNames) {
+        $property = $Report.PSObject.Properties[$name]
+        if ($null -eq $property -or $property.Value -isnot [bool]) {
+            return "RSHELL_PACKAGE_STARTUP version=1 report=invalid"
+        }
+    }
+    $embeddedBackend = $Report.PSObject.Properties["embedded_icon_backend"]
+    $iconBackend = $Report.PSObject.Properties["icon_backend"]
+    $iconCount = $Report.PSObject.Properties["icon_count"]
+    $adaptiveModes = $Report.PSObject.Properties["adaptive_layout_modes"]
+    if ($null -eq $embeddedBackend -or $embeddedBackend.Value -notin @("gtk_svg", "internal_vector") -or
+        $null -eq $iconBackend -or $iconBackend.Value -notin @("gtk_svg", "internal_vector") -or
+        $null -eq $iconCount -or $iconCount.Value -isnot [long] -or
+        $null -eq $adaptiveModes -or $adaptiveModes.Value -isnot [long]) {
+        return "RSHELL_PACKAGE_STARTUP version=1 report=invalid"
+    }
+    $fields = foreach ($name in $booleanNames) {
+        "$name=$($Report.$name.ToString().ToLowerInvariant())"
+    }
+    $fields += "embedded_icon_backend=$($embeddedBackend.Value)"
+    $fields += "icon_backend=$($iconBackend.Value)"
+    $fields += "icon_count=$($iconCount.Value)"
+    $fields += "adaptive_layout_modes=$($adaptiveModes.Value)"
+    return "RSHELL_PACKAGE_STARTUP version=1 $($fields -join ' ')"
+}
+
+function Write-StartupReportEvidence {
+    param([Parameter(Mandatory)][string]$ReportPath)
+
+    $evidence = "RSHELL_PACKAGE_STARTUP version=1 report=missing"
+    if (Test-Path -LiteralPath $ReportPath -PathType Leaf) {
+        try {
+            $report = [System.IO.File]::ReadAllText($ReportPath) | ConvertFrom-Json
+            $evidence = Format-StartupReportEvidence -Report $report
+        }
+        catch {
+            $evidence = "RSHELL_PACKAGE_STARTUP version=1 report=invalid"
+        }
+    }
+    [Console]::Error.WriteLine($evidence)
 }
 
 function New-CompleteStartupReport {
@@ -286,8 +336,12 @@ function Invoke-StartupSmoke {
             [void]$stdout.GetAwaiter().GetResult()
             [void]$stderr.GetAwaiter().GetResult()
             if ($timedOut -and $attempt -lt $startupAttempts) { continue }
-            if ($timedOut) { throw "Packaged startup smoke timed out." }
+            if ($timedOut) {
+                Write-StartupReportEvidence -ReportPath $ReportPath
+                throw "Packaged startup smoke timed out."
+            }
             if ($process.ExitCode -ne 0) {
+                Write-StartupReportEvidence -ReportPath $ReportPath
                 throw "Packaged startup smoke failed."
             }
             return
@@ -400,6 +454,21 @@ if ($RegressionProbe) {
                 Assert-Throws { Assert-StartupReport -Report $report }
             }
         }
+        "startup-evidence" {
+            $report = New-CompleteStartupReport
+            $report | Add-Member -NotePropertyName "secret_sentinel" -NotePropertyValue "must-not-appear"
+            $evidence = Format-StartupReportEvidence -Report $report
+            if ($evidence -notmatch '^RSHELL_PACKAGE_STARTUP version=1 ' -or
+                $evidence -notmatch 'measured_terminal_geometry_ready=true' -or
+                $evidence -notmatch 'scale_aware_icons_ready=true' -or
+                $evidence -match 'must-not-appear') {
+                throw "Package startup evidence is not closed and redacted."
+            }
+            $report.PSObject.Properties.Remove("measured_terminal_geometry_ready")
+            if ((Format-StartupReportEvidence -Report $report) -cne "RSHELL_PACKAGE_STARTUP version=1 report=invalid") {
+                throw "Invalid startup evidence was not rejected."
+            }
+        }
     }
     exit 0
 }
@@ -510,7 +579,13 @@ try {
             throw "Packaged startup smoke did not write a report."
         }
         $report = [System.IO.File]::ReadAllText($reportPath) | ConvertFrom-Json
-        Assert-StartupReport -Report $report
+        try {
+            Assert-StartupReport -Report $report
+        }
+        catch {
+            [Console]::Error.WriteLine((Format-StartupReportEvidence -Report $report))
+            throw
+        }
     }
     finally {
         foreach ($entry in $originalEnvironment.GetEnumerator()) {

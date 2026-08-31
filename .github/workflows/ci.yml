@@ -171,7 +171,7 @@ jobs:
           try {
             if ('${{ runner.os }}' -eq 'Linux') {
               $env:DISPLAY = ':98'
-              $displayServer = Start-Process -FilePath Xvfb -ArgumentList @(':98', '-screen', '0', '1280x1024x24', '-nolisten', 'tcp') -PassThru
+              $displayServer = Start-Process -FilePath Xvfb -ArgumentList @(':98', '-screen', '0', '2560x1440x24', '-nolisten', 'tcp') -PassThru
             }
             if ($null -ne $displayServer) {
               Start-Sleep -Seconds 1
@@ -208,7 +208,7 @@ jobs:
             $env:XDG_RUNTIME_DIR = $runtimeRoot
             $env:XDG_DATA_HOME = Join-Path $runtimeRoot "data"
             [void](New-Item -ItemType Directory -Path $env:XDG_DATA_HOME)
-            $xvfb = Start-Process -FilePath Xvfb -ArgumentList @(':99', '-screen', '0', '1280x1024x24', '-nolisten', 'tcp') -PassThru
+            $xvfb = Start-Process -FilePath Xvfb -ArgumentList @(':99', '-screen', '0', '2560x1440x24', '-nolisten', 'tcp') -PassThru
             Start-Sleep -Seconds 1
             if ($xvfb.HasExited) { throw "Xvfb stopped before the GTK smoke started." }
             $env:RSHELL_P0_QA_VAULT_REFERENCE = "rshell://credential/$([Guid]::NewGuid().ToString('N'))"

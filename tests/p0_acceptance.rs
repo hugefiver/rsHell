@@ -442,6 +442,7 @@ fn embedded_product_assets_and_package_contract_are_closed() {
         "external-resource-directory",
         "external-icons-directory",
         "runtime-icon-backends",
+        "startup-evidence",
     ] {
         let output = Command::new("pwsh")
             .args([
@@ -489,6 +490,11 @@ fn workflow_contract_requires_recovery_hidpi_and_native_matrix() {
         "CI must run P0 All on every native platform"
     );
     assert!(ci.contains("pwsh -NoProfile -File scripts/qa/terminal-engine-gate.ps1"));
+    assert_eq!(
+        ci.matches("2560x1440x24").count(),
+        2,
+        "Linux workspace and P0 GTK evidence need a real Wide-capable display"
+    );
     assert!(
         harness
             .contains("$baseEnvironment = @{ G_DEBUG = \"fatal-warnings\"; RSHELL_SHELL = $pwsh }")
@@ -582,6 +588,7 @@ fn package_contract_requires_measured_geometry_and_physical_icons() {
         );
     }
     assert_package_contract_probe("missing-recovery-hidpi-fields");
+    assert_package_contract_probe("startup-evidence");
     assert_workflow_contract_probe("missing-package-startup-field");
 }
 

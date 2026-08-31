@@ -240,7 +240,10 @@ fn assert_adaptive_recursive_pane_fixtures() {
             } else {
                 "shell-wide"
             };
-            assert!(css_child(main.widget(), mode).is_visible());
+            assert!(
+                wait_for_gtk(|| css_child(main.widget(), mode).is_visible()),
+                "{fixture:?} did not settle into {mode} at {width}x{height}"
+            );
             let terminals = descendants(main.widget())
                 .into_iter()
                 .filter(|widget| widget.has_css_class("terminal-canvas"))
