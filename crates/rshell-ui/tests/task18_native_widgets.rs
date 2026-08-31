@@ -202,7 +202,9 @@ fn assert_adaptive_command_bar() {
     assert!(flush_gtk());
     assert!(
         wait_for_gtk(|| {
-            css_child(main.widget(), "shell-compact").is_visible()
+            descendants(main.widget())
+                .into_iter()
+                .any(|widget| widget.has_css_class("shell-compact") && widget.is_visible())
                 && actions
                     .iter()
                     .all(|action| visible_button_text(action).is_none())

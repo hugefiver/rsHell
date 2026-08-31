@@ -15,6 +15,7 @@ pub enum InteractionDialogMsg {
     Answer(usize, String),
     Action(InteractionAction),
     ResponseAccepted(InteractionId),
+    FinalizeClose,
     DismissSession(SessionId),
     OperationFailed(InteractionId, &'static str),
     CommandRejected(InteractionId, UiPortError),
@@ -38,6 +39,7 @@ impl fmt::Debug for InteractionDialogMsg {
                 .debug_tuple("ResponseAccepted")
                 .field(interaction)
                 .finish(),
+            Self::FinalizeClose => formatter.write_str("FinalizeClose"),
             Self::DismissSession(session) => formatter
                 .debug_tuple("DismissSession")
                 .field(session)

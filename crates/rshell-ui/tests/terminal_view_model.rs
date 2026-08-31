@@ -106,7 +106,7 @@ fn hidpi_resize_emits_one_exact_cells_pixels_and_dpi_command() {
         .expect("changed resize");
 
     assert!(matches!(
-        command,
+        &command,
         UiCommand::Session {
             command: SessionUiCommand::Resize(TerminalSize {
                 cols: 100,
@@ -201,7 +201,7 @@ fn geometry_matrix_uses_one_measured_source() {
         .unwrap()
         .expect("first complete size");
     assert!(matches!(
-        command,
+        &command,
         UiCommand::Session {
             command: SessionUiCommand::Resize(TerminalSize {
                 cols: 100,
@@ -213,7 +213,7 @@ fn geometry_matrix_uses_one_measured_source() {
             ..
         }
     ));
-    assert!(model.apply_geometry(input).unwrap().is_none());
+    assert!(model.apply_geometry(input).unwrap().is_some());
     assert_eq!(
         model.cursor_rect(),
         Some(ViewRect {
@@ -242,7 +242,7 @@ fn geometry_matrix_uses_one_measured_source() {
         .expect("metric change alters complete size");
     assert_eq!(model.metrics(), second.metrics);
     assert!(matches!(
-        changed,
+        &changed,
         UiCommand::Session {
             command: SessionUiCommand::Resize(TerminalSize {
                 cols: 55,
@@ -254,7 +254,7 @@ fn geometry_matrix_uses_one_measured_source() {
             ..
         }
     ));
-    assert!(model.apply_metrics(second, None).unwrap().is_none());
+    assert!(model.apply_metrics(second, None).unwrap().is_some());
 }
 
 #[test]

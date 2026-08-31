@@ -1,12 +1,15 @@
 use gtk::{gdk, prelude::*};
 use relm4::{ComponentParts, ComponentSender, SimpleComponent, gtk};
-use rshell_core::{MouseButton, MouseEventKind, UiCommand};
+use rshell_core::{MouseButton, MouseEventKind};
 
 use crate::{
-    FontMetricsService, PointerEvent, TerminalClipboardAction, TerminalViewError,
-    TerminalViewModel, terminal_view_clipboard as clipboard_io,
-    terminal_view_metrics as metric_refresh, terminal_view_widgets::TerminalViewWidgets,
+    FontMetricsService, PointerEvent, TerminalClipboardAction, TerminalViewModel,
+    terminal_view_clipboard as clipboard_io, terminal_view_metrics as metric_refresh,
+    terminal_view_widgets::TerminalViewWidgets,
 };
+
+#[path = "terminal_view_output.rs"]
+mod output;
 
 pub use crate::terminal_view_message::{TerminalViewInit, TerminalViewMsg, TerminalViewOutput};
 
@@ -62,39 +65,43 @@ impl SimpleComponent for TerminalView {
                 self.model.apply_frame(frame);
             }
             TerminalViewMsg::RefreshMetrics(environment) => {
-                output_optional(
+                output::geometry(
                     metric_refresh::refresh_metrics(
                         &mut self.metrics_service,
                         &self.metric_widget,
                         &mut self.model,
                         environment,
                     ),
+                    &mut self.model,
                     &sender,
                 );
             }
-            TerminalViewMsg::RefreshGeometry => output_optional(
+            TerminalViewMsg::RefreshGeometry => output::geometry(
                 metric_refresh::refresh_current_geometry(
                     &mut self.metrics_service,
                     &self.metric_widget,
                     &mut self.model,
                 ),
+                &mut self.model,
                 &sender,
             ),
-            TerminalViewMsg::ReplayGeometry => output_optional(
+            TerminalViewMsg::ReplayGeometry => output::geometry(
                 metric_refresh::replay_current_geometry(
                     &mut self.metrics_service,
                     &self.metric_widget,
                     &mut self.model,
                 ),
+                &mut self.model,
                 &sender,
             ),
-            TerminalViewMsg::UpdateProfile(profile) => output_optional(
+            TerminalViewMsg::UpdateProfile(profile) => output::geometry(
                 metric_refresh::refresh_profile(
                     &mut self.metrics_service,
                     &self.metric_widget,
                     &mut self.model,
                     profile,
                 ),
+                &mut self.model,
                 &sender,
             ),
             TerminalViewMsg::Key { key, state } => self.handle_key(key, state, &sender),
@@ -102,14 +109,14 @@ impl SimpleComponent for TerminalView {
             TerminalViewMsg::FocusLost => self.model.focus_lost(),
             TerminalViewMsg::CommittedText(text) => {
                 let result = self.model.committed_text(&text);
-                output_result(result, &sender);
+                output::result(result, &sender);
             }
             TerminalViewMsg::Pointer(event) => self.handle_pointer(event, &sender),
             TerminalViewMsg::Resize {
                 width,
                 height,
                 scale,
-            } => output_optional(
+            } => output::geometry(
                 metric_refresh::refresh_geometry(
                     &mut self.metrics_service,
                     &self.metric_widget,
@@ -118,6 +125,7 @@ impl SimpleComponent for TerminalView {
                     height,
                     scale,
                 ),
+                &mut self.model,
                 &sender,
             ),
             TerminalViewMsg::Selection {
@@ -126,7 +134,7 @@ impl SimpleComponent for TerminalView {
                 end_x,
                 end_y,
                 rectangular,
-            } => output_result(
+            } => output::result(
                 self.model
                     .selection(start_x, start_y, end_x, end_y, rectangular),
                 &sender,
@@ -135,12 +143,14 @@ impl SimpleComponent for TerminalView {
                 text,
                 case_sensitive,
                 regex,
-            } => output_result(self.model.search(&text, case_sensitive, regex), &sender),
+            } => output::result(self.model.search(&text, case_sensitive, regex), &sender),
             TerminalViewMsg::PasteText(text) => {
-                output_result(self.model.paste(&text), &sender);
+                output::result(self.model.paste(&text), &sender);
             }
             TerminalViewMsg::ReadClipboard => clipboard_io::read(&self.clipboard, &sender),
-            TerminalViewMsg::Copy => output_command(self.model.copy(), &sender),
+            TerminalViewMsg::Copy => {
+                let _ = output::command(self.model.copy(), &sender);
+            }
             TerminalViewMsg::SessionEvent(event) => {
                 self.model.apply_session_event(event);
                 if let Some(TerminalClipboardAction::Write(text)) =
@@ -170,14 +180,18 @@ impl TerminalView {
         let control_shift = state.contains(gdk::ModifierType::CONTROL_MASK)
             && state.contains(gdk::ModifierType::SHIFT_MASK);
         if control_shift && value == Some('c') {
-            output_command(self.model.copy(), sender);
+            let _ = output::command(self.model.copy(), sender);
         } else if control_shift && value == Some('v') {
             clipboard_io::read(&self.clipboard, sender);
         } else {
             match self.model.key(key, state) {
-                Ok(Some(command)) => output_command(command, sender),
+                Ok(Some(command)) => {
+                    let _ = output::command(command, sender);
+                }
                 Ok(None) => {}
-                Err(error) => output_error(error, sender),
+                Err(error) => {
+                    let _ = sender.output(TerminalViewOutput::Error(error));
+                }
             }
         }
     }
@@ -193,7 +207,7 @@ impl TerminalView {
             } else if event.kind == MouseEventKind::Release {
                 self.pressed_button = None;
             }
-            output_optional(self.model.mouse(event), sender);
+            output::optional(self.model.mouse(event), sender);
             return;
         }
         match event.kind {
@@ -202,7 +216,7 @@ impl TerminalView {
             }
             MouseEventKind::Move => {
                 if let Some((start_x, start_y)) = self.selection_anchor {
-                    output_result(
+                    output::result(
                         self.model
                             .selection(start_x, start_y, event.x, event.y, false),
                         sender,
@@ -211,46 +225,17 @@ impl TerminalView {
             }
             MouseEventKind::Release => {
                 if let Some((start_x, start_y)) = self.selection_anchor.take() {
-                    output_result(
+                    output::result(
                         self.model
                             .selection(start_x, start_y, event.x, event.y, false),
                         sender,
                     );
                 }
             }
-            MouseEventKind::Scroll => output_optional(self.model.mouse(event), sender),
+            MouseEventKind::Scroll => output::optional(self.model.mouse(event), sender),
             MouseEventKind::Press => {}
         }
     }
-}
-
-fn output_optional(
-    result: Result<Option<UiCommand>, TerminalViewError>,
-    sender: &ComponentSender<TerminalView>,
-) {
-    match result {
-        Ok(Some(command)) => output_command(command, sender),
-        Ok(None) => {}
-        Err(error) => output_error(error, sender),
-    }
-}
-
-fn output_result(
-    result: Result<UiCommand, TerminalViewError>,
-    sender: &ComponentSender<TerminalView>,
-) {
-    match result {
-        Ok(command) => output_command(command, sender),
-        Err(error) => output_error(error, sender),
-    }
-}
-
-fn output_command(command: UiCommand, sender: &ComponentSender<TerminalView>) {
-    let _ = sender.output(TerminalViewOutput::Command(Box::new(command)));
-}
-
-fn output_error(error: TerminalViewError, sender: &ComponentSender<TerminalView>) {
-    let _ = sender.output(TerminalViewOutput::Error(error));
 }
 
 #[cfg(test)]

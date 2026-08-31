@@ -20,18 +20,27 @@ impl TerminalViewModel {
     }
 
     pub(crate) fn has_positive_emitted_geometry(&self) -> bool {
-        self.last_emitted_size.is_some_and(|size| {
-            size.cols > 0
-                && size.rows > 0
-                && size.pixel_width > 0
-                && size.pixel_height > 0
-                && size.dpi > 0
-        })
+        self.last_geometry_delivered
+            && self.last_emitted_size.is_some_and(|size| {
+                size.cols > 0
+                    && size.rows > 0
+                    && size.pixel_width > 0
+                    && size.pixel_height > 0
+                    && size.dpi > 0
+            })
     }
 
     pub(crate) fn replay_geometry(&self) -> Option<UiCommand> {
         self.last_emitted_size
             .map(|size| self.command(SessionUiCommand::Resize(size)))
+    }
+
+    pub(crate) fn confirm_geometry_delivery(&mut self, size: rshell_core::TerminalSize) -> bool {
+        if self.last_emitted_size != Some(size) {
+            return false;
+        }
+        self.last_geometry_delivered = true;
+        true
     }
 
     pub fn cursor_rect(&self) -> Option<ViewRect> {
@@ -61,9 +70,11 @@ impl TerminalViewModel {
         let size = terminal_size(input)?;
         self.last_logical_allocation = Some((input.logical_width, input.logical_height));
         if self.last_emitted_size == Some(size) {
-            return Ok(None);
+            return Ok((!self.last_geometry_delivered)
+                .then(|| self.command(SessionUiCommand::Resize(size))));
         }
         self.last_emitted_size = Some(size);
+        self.last_geometry_delivered = false;
         Ok(Some(self.command(SessionUiCommand::Resize(size))))
     }
 
@@ -89,9 +100,11 @@ impl TerminalViewModel {
         self.measured = measured;
         self.last_logical_allocation = Some((logical_width, logical_height));
         if self.last_emitted_size == Some(size) {
-            return Ok(None);
+            return Ok((!self.last_geometry_delivered)
+                .then(|| self.command(SessionUiCommand::Resize(size))));
         }
         self.last_emitted_size = Some(size);
+        self.last_geometry_delivered = false;
         Ok(Some(self.command(SessionUiCommand::Resize(size))))
     }
 
@@ -193,7 +206,8 @@ mod tests {
             } => (session, size),
             _ => panic!("initial geometry command must be a session resize"),
         };
-        assert!(model.apply_geometry(input).unwrap().is_none());
+        assert!(!model.has_positive_emitted_geometry());
+        assert!(model.apply_geometry(input).unwrap().is_some());
         assert!(matches!(
             model.replay_geometry(),
             Some(UiCommand::Session {
@@ -201,5 +215,8 @@ mod tests {
                 command: SessionUiCommand::Resize(size),
             }) if session == expected_session && size == expected_size
         ));
+        assert!(model.confirm_geometry_delivery(expected_size));
+        assert!(model.has_positive_emitted_geometry());
+        assert!(model.apply_geometry(input).unwrap().is_none());
     }
 }

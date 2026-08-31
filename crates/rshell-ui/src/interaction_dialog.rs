@@ -14,6 +14,7 @@ pub struct InteractionDialog {
     pub(crate) view: Option<InteractionViewModel>,
     pub(crate) visible: bool,
     pub(crate) pending: bool,
+    pub(crate) closing: bool,
     pub(crate) error: Option<String>,
     pub(crate) queued: VecDeque<InteractionViewModel>,
     pub(crate) revision: u64,
@@ -43,6 +44,7 @@ impl SimpleComponent for InteractionDialog {
             view: None,
             visible: false,
             pending: false,
+            closing: false,
             error: None,
             queued: VecDeque::new(),
             revision: 0,
@@ -93,6 +95,13 @@ impl SimpleComponent for InteractionDialog {
             {
                 self.response_accepted(&sender);
             }
+            InteractionDialogMsg::FinalizeClose => {
+                if self.closing && self.view.is_none() {
+                    self.closing = false;
+                    self.visible = false;
+                    let _ = sender.output(InteractionDialogOutput::Closed);
+                }
+            }
             InteractionDialogMsg::DismissSession(session) => self.dismiss_session(session, &sender),
             InteractionDialogMsg::OperationFailed(interaction, context)
                 if self
@@ -142,7 +151,7 @@ impl SimpleComponent for InteractionDialog {
     }
 
     fn update_view(&self, widgets: &mut Self::Widgets, sender: ComponentSender<Self>) {
-        if self.pending || !self.visible {
+        if self.pending || self.closing || !self.visible {
             widgets.park_focus();
             widgets.wipe_inputs();
         } else {

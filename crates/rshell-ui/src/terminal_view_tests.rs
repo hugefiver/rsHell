@@ -1,4 +1,5 @@
 use super::*;
+use crate::TerminalViewError;
 
 #[test]
 fn clipboard_read_failure_maps_to_a_structured_error_without_fake_text() {
