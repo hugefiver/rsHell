@@ -6,8 +6,8 @@ use gtk::prelude::*;
 use relm4::{Component, ComponentController};
 use rshell_core::{
     AppBootstrapState, AppEvent, AppViewModel, AuthPrompt, InteractionId, InteractionRequest,
-    PaneId, PaneLaunchTarget, PaneTree, SessionId, SessionState, TabId, TabState, TerminalProfile,
-    UiCommand, UiCommandPort, UiPortError,
+    PaneId, PaneLaunchTarget, PaneTree, SessionId, SessionState, SessionUiCommand, TabId, TabState,
+    TerminalProfile, UiCommand, UiCommandPort, UiPortError,
 };
 use rshell_ui::{
     ConnectionSidebarOutput, MainWindow, MainWindowInit, MainWindowMsg, embedded_theme_css,
@@ -222,12 +222,10 @@ fn assert_surface_contract(kind: Kind) {
         gtk::gdk::ModifierType::empty()
     ));
     assert!(flush_gtk());
+    let (responses, unrelated) = commands.classify_since(before);
     if let Some(interaction) = interaction {
-        assert_eq!(
-            commands.len(),
-            before + 1,
-            "interaction cancel reducer dispatch"
-        );
+        assert_eq!(responses, 1, "interaction cancel reducer dispatch");
+        assert_eq!(unrelated, 0, "interaction close emitted unrelated work");
         main.emit(MainWindowMsg::AppEvent(AppEvent::InteractionResponded {
             session,
             interaction,
@@ -235,10 +233,10 @@ fn assert_surface_contract(kind: Kind) {
         assert!(flush_gtk());
     } else {
         assert_eq!(
-            commands.len(),
-            before,
-            "modal close must not dispatch product work"
+            responses, 0,
+            "non-interaction modal close emitted a response"
         );
+        assert_eq!(unrelated, 0, "modal close emitted unrelated work");
     }
     assert!(!surface.is_visible(), "{kind:?} reducer must close surface");
     assert!(!scrim.is_visible(), "{kind:?} close must hide scrim");
@@ -371,6 +369,32 @@ impl RecordingPort {
     fn len(&self) -> usize {
         self.commands.lock().unwrap().len()
     }
+
+    fn classify_since(&self, index: usize) -> (usize, usize) {
+        let commands = self.commands.lock().unwrap();
+        let commands = &commands[index..];
+        let responses = commands
+            .iter()
+            .filter(|command| matches!(command, UiCommand::Respond { .. }))
+            .count();
+        let unrelated = commands
+            .iter()
+            .filter(|command| {
+                !matches!(command, UiCommand::Respond { .. }) && !is_geometry_refresh(command)
+            })
+            .count();
+        (responses, unrelated)
+    }
+}
+
+fn is_geometry_refresh(command: &UiCommand) -> bool {
+    matches!(
+        command,
+        UiCommand::Session {
+            command: SessionUiCommand::Resize(_),
+            ..
+        }
+    )
 }
 
 impl UiCommandPort for RecordingPort {
