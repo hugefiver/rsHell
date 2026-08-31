@@ -13,7 +13,10 @@ impl MainWindow {
     pub(crate) fn apply_shell_layout(&mut self, width: i32) {
         let sidebar: gtk::Widget = self.sidebar.widget().clone().upcast();
         self.shell.apply(ShellLayout::for_width(width), &sidebar);
-        self.send_sidebar(ConnectionSidebarMsg::RefreshPresentation);
+        self.send_sidebar(self.smoke_state.sidebar_selection.map_or(
+            ConnectionSidebarMsg::RefreshPresentation,
+            ConnectionSidebarMsg::SelectConnection,
+        ));
     }
 
     pub(crate) fn replace_view_model(&mut self, view_model: rshell_core::AppViewModel) {

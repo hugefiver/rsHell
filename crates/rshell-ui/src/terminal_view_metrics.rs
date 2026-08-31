@@ -73,6 +73,21 @@ pub(crate) fn refresh_profile(
     refresh_metrics(service, widget, model, metric_environment(widget)?)
 }
 
+pub(crate) fn refresh_current_geometry(
+    service: &mut FontMetricsService,
+    widget: &gtk::DrawingArea,
+    model: &mut TerminalViewModel,
+) -> Result<Option<UiCommand>, TerminalViewError> {
+    refresh_geometry(
+        service,
+        widget,
+        model,
+        widget.width(),
+        widget.height(),
+        f64::from(widget.scale_factor()),
+    )
+}
+
 pub(crate) fn refresh_geometry(
     service: &mut FontMetricsService,
     widget: &gtk::DrawingArea,

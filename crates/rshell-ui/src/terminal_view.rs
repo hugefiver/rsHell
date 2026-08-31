@@ -4,9 +4,8 @@ use rshell_core::{MouseButton, MouseEventKind, UiCommand};
 
 use crate::{
     FontMetricsService, PointerEvent, TerminalClipboardAction, TerminalViewError,
-    TerminalViewModel,
-    terminal_view_metrics::{refresh_geometry, refresh_metrics, refresh_profile},
-    terminal_view_widgets::TerminalViewWidgets,
+    TerminalViewModel, terminal_view_clipboard as clipboard_io,
+    terminal_view_metrics as metric_refresh, terminal_view_widgets::TerminalViewWidgets,
 };
 
 pub use crate::terminal_view_message::{TerminalViewInit, TerminalViewMsg, TerminalViewOutput};
@@ -64,7 +63,7 @@ impl SimpleComponent for TerminalView {
             }
             TerminalViewMsg::RefreshMetrics(environment) => {
                 output_optional(
-                    refresh_metrics(
+                    metric_refresh::refresh_metrics(
                         &mut self.metrics_service,
                         &self.metric_widget,
                         &mut self.model,
@@ -73,8 +72,16 @@ impl SimpleComponent for TerminalView {
                     &sender,
                 );
             }
+            TerminalViewMsg::RefreshGeometry => output_optional(
+                metric_refresh::refresh_current_geometry(
+                    &mut self.metrics_service,
+                    &self.metric_widget,
+                    &mut self.model,
+                ),
+                &sender,
+            ),
             TerminalViewMsg::UpdateProfile(profile) => output_optional(
-                refresh_profile(
+                metric_refresh::refresh_profile(
                     &mut self.metrics_service,
                     &self.metric_widget,
                     &mut self.model,
@@ -95,7 +102,7 @@ impl SimpleComponent for TerminalView {
                 height,
                 scale,
             } => output_optional(
-                refresh_geometry(
+                metric_refresh::refresh_geometry(
                     &mut self.metrics_service,
                     &self.metric_widget,
                     &mut self.model,
@@ -124,7 +131,7 @@ impl SimpleComponent for TerminalView {
             TerminalViewMsg::PasteText(text) => {
                 output_result(self.model.paste(&text), &sender);
             }
-            TerminalViewMsg::ReadClipboard => self.read_clipboard(&sender),
+            TerminalViewMsg::ReadClipboard => clipboard_io::read(&self.clipboard, &sender),
             TerminalViewMsg::Copy => output_command(self.model.copy(), &sender),
             TerminalViewMsg::SessionEvent(event) => {
                 self.model.apply_session_event(event);
@@ -157,7 +164,7 @@ impl TerminalView {
         if control_shift && value == Some('c') {
             output_command(self.model.copy(), sender);
         } else if control_shift && value == Some('v') {
-            self.read_clipboard(sender);
+            clipboard_io::read(&self.clipboard, sender);
         } else {
             match self.model.key(key, state) {
                 Ok(Some(command)) => output_command(command, sender),
@@ -207,18 +214,6 @@ impl TerminalView {
             MouseEventKind::Press => {}
         }
     }
-
-    fn read_clipboard(&self, sender: &ComponentSender<Self>) {
-        let sender = sender.clone();
-        self.clipboard
-            .read_text_async(gtk::gio::Cancellable::NONE, move |result| {
-                match map_clipboard_read_result(result) {
-                    Ok(Some(text)) => sender.input(TerminalViewMsg::PasteText(text)),
-                    Ok(None) => {}
-                    Err(error) => output_error(error, &sender),
-                }
-            });
-    }
 }
 
 fn output_optional(
@@ -250,13 +245,8 @@ fn output_error(error: TerminalViewError, sender: &ComponentSender<TerminalView>
     let _ = sender.output(TerminalViewOutput::Error(error));
 }
 
-fn map_clipboard_read_result<T: Into<String>, E>(
-    result: Result<Option<T>, E>,
-) -> Result<Option<String>, TerminalViewError> {
-    result
-        .map(|text| text.map(Into::into))
-        .map_err(|_| TerminalViewError::ClipboardUnavailable)
-}
+#[cfg(test)]
+use clipboard_io::map_clipboard_read_result;
 
 #[cfg(test)]
 #[path = "terminal_view_tests.rs"]

@@ -143,6 +143,7 @@ mod terminal_render_cache;
 mod terminal_renderer;
 mod terminal_search;
 mod terminal_view;
+mod terminal_view_clipboard;
 mod terminal_view_geometry;
 mod terminal_view_keyboard;
 mod terminal_view_keys;
