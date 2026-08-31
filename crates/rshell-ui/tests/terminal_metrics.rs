@@ -284,6 +284,54 @@ fn unusable_requested_description_uses_only_the_measured_monospace_fallback() {
 }
 
 #[test]
+fn unavailable_requested_family_keeps_its_size_in_a_monospace_fallback() {
+    let context = native_context();
+    let profile = TerminalSettingsV1 {
+        font_family: "Rshell Definitely Unavailable Terminal Face".into(),
+        font_size: 15.0,
+        ..TerminalSettingsV1::default()
+    }
+    .resolve(&TerminalOverrides::default());
+    let mut metrics_by_scale = Vec::new();
+    for (scale, dpi) in [(1.0, 96.0), (2.0, 192.0)] {
+        let measured = changed(
+            FontMetricsService::default()
+                .measure(
+                    &context,
+                    &profile,
+                    FontMetricEnvironment {
+                        effective_scale: scale,
+                        effective_dpi: dpi,
+                        dpi_fallback_used: false,
+                    },
+                )
+                .expect("same-size monospace fallback metrics"),
+        );
+        assert!(measured.fallback_used);
+        assert_eq!(
+            measured.font_description.family().as_deref(),
+            Some("Monospace")
+        );
+        assert_eq!(
+            measured.font_description.size(),
+            (15.0 * pango::SCALE as f32) as i32
+        );
+        assert!(measured.minimum_line_separation >= rshell_ui::TERMINAL_LINE_SPACING);
+        let geometry = TerminalGeometryInput {
+            logical_width: (measured.metrics.cell_width * 9.0) as i32,
+            logical_height: (measured.metrics.cell_height * 4.0) as i32,
+            metrics: measured.metrics,
+            environment: measured.environment,
+        }
+        .terminal_size()
+        .expect("fallback geometry");
+        assert_eq!((geometry.cols, geometry.rows), (9, 4));
+        metrics_by_scale.push(measured.metrics);
+    }
+    assert_eq!(metrics_by_scale[0], metrics_by_scale[1]);
+}
+
+#[test]
 fn native_ascii_combining_cjk_and_emoji_stay_on_protocol_grid_identity() {
     let context = native_context();
     let profile = TerminalSettingsV1::default().resolve(&TerminalOverrides::default());
@@ -356,6 +404,17 @@ fn default_terminal_face_is_scale_stable_and_occupies_its_grid() {
             "default terminal face is too loosely spaced: occupancy={occupancy}, metrics={:?}",
             measured.metrics
         );
+        if measured.fallback_used {
+            assert_eq!(
+                measured.font_description.family().as_deref(),
+                Some("Monospace")
+            );
+        } else {
+            assert_eq!(
+                measured.font_description.family().as_deref(),
+                Some("Cascadia Mono")
+            );
+        }
         measured_metrics.push(measured.metrics);
     }
     assert_eq!(measured_metrics[0], measured_metrics[1]);

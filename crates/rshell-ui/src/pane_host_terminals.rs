@@ -57,7 +57,8 @@ pub(crate) fn sync_terminals(
     terminals: &mut BTreeMap<SessionId, Controller<TerminalView>>,
     metric_widget: &impl IsA<gtk::Widget>,
     sender: &ComponentSender<crate::PaneHost>,
-) {
+) -> BTreeSet<SessionId> {
+    let mut replaced = BTreeSet::new();
     let panes = model
         .active_tab()
         .and_then(|active| {
@@ -142,7 +143,9 @@ pub(crate) fn sync_terminals(
             model.observe_frame(frame);
         }
         terminals.insert(session, controller);
+        replaced.insert(session);
     }
+    replaced
 }
 
 pub(crate) fn detach_terminals(terminals: &BTreeMap<SessionId, Controller<TerminalView>>) {

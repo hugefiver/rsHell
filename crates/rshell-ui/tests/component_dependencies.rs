@@ -263,7 +263,12 @@ fn hosted_native_contracts_keep_selection_thread_and_geometry_boundaries() {
     let pane_host = fs::read_to_string(src.join("pane_host.rs")).unwrap();
     assert!(pane_host.contains("SessionUiCommand::Resize(size)"));
     assert!(pane_host.contains("self.model.observe_terminal_geometry(*size);"));
-    assert!(!pane_host.contains("TerminalViewMsg::RefreshGeometry"));
+    assert!(pane_host.contains("PaneHostGeometryAck"));
+    assert!(pane_host.contains("RefreshUnacknowledgedGeometry"));
+    let geometry = fs::read_to_string(src.join("pane_host_geometry.rs")).unwrap();
+    assert!(geometry.contains("acknowledge"));
+    assert!(geometry.contains("positive_terminal_geometry"));
+    assert!(geometry.contains("TerminalViewMsg::RefreshGeometry"));
     let widgets = fs::read_to_string(src.join("terminal_view_widgets.rs")).unwrap();
     for required in [
         "canvas.add_tick_callback",

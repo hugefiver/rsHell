@@ -2,8 +2,8 @@ use gtk::pango;
 use pangocairo::prelude::*;
 use rshell_core::{ColorScheme, ResolvedTerminalProfile};
 
-use crate::terminal_font;
 use crate::{FontMetrics, TerminalViewError, terminal_input::positive_finite};
+use crate::{terminal_font, terminal_font_availability::requested_family_is_exact_monospace};
 
 const MEASURED_FALLBACK_FAMILY: &str = "Monospace";
 const MEASURED_FALLBACK_SIZE: f32 = 10.0;
@@ -151,23 +151,17 @@ impl FontMetricsService {
             return Ok(MetricsChange::Unchanged(current.clone()));
         }
 
-        let (metrics, font_description, ink_height, fallback_used) = match measure_description(
-            context,
-            &profile.font_family,
-            profile.font_size,
-            environment.effective_scale,
-        ) {
-            Ok((metrics, description, ink_height)) => (metrics, description, ink_height, false),
-            Err(_) => {
-                let (metrics, description, ink_height) = measure_description(
-                    context,
-                    MEASURED_FALLBACK_FAMILY,
-                    MEASURED_FALLBACK_SIZE,
-                    environment.effective_scale,
-                )?;
-                (metrics, description, ink_height, true)
-            }
+        let requested_is_valid =
+            !profile.font_family.trim().is_empty() && positive_finite(f64::from(profile.font_size));
+        let (family, font_size, fallback_used) = if !requested_is_valid {
+            (MEASURED_FALLBACK_FAMILY, MEASURED_FALLBACK_SIZE, true)
+        } else if requested_family_is_exact_monospace(context, &profile.font_family) {
+            (profile.font_family.as_str(), profile.font_size, false)
+        } else {
+            (MEASURED_FALLBACK_FAMILY, profile.font_size, true)
         };
+        let (metrics, font_description, ink_height) =
+            measure_description(context, family, font_size, environment.effective_scale)?;
         let measured = MeasuredFontMetrics {
             metrics,
             key,

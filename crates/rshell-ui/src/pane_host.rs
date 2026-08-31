@@ -10,6 +10,7 @@ use rshell_core::{
 use crate::{
     PaneAction, PaneHostInit, PaneHostModel, TerminalView, TerminalViewMsg, TerminalViewOutput,
     pane_host_commands::{connect_active, handle_action},
+    pane_host_geometry::PaneHostGeometryAck,
     pane_host_layout::request_layout_frame,
     pane_host_refresh::{active_terminals_changed, projection_changed, session_is_active},
     pane_host_render::render_projection,
@@ -36,6 +37,7 @@ pub enum PaneHostMsg {
         event: SessionUiEvent,
     },
     Terminal(SessionId, TerminalViewOutput),
+    RefreshUnacknowledgedGeometry,
     CommandRejected(UiPortError),
 }
 
@@ -53,6 +55,7 @@ pub struct PaneHost {
     terminals: BTreeMap<SessionId, Controller<TerminalView>>,
     content: gtk::Overlay,
     clipboard: gdk::Clipboard,
+    geometry: PaneHostGeometryAck,
     render_dirty: Cell<bool>,
 }
 
@@ -94,14 +97,10 @@ impl SimpleComponent for PaneHost {
             terminals: BTreeMap::new(),
             content,
             clipboard: root.display().clipboard(),
+            geometry: PaneHostGeometryAck::default(),
             render_dirty: Cell::new(false),
         };
-        sync_terminals(
-            &mut model.model,
-            &mut model.terminals,
-            &model.content,
-            &sender,
-        );
+        model.sync_terminal_controllers(&sender);
         model.render(&sender);
         ComponentParts {
             model,
@@ -119,13 +118,13 @@ impl SimpleComponent for PaneHost {
                 }
                 self.model.replace_view_model(*view_model);
                 if sync {
-                    sync_terminals(&mut self.model, &mut self.terminals, &self.content, &sender);
+                    self.sync_terminal_controllers(&sender);
                 }
             }
             PaneHostMsg::ActivateTab(tab) => {
                 if self.model.activate_tab(tab) {
                     self.render_dirty.set(true);
-                    sync_terminals(&mut self.model, &mut self.terminals, &self.content, &sender);
+                    self.sync_terminal_controllers(&sender);
                     let _ = sender.output(PaneHostOutput::ActiveTab(tab));
                 }
             }
@@ -147,12 +146,7 @@ impl SimpleComponent for PaneHost {
                         self.render_dirty.set(true);
                     }
                     if active {
-                        sync_terminals(
-                            &mut self.model,
-                            &mut self.terminals,
-                            &self.content,
-                            &sender,
-                        );
+                        self.sync_terminal_controllers(&sender);
                     }
                     if active
                         && !matches!(event, SessionUiEvent::Frame(_))
@@ -163,12 +157,7 @@ impl SimpleComponent for PaneHost {
                         )
                     {
                         self.terminals.remove(&session);
-                        sync_terminals(
-                            &mut self.model,
-                            &mut self.terminals,
-                            &self.content,
-                            &sender,
-                        );
+                        self.sync_terminal_controllers(&sender);
                         if let Some(replacement) = self.terminals.get(&session) {
                             let _ = send_terminal_message(
                                 replacement,
@@ -178,15 +167,22 @@ impl SimpleComponent for PaneHost {
                     }
                 }
             }
-            PaneHostMsg::Terminal(_, TerminalViewOutput::Command(command)) => {
+            PaneHostMsg::Terminal(source, TerminalViewOutput::Command(command)) => {
                 if let UiCommand::Session {
+                    session,
                     command: SessionUiCommand::Resize(size),
                     ..
                 } = command.as_ref()
+                    && self.geometry.acknowledge(source, *session, *size)
                 {
                     self.model.observe_terminal_geometry(*size);
+                    self.geometry.schedule(&self.content, &sender);
                 }
                 let _ = sender.output(PaneHostOutput::Command(command));
+            }
+            PaneHostMsg::RefreshUnacknowledgedGeometry => {
+                self.geometry.refresh(&mut self.terminals);
+                self.geometry.schedule(&self.content, &sender);
             }
             PaneHostMsg::Terminal(_, TerminalViewOutput::Error(_)) => {
                 let _ = sender.output(PaneHostOutput::Error("terminal input was rejected"));
@@ -215,6 +211,7 @@ impl PaneHost {
             let empty = gtk::Label::new(Some("No terminal tabs"));
             empty.add_css_class("pane-state-label");
             self.content.set_child(Some(&empty));
+            self.geometry.schedule(&self.content, sender);
             return;
         };
         if let Some(projection) = self.model.projection(tab) {
@@ -224,6 +221,7 @@ impl PaneHost {
             request_layout_frame(&projection);
         }
         request_layout_frame(&self.content);
+        self.geometry.schedule(&self.content, sender);
         if let Some(root) = self.content.root() {
             root.queue_resize();
             root.queue_draw();
@@ -233,5 +231,12 @@ impl PaneHost {
                 surface.queue_render();
             }
         }
+    }
+
+    fn sync_terminal_controllers(&mut self, sender: &ComponentSender<Self>) {
+        let replaced = sync_terminals(&mut self.model, &mut self.terminals, &self.content, sender);
+        self.geometry
+            .synchronize(self.terminals.keys().copied(), &replaced);
+        self.geometry.schedule(&self.content, sender);
     }
 }

@@ -21,8 +21,9 @@ use rshell_core::{
 use rshell_ui::{
     ConnectionEditor, ConnectionEditorInit, ConnectionEditorMsg, ConnectionSidebar,
     ConnectionSidebarInit, ConnectionSidebarMsg, FontMetricEnvironment, FontMetricsService,
-    MetricsChange, PaneHost, PaneHostInit, PaneHostMsg, SessionTabBar, SessionTabBarInit,
-    SessionTabBarMsg, TerminalView, TerminalViewInit, TerminalViewMsg, TerminalViewOutput,
+    MetricsChange, PaneHost, PaneHostInit, PaneHostMsg, PaneHostOutput, SessionTabBar,
+    SessionTabBarInit, SessionTabBarMsg, StartupProbe, TerminalView, TerminalViewInit,
+    TerminalViewMsg, TerminalViewOutput,
 };
 
 #[test]
@@ -34,6 +35,7 @@ fn twenty_tabs_are_keyboard_and_overflow_reachable() {
     assert_twenty_tab_overflow_and_keyboard_reachability();
     assert_terminal_view_native_boundary();
     assert_mapped_terminal_retries_geometry_after_zero_allocation();
+    assert_pane_host_acknowledges_positive_geometry_after_reparent();
     assert_native_workspace_boundary();
     assert_sidebar_catalog_refresh_preserves_only_the_same_visible_identity();
     assert_catalog_rebuild_then_identity_switch_quiesces();
@@ -840,6 +842,76 @@ struct GeometryHarness {
 
 struct GeometryHarnessWidgets;
 
+#[derive(Debug)]
+enum PaneGeometryHarnessMsg {
+    Pane(PaneHostOutput),
+    RefreshUnacknowledgedGeometry,
+}
+
+struct PaneGeometryHarnessInit {
+    view: AppViewModel,
+    probe: StartupProbe,
+    sizes: Rc<RefCell<Vec<TerminalSize>>>,
+}
+
+struct PaneGeometryHarness {
+    host: Controller<PaneHost>,
+    sizes: Rc<RefCell<Vec<TerminalSize>>>,
+}
+
+struct PaneGeometryHarnessWidgets;
+
+impl SimpleComponent for PaneGeometryHarness {
+    type Init = PaneGeometryHarnessInit;
+    type Input = PaneGeometryHarnessMsg;
+    type Output = ();
+    type Root = gtk::Box;
+    type Widgets = PaneGeometryHarnessWidgets;
+
+    fn init_root() -> Self::Root {
+        gtk::Box::new(gtk::Orientation::Vertical, 0)
+    }
+
+    fn init(
+        init: Self::Init,
+        root: Self::Root,
+        sender: ComponentSender<Self>,
+    ) -> ComponentParts<Self> {
+        let host = PaneHost::builder()
+            .launch(PaneHostInit {
+                view_model: init.view,
+                startup_probe: Some(init.probe),
+            })
+            .forward(sender.input_sender(), PaneGeometryHarnessMsg::Pane);
+        root.append(host.widget());
+        ComponentParts {
+            model: Self {
+                host,
+                sizes: init.sizes,
+            },
+            widgets: PaneGeometryHarnessWidgets,
+        }
+    }
+
+    fn update(&mut self, message: Self::Input, _sender: ComponentSender<Self>) {
+        match message {
+            PaneGeometryHarnessMsg::Pane(PaneHostOutput::Command(command)) => {
+                if let UiCommand::Session {
+                    command: SessionUiCommand::Resize(size),
+                    ..
+                } = *command
+                {
+                    self.sizes.borrow_mut().push(size);
+                }
+            }
+            PaneGeometryHarnessMsg::Pane(_) => {}
+            PaneGeometryHarnessMsg::RefreshUnacknowledgedGeometry => {
+                self.host.emit(PaneHostMsg::RefreshUnacknowledgedGeometry);
+            }
+        }
+    }
+}
+
 impl SimpleComponent for GeometryHarness {
     type Init = GeometryHarnessInit;
     type Input = GeometryHarnessMsg;
@@ -948,6 +1020,78 @@ fn assert_mapped_terminal_retries_geometry_after_zero_allocation() {
     assert_eq!(sizes.borrow().len(), 1, "duplicate refreshes are deduped");
     window.close();
     assert!(flush_gtk(), "geometry retry window close must quiesce");
+}
+
+fn assert_pane_host_acknowledges_positive_geometry_after_reparent() {
+    let pane = PaneId::new();
+    let session = SessionId::new();
+    let tab = TabId::new_v4();
+    let mut view = AppViewModel::from(AppBootstrapState {
+        catalog: Default::default(),
+        settings: Default::default(),
+        terminal_profiles: vec![TerminalProfile::default()],
+    });
+    view.workspace = WorkspaceState {
+        tabs: vec![TabState {
+            id: tab,
+            title: "Geometry".into(),
+            pane_tree: PaneTree::with_session(pane, session),
+            active_pane: pane,
+        }],
+        active_tab: Some(tab),
+    };
+    view.pane_launches.insert(pane, PaneLaunchTarget::Local);
+    view.session_states.insert(session, SessionState::Connected);
+
+    let probe = StartupProbe::new();
+    let sizes = Rc::new(RefCell::new(Vec::new()));
+    let host = PaneGeometryHarness::builder()
+        .launch(PaneGeometryHarnessInit {
+            view,
+            probe: probe.clone(),
+            sizes: Rc::clone(&sizes),
+        })
+        .detach();
+    assert_eq!(host.widget().width(), 0);
+    assert!(
+        descendants(host.widget())
+            .iter()
+            .any(|widget| widget.has_css_class("pane-geometry-pending")),
+        "PaneHost must await real terminal geometry before mapping"
+    );
+
+    let reparent = gtk::Box::new(gtk::Orientation::Vertical, 0);
+    reparent.append(host.widget());
+    let window = gtk::Window::new();
+    window.set_default_size(640, 360);
+    window.set_child(Some(&reparent));
+    window.present();
+    assert!(wait_for_gtk(|| {
+        sizes.borrow().len() == 1
+            && probe.report(false).measured_terminal_geometry_ready
+            && !descendants(host.widget())
+                .iter()
+                .any(|widget| widget.has_css_class("pane-geometry-pending"))
+    }));
+    let emitted = sizes.borrow().clone();
+    assert!(
+        emitted[0].cols > 0
+            && emitted[0].rows > 0
+            && emitted[0].pixel_width > 0
+            && emitted[0].pixel_height > 0
+            && emitted[0].dpi > 0,
+        "PaneHost must forward only positive terminal geometry"
+    );
+
+    host.emit(PaneGeometryHarnessMsg::RefreshUnacknowledgedGeometry);
+    assert!(wait_for_gtk(|| {
+        sizes.borrow().len() == 1
+            && !descendants(host.widget())
+                .iter()
+                .any(|widget| widget.has_css_class("pane-geometry-pending"))
+    }));
+    window.close();
+    assert!(wait_for_gtk(|| !window.is_visible()));
 }
 
 fn flush_gtk() -> bool {
