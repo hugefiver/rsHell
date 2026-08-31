@@ -5,7 +5,8 @@ use relm4::{
     ComponentController, ComponentParts, ComponentSender, Controller, SimpleComponent, gtk,
 };
 use rshell_core::{
-    AppViewModel, ConnectionId, PaneId, SessionId, SessionUiEvent, TabId, UiCommand, UiPortError,
+    AppViewModel, ConnectionId, PaneId, SessionId, SessionUiCommand, SessionUiEvent, TabId,
+    UiCommand, UiPortError,
 };
 
 use crate::{
@@ -180,6 +181,13 @@ impl SimpleComponent for PaneHost {
                 }
             }
             PaneHostMsg::Terminal(_, TerminalViewOutput::Command(command)) => {
+                if let UiCommand::Session {
+                    command: SessionUiCommand::Resize(size),
+                    ..
+                } = command.as_ref()
+                {
+                    self.model.observe_terminal_geometry(*size);
+                }
                 let _ = sender.output(PaneHostOutput::Command(command));
             }
             PaneHostMsg::Terminal(_, TerminalViewOutput::Error(_)) => {

@@ -221,6 +221,36 @@ fn terminal_child_delivery_handles_disconnected_controllers() {
 }
 
 #[test]
+fn hosted_native_contracts_keep_selection_thread_and_geometry_boundaries() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let live = fs::read_to_string(root.join("tests/application_live_view.rs")).unwrap();
+    let selection = live
+        .find("select_retained_connection(window.widget());")
+        .expect("adaptive test must select through a fresh row lookup");
+    let selected = live[selection..]
+        .find("selected connection identity must settle before opening the editor")
+        .expect("adaptive test must settle selection before opening the editor")
+        + selection;
+    let editor = live.find("ConnectionSidebarOutput::OpenCreate").unwrap();
+    assert!(selection < selected && selected < editor);
+
+    let draw = fs::read_to_string(root.join("tests/terminal_draw.rs")).unwrap();
+    assert!(draw.contains("fn native_draw_contracts_run_serially_on_one_worker_thread()"));
+    assert_eq!(draw.matches("#[test]").count(), 1);
+    assert!(!draw.contains("Mutex"));
+
+    let src = root.join("src");
+    let probe = fs::read_to_string(src.join("startup_probe.rs")).unwrap();
+    assert!(probe.contains("pub fn observe_terminal_geometry(&self, size: TerminalSize)"));
+    assert!(probe.contains("self.observe_terminal_geometry(frame.size);"));
+    let model = fs::read_to_string(src.join("pane_host_model.rs")).unwrap();
+    assert!(model.contains("probe.observe_terminal_geometry(size);"));
+    let pane_host = fs::read_to_string(src.join("pane_host.rs")).unwrap();
+    assert!(pane_host.contains("SessionUiCommand::Resize(size)"));
+    assert!(pane_host.contains("self.model.observe_terminal_geometry(*size);"));
+}
+
+#[test]
 fn product_icons_and_terminal_metrics_have_one_explicit_invalidation_path() {
     let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
     let mut files = Vec::new();

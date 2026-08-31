@@ -2,7 +2,7 @@ use std::{collections::BTreeMap, fmt};
 
 use rshell_core::{
     AppViewModel, ErrorPaneView, PaneId, SessionFailure, SessionId, SessionState, SessionUiEvent,
-    TabId, UiPortError,
+    TabId, TerminalSize, UiPortError,
 };
 
 use crate::{PaneProjection, SessionPaneViewModel};
@@ -174,6 +174,12 @@ impl PaneHostModel {
     pub(crate) fn observe_frame(&self, frame: &rshell_core::RenderFrame) {
         if let Some(probe) = &self.startup_probe {
             probe.observe_render_frame(frame);
+        }
+    }
+
+    pub(crate) fn observe_terminal_geometry(&self, size: TerminalSize) {
+        if let Some(probe) = &self.startup_probe {
+            probe.observe_terminal_geometry(size);
         }
     }
 

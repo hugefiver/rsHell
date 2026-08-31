@@ -23,7 +23,7 @@ fn smoke_report_requires_realized_window_local_session_frame_and_clean_shutdown(
 
     assert!(probe.report(true).non_empty_render_frame);
     assert!(!probe.report(true).measured_terminal_geometry_ready);
-    probe.observe_render_frame(&frame());
+    probe.observe_terminal_geometry(frame().size);
 
     let report = probe.report(true);
     assert!(report.window_realized);

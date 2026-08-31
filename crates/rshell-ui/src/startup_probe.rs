@@ -1,7 +1,7 @@
 use std::{cell::RefCell, rc::Rc};
 
 use relm4::gtk::prelude::ApplicationExt;
-use rshell_core::{AppViewModel, PaneLaunchTarget, RenderFrame, SessionState};
+use rshell_core::{AppViewModel, PaneLaunchTarget, RenderFrame, SessionState, TerminalSize};
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct StartupReport {
@@ -105,15 +105,14 @@ impl StartupProbe {
             .iter()
             .flat_map(|row| row.cells.iter())
             .any(|cell| !cell.text.is_empty());
-        let measured_terminal_geometry_ready = frame.size.cols > 0
-            && frame.size.rows > 0
-            && frame.size.pixel_width > 0
-            && frame.size.pixel_height > 0
-            && frame.size.dpi > 0;
-        self.update(|state| {
-            state.non_empty_render_frame |= non_empty_render_frame;
-            state.measured_terminal_geometry_ready |= measured_terminal_geometry_ready;
-        });
+        self.update(|state| state.non_empty_render_frame |= non_empty_render_frame);
+        self.observe_terminal_geometry(frame.size);
+    }
+
+    pub fn observe_terminal_geometry(&self, size: TerminalSize) {
+        if terminal_geometry_ready(size) {
+            self.update(|state| state.measured_terminal_geometry_ready = true);
+        }
     }
 
     pub fn report(&self, shutdown_clean: bool) -> StartupReport {
@@ -176,6 +175,10 @@ fn scale_aware_icons_ready() -> bool {
             effective_scale,
         })
     })
+}
+
+const fn terminal_geometry_ready(size: TerminalSize) -> bool {
+    size.cols > 0 && size.rows > 0 && size.pixel_width > 0 && size.pixel_height > 0 && size.dpi > 0
 }
 
 const fn adaptive_layout_modes() -> usize {

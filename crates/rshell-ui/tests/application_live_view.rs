@@ -46,21 +46,13 @@ fn assert_breakpoint_crossing_preserves_controller_and_reducer_identity() {
     let sidebar_search = sidebar_search(window.widget());
     sidebar_search.set_text("Retained");
     assert!(flush_gtk());
-    let list = descendants(window.widget())
-        .into_iter()
-        .find_map(|widget| widget.downcast::<gtk::ListBox>().ok())
-        .expect("connection list");
-    let row = (0..list.observe_children().n_items() as i32)
-        .filter_map(|index| list.row_at_index(index))
-        .find(|row| {
-            descendants(row).into_iter().any(|widget| {
-                widget
-                    .downcast::<gtk::Label>()
-                    .is_ok_and(|label| label.text().as_str() == "Retained connection")
-            })
-        })
-        .expect("filtered connection row");
-    list.select_row(Some(&row));
+    select_retained_connection(window.widget());
+    assert!(
+        wait_for_gtk(|| {
+            selected_connection_name(window.widget()).as_deref() == Some("Retained connection")
+        }),
+        "selected connection identity must settle before opening the editor"
+    );
     window.emit(MainWindowMsg::Sidebar(ConnectionSidebarOutput::OpenCreate(
         None,
     )));
@@ -79,7 +71,7 @@ fn assert_breakpoint_crossing_preserves_controller_and_reducer_identity() {
     assert!(flush_gtk());
     let terminal_search = active_terminal_search(window.widget());
     terminal_search.set_text("needle");
-    list.select_row(Some(&row));
+    select_retained_connection(window.widget());
     canvas.grab_focus();
     assert!(flush_gtk());
     assert!(
@@ -187,6 +179,23 @@ fn assert_adaptive_state(
             .map(|widget| widget.as_ptr() as usize),
         Some(identities.focused)
     );
+}
+
+fn select_retained_connection(root: &impl IsA<gtk::Widget>) {
+    let list = css_child(root, "connection-list")
+        .downcast::<gtk::ListBox>()
+        .expect("connection list");
+    let row = (0..list.observe_children().n_items() as i32)
+        .filter_map(|index| list.row_at_index(index))
+        .find(|row| {
+            descendants(row).into_iter().any(|widget| {
+                widget
+                    .downcast::<gtk::Label>()
+                    .is_ok_and(|label| label.text().as_str() == "Retained connection")
+            })
+        })
+        .expect("filtered connection row");
+    list.select_row(Some(&row));
 }
 
 fn wait_for_gtk(mut condition: impl FnMut() -> bool) -> bool {

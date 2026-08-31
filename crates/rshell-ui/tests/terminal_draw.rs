@@ -1,4 +1,4 @@
-use std::sync::{Arc, Mutex, MutexGuard};
+use std::sync::Arc;
 
 use gtk::{
     cairo::{Context, Format, ImageSurface},
@@ -13,17 +13,19 @@ use rshell_ui::{
     TerminalRenderCache, TerminalRenderer,
 };
 
-static DRAW_TEST_LOCK: Mutex<()> = Mutex::new(());
-
-fn draw_test_guard() -> MutexGuard<'static, ()> {
-    DRAW_TEST_LOCK
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
+#[test]
+fn native_draw_contracts_run_serially_on_one_worker_thread() {
+    offscreen_renderer_paints_deterministic_geometry_cursor_and_overlays();
+    renderer_resolves_ansi_rgb_reverse_and_all_text_attributes();
+    renderer_handles_every_cursor_shape_on_a_wide_cell();
+    retained_renderer_relayouts_only_the_single_changed_row();
+    retained_renderer_repaints_old_and_new_search_rows();
+    retained_renderer_never_adopts_equal_generation_content();
+    native_fallback_and_combining_glyphs_never_paint_outside_assigned_cells();
+    measured_glyph_ink_fits_logical_cells_with_line_separation();
 }
 
-#[test]
 fn offscreen_renderer_paints_deterministic_geometry_cursor_and_overlays() {
-    let _guard = draw_test_guard();
     let metrics = FontMetrics::new(9.0, 18.0).unwrap();
     let profile = TerminalSettingsV1::default().resolve(&TerminalOverrides::default());
     let renderer = TerminalRenderer::new(&profile, metrics);
@@ -69,9 +71,7 @@ fn offscreen_renderer_paints_deterministic_geometry_cursor_and_overlays() {
     );
 }
 
-#[test]
 fn renderer_resolves_ansi_rgb_reverse_and_all_text_attributes() {
-    let _guard = draw_test_guard();
     let metrics = FontMetrics::new(9.0, 18.0).unwrap();
     let profile = TerminalSettingsV1::default().resolve(&TerminalOverrides::default());
     let renderer = TerminalRenderer::new(&profile, metrics);
@@ -101,9 +101,7 @@ fn renderer_resolves_ansi_rgb_reverse_and_all_text_attributes() {
     );
 }
 
-#[test]
 fn renderer_handles_every_cursor_shape_on_a_wide_cell() {
-    let _guard = draw_test_guard();
     let metrics = FontMetrics::new(9.0, 18.0).unwrap();
     let profile = TerminalSettingsV1::default().resolve(&TerminalOverrides::default());
     let renderer = TerminalRenderer::new(&profile, metrics);
@@ -125,9 +123,7 @@ fn renderer_handles_every_cursor_shape_on_a_wide_cell() {
     }
 }
 
-#[test]
 fn retained_renderer_relayouts_only_the_single_changed_row() {
-    let _guard = draw_test_guard();
     let metrics = FontMetrics::new(9.0, 18.0).unwrap();
     let profile = TerminalSettingsV1::default().resolve(&TerminalOverrides::default());
     let renderer = TerminalRenderer::new(&profile, metrics);
@@ -176,9 +172,7 @@ fn retained_renderer_relayouts_only_the_single_changed_row() {
     cache.paint(&context).unwrap();
 }
 
-#[test]
 fn retained_renderer_repaints_old_and_new_search_rows() {
-    let _guard = draw_test_guard();
     let metrics = FontMetrics::new(9.0, 18.0).unwrap();
     let profile = TerminalSettingsV1::default().resolve(&TerminalOverrides::default());
     let renderer = TerminalRenderer::new(&profile, metrics);
@@ -195,9 +189,7 @@ fn retained_renderer_repaints_old_and_new_search_rows() {
     assert_eq!(stats.rows, 2);
 }
 
-#[test]
 fn retained_renderer_never_adopts_equal_generation_content() {
-    let _guard = draw_test_guard();
     let metrics = FontMetrics::new(9.0, 18.0).unwrap();
     let profile = TerminalSettingsV1::default().resolve(&TerminalOverrides::default());
     let renderer = TerminalRenderer::new(&profile, metrics);
@@ -250,9 +242,7 @@ fn retained_renderer_never_adopts_equal_generation_content() {
     assert_eq!(unchanged, Default::default());
 }
 
-#[test]
 fn native_fallback_and_combining_glyphs_never_paint_outside_assigned_cells() {
-    let _guard = draw_test_guard();
     let profile = TerminalSettingsV1::default().resolve(&TerminalOverrides::default());
     let font_map = pangocairo::FontMap::new();
     let pango_context = pango::Context::new();
@@ -293,9 +283,7 @@ fn native_fallback_and_combining_glyphs_never_paint_outside_assigned_cells() {
     }
 }
 
-#[test]
 fn measured_glyph_ink_fits_logical_cells_with_line_separation() {
-    let _guard = draw_test_guard();
     for (effective_scale, scale_factor) in [(1.0, 1), (2.0, 2)] {
         assert_measured_glyph_matrix(effective_scale, scale_factor);
     }
