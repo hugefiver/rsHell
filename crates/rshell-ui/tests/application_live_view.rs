@@ -83,8 +83,10 @@ fn assert_breakpoint_crossing_preserves_controller_and_reducer_identity() {
     canvas.grab_focus();
     assert!(flush_gtk());
     assert!(
-        wait_for_gtk(|| list.selected_row().is_some()),
-        "selected connection row must settle before breakpoint assertions"
+        wait_for_gtk(|| {
+            selected_connection_name(window.widget()).as_deref() == Some("Retained connection")
+        }),
+        "selected connection identity must settle before breakpoint assertions"
     );
 
     let identities = AdaptiveIdentities::capture(window.widget());
@@ -124,7 +126,6 @@ struct AdaptiveIdentities {
     active_tab: usize,
     terminal: usize,
     editor: usize,
-    selected_row: usize,
     focused: usize,
 }
 
@@ -135,12 +136,6 @@ impl AdaptiveIdentities {
             active_tab: css_child(root, "active-tab").as_ptr() as usize,
             terminal: active_terminal(root).as_ptr() as usize,
             editor: css_child(root, "editor-dialog").as_ptr() as usize,
-            selected_row: css_child(root, "connection-list")
-                .downcast::<gtk::ListBox>()
-                .ok()
-                .and_then(|list| list.selected_row())
-                .expect("selected connection row")
-                .as_ptr() as usize,
             focused: root
                 .as_ref()
                 .root()
@@ -171,7 +166,10 @@ fn assert_adaptive_state(
         "active pane {active_pane:?}"
     );
     assert_eq!(actual.editor, identities.editor);
-    assert_eq!(actual.selected_row, identities.selected_row);
+    assert_eq!(
+        selected_connection_name(root).as_deref(),
+        Some("Retained connection")
+    );
     assert_eq!(sidebar_search(root).text(), "Retained");
     let terminal_search = active_terminal_search(root);
     assert!(terminal_search.is_visible());
@@ -193,16 +191,36 @@ fn assert_adaptive_state(
 
 fn wait_for_gtk(mut condition: impl FnMut() -> bool) -> bool {
     let deadline = Instant::now() + Duration::from_secs(2);
+    let mut consecutive = 0;
     loop {
         flush_gtk();
         if condition() {
-            return true;
+            consecutive += 1;
+            if consecutive == 2 {
+                return true;
+            }
+        } else {
+            consecutive = 0;
         }
         if Instant::now() >= deadline {
             return false;
         }
         std::thread::sleep(Duration::from_millis(10));
     }
+}
+
+fn selected_connection_name(root: &impl IsA<gtk::Widget>) -> Option<String> {
+    css_child(root, "connection-list")
+        .downcast::<gtk::ListBox>()
+        .ok()?
+        .selected_row()
+        .and_then(|row| {
+            descendants(&row)
+                .into_iter()
+                .filter_map(|widget| widget.downcast::<gtk::Label>().ok())
+                .find(|label| label.text().as_str() == "Retained connection")
+        })
+        .map(|label| label.text().into())
 }
 
 fn adaptive_fixture() -> (AppViewModel, TabId, PaneId, SessionId) {

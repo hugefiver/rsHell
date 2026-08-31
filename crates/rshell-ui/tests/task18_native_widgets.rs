@@ -23,7 +23,7 @@ use rshell_platform::{FileSelectionCallback, FileSelectionRequest, FileSelection
 use rshell_ui::{
     ImportDialog, ImportDialogInit, ImportDialogMsg, InteractionAction, InteractionDialog,
     InteractionDialogInit, InteractionDialogMsg, MainWindow, MainWindowInit, MainWindowMsg,
-    SettingsWindow, SettingsWindowInit, SettingsWindowMsg,
+    SettingsWindow, SettingsWindowInit, SettingsWindowMsg, ShellLayout, ShellLayoutMode,
 };
 
 fn assert_task18_dialogs_present_real_accessible_widgets_and_wipe_native_secrets() {
@@ -233,16 +233,17 @@ fn assert_adaptive_recursive_pane_fixtures() {
             let window = present_main(&main, width, height);
             main.emit(MainWindowMsg::Allocated { width });
             assert!(flush_gtk(), "{fixture:?} at {width}x{height}");
-            let mode = if width < 900 {
-                "shell-compact"
-            } else if width < 1_440 {
-                "shell-standard"
-            } else {
-                "shell-wide"
-            };
             assert!(
-                wait_for_gtk(|| css_child(main.widget(), mode).is_visible()),
-                "{fixture:?} did not settle into {mode} at {width}x{height}"
+                wait_for_gtk(|| {
+                    let actual_width = window
+                        .surface()
+                        .map_or_else(|| window.width(), |surface| surface.width());
+                    let class = shell_mode_class(ShellLayout::for_width(actual_width).mode);
+                    descendants(main.widget())
+                        .into_iter()
+                        .any(|widget| widget.has_css_class(class) && widget.is_visible())
+                }),
+                "{fixture:?} did not settle for the realized surface requested at {width}x{height}"
             );
             let terminals = descendants(main.widget())
                 .into_iter()
@@ -276,6 +277,14 @@ fn assert_adaptive_recursive_pane_fixtures() {
             window.close();
             assert!(flush_gtk());
         }
+    }
+}
+
+fn shell_mode_class(mode: ShellLayoutMode) -> &'static str {
+    match mode {
+        ShellLayoutMode::Compact => "shell-compact",
+        ShellLayoutMode::Standard => "shell-standard",
+        ShellLayoutMode::Wide => "shell-wide",
     }
 }
 

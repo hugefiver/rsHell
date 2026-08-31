@@ -177,6 +177,12 @@ impl PaneHostModel {
         }
     }
 
+    pub(crate) fn observe_measured_terminal_geometry(&self) {
+        if let Some(probe) = &self.startup_probe {
+            probe.observe_measured_terminal_geometry();
+        }
+    }
+
     fn session_is_bound(&self, session: SessionId) -> bool {
         self.view_model.workspace.tabs.iter().any(|tab| {
             tab.pane_tree
