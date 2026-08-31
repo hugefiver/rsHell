@@ -279,7 +279,13 @@ fn native_fallback_and_combining_glyphs_never_paint_outside_assigned_cells() {
 }
 
 #[test]
-fn scale_two_measured_glyph_ink_fits_logical_cells_with_line_separation() {
+fn measured_glyph_ink_fits_logical_cells_with_line_separation() {
+    for (effective_scale, scale_factor) in [(1.0, 1), (2.0, 2)] {
+        assert_measured_glyph_matrix(effective_scale, scale_factor);
+    }
+}
+
+fn assert_measured_glyph_matrix(effective_scale: f64, scale_factor: i32) {
     let profile = TerminalSettingsV1::default().resolve(&TerminalOverrides::default());
     let context = native_context();
     let measured = match FontMetricsService::default()
@@ -287,8 +293,8 @@ fn scale_two_measured_glyph_ink_fits_logical_cells_with_line_separation() {
             &context,
             &profile,
             FontMetricEnvironment {
-                effective_scale: 2.0,
-                effective_dpi: 192.0,
+                effective_scale,
+                effective_dpi: 96.0 * effective_scale,
                 dpi_fallback_used: false,
             },
         )
@@ -298,38 +304,47 @@ fn scale_two_measured_glyph_ink_fits_logical_cells_with_line_separation() {
     };
     let renderer = TerminalRenderer::from_measured(&profile, &measured);
     let mut failures = Vec::new();
-    for (text, columns) in [("M", 1_u8), ("e\u{301}", 1), ("界", 2), ("🙂", 2)] {
-        let diagnostic_surface = ImageSurface::create(Format::ARgb32, 128, 128).unwrap();
-        diagnostic_surface.set_device_scale(2.0, 2.0);
-        let diagnostic_context = Context::new(&diagnostic_surface).unwrap();
-        let diagnostic_layout = pangocairo::functions::create_layout(&diagnostic_context);
-        diagnostic_layout.set_font_description(Some(&measured.font_description));
-        diagnostic_layout.set_text(text);
-        let (ink, logical) = diagnostic_layout.pixel_extents();
-        let mut cache = TerminalRenderCache::new();
-        let stats = cache
-            .update(
-                &renderer,
-                single_cell_frame(text, columns, measured.metrics),
-                &TerminalDecorations::default(),
-                (measured.metrics.cell_width * 4.0) as i32,
-                (measured.metrics.cell_height * 2.0) as i32,
-                2,
-            )
-            .unwrap();
+    let printable = (' '..='~').map(|value| (value.to_string(), 1_u8));
+    let representative = [
+        ("e\u{301}".to_owned(), 1_u8),
+        ("界".to_owned(), 2),
+        ("🙂".to_owned(), 1),
+        ("🙂".to_owned(), 2),
+    ];
+    for (bold, italic) in [(false, false), (true, false), (false, true), (true, true)] {
+        for (text, columns) in printable.clone().chain(representative.clone()) {
+            let diagnostic_surface = ImageSurface::create(Format::ARgb32, 128, 128).unwrap();
+            diagnostic_surface.set_device_scale(effective_scale, effective_scale);
+            let diagnostic_context = Context::new(&diagnostic_surface).unwrap();
+            let diagnostic_layout = pangocairo::functions::create_layout(&diagnostic_context);
+            diagnostic_layout.set_font_description(Some(&measured.font_description));
+            diagnostic_layout.set_text(&text);
+            let (ink, logical) = diagnostic_layout.pixel_extents();
+            let mut cache = TerminalRenderCache::new();
+            let stats = cache
+                .update(
+                    &renderer,
+                    single_cell_frame(&text, columns, measured.metrics, bold, italic),
+                    &TerminalDecorations::default(),
+                    (measured.metrics.cell_width * 4.0) as i32,
+                    (measured.metrics.cell_height * 2.0) as i32,
+                    scale_factor,
+                )
+                .unwrap();
 
-        if stats.glyph_clipped_cells != 0
-            || !stats.minimum_line_separation.is_some_and(|gap| gap >= 1.0)
-        {
-            failures.push(format!(
-                "{text:?}/{columns}: metrics={:?}, ink={ink:?}, logical={logical:?}, clipped={}, gap={:?}",
-                measured.metrics, stats.glyph_clipped_cells, stats.minimum_line_separation
+            if stats.glyph_clipped_cells != 0
+                || !stats.minimum_line_separation.is_some_and(|gap| gap >= 1.0)
+            {
+                failures.push(format!(
+                "{text:?}/{columns}/bold={bold}/italic={italic}: metrics={:?}, ink={ink:?}, logical={logical:?}, clipped={}, gap={:?}",
+                measured.metrics, stats.glyph_clipped_cells, stats.minimum_line_separation,
             ));
+            }
         }
     }
     assert!(
         failures.is_empty(),
-        "scale-2 terminal glyph contract failures: {}",
+        "scale-{effective_scale} terminal glyph contract failures: {}",
         failures.join("; ")
     );
 }
@@ -482,7 +497,13 @@ fn native_context() -> pango::Context {
     context
 }
 
-fn single_cell_frame(text: &str, width: u8, metrics: FontMetrics) -> Arc<RenderFrame> {
+fn single_cell_frame(
+    text: &str,
+    width: u8,
+    metrics: FontMetrics,
+    bold: bool,
+    italic: bool,
+) -> Arc<RenderFrame> {
     Arc::new(RenderFrame {
         generation: 1,
         size: TerminalSize {
@@ -496,7 +517,14 @@ fn single_cell_frame(text: &str, width: u8, metrics: FontMetrics) -> Arc<RenderF
         rows: Arc::from([RenderRow {
             stable_row: 0,
             wrapped: false,
-            cells: Arc::from([cell(text, width, false)]),
+            cells: Arc::from([RenderCell {
+                attributes: CellAttributes {
+                    bold,
+                    italic,
+                    ..Default::default()
+                },
+                ..cell(text, width, false)
+            }]),
         }]),
         cursor: None,
         title: String::new(),

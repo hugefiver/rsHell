@@ -157,6 +157,8 @@ mod visual_accessibility;
 mod visual_contract;
 mod visual_png;
 mod visual_terminal_metrics;
+#[cfg(test)]
+mod visual_terminal_metrics_tests;
 
 pub use adaptive_layout::{ShellLayout, ShellLayoutMode};
 pub use connection_editor::{

@@ -37,14 +37,18 @@ pub(crate) fn paint_text(
     }
     layout.set_font_description(Some(&font));
     layout.set_text(&cell.text);
-    let (ink, logical) = layout.extents();
-    let scale = f64::from(pango::SCALE);
-    let ink_x = f64::from(ink.x()) / scale;
-    let ink_y = f64::from(ink.y()) / scale;
-    let ink_width = f64::from(ink.width()) / scale;
-    let ink_height = f64::from(ink.height()) / scale;
-    let logical_width = f64::from(logical.width()) / scale;
-    let logical_height = f64::from(logical.height()) / scale;
+    let extents = text_extents(&layout);
+    let fit = fit_ratio(extents, rect);
+    let render_scale = if fit < 1.0 { fit * 0.98 } else { 1.0 };
+    let extents = extents.scaled(render_scale);
+    let TextExtents {
+        ink_x,
+        ink_y,
+        ink_width,
+        ink_height,
+        logical_width,
+        logical_height,
+    } = extents;
     let preferred_x = rect.x + (rect.width - logical_width) / 2.0;
     let preferred_y = rect.y + (rect.height - logical_height) / 2.0;
     let origin_x = fitted_origin(
@@ -71,7 +75,9 @@ pub(crate) fn paint_text(
     context.rectangle(rect.x, rect.y, rect.width, rect.height);
     context.clip();
     source(context, foreground);
-    context.move_to(origin_x, origin_y);
+    context.translate(origin_x, origin_y);
+    context.scale(render_scale, render_scale);
+    context.move_to(0.0, 0.0);
     pangocairo::functions::show_layout(context, &layout);
     context
         .restore()
@@ -98,6 +104,56 @@ pub(crate) fn paint_text(
         ink_clipped,
         line_separation: rect.height - ink_height,
     })
+}
+
+#[derive(Clone, Copy)]
+struct TextExtents {
+    ink_x: f64,
+    ink_y: f64,
+    ink_width: f64,
+    ink_height: f64,
+    logical_width: f64,
+    logical_height: f64,
+}
+
+impl TextExtents {
+    fn scaled(self, factor: f64) -> Self {
+        Self {
+            ink_x: self.ink_x * factor,
+            ink_y: self.ink_y * factor,
+            ink_width: self.ink_width * factor,
+            ink_height: self.ink_height * factor,
+            logical_width: self.logical_width * factor,
+            logical_height: self.logical_height * factor,
+        }
+    }
+}
+
+fn text_extents(layout: &pango::Layout) -> TextExtents {
+    let (ink, logical) = layout.extents();
+    let scale = f64::from(pango::SCALE);
+    TextExtents {
+        ink_x: f64::from(ink.x()) / scale,
+        ink_y: f64::from(ink.y()) / scale,
+        ink_width: f64::from(ink.width()) / scale,
+        ink_height: f64::from(ink.height()) / scale,
+        logical_width: f64::from(logical.width()) / scale,
+        logical_height: f64::from(logical.height()) / scale,
+    }
+}
+
+fn fit_ratio(extents: TextExtents, rect: CellRect) -> f64 {
+    let horizontal = if extents.ink_width > 0.0 {
+        rect.width / extents.ink_width
+    } else {
+        1.0
+    };
+    let vertical = if extents.ink_height > 0.0 {
+        rect.height / extents.ink_height
+    } else {
+        1.0
+    };
+    horizontal.min(vertical).min(1.0)
 }
 
 fn fitted_origin(preferred: f64, minimum: f64, maximum: f64) -> f64 {

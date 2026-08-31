@@ -69,15 +69,19 @@ pub(crate) fn record_terminal_render_quality(canvas: &gtk::DrawingArea, stats: &
             .iter_mut()
             .find(|(weak, _)| weak.upgrade().as_ref() == Some(&widget))
         {
-            facts.terminal_glyph_clipped_cells = facts
-                .terminal_glyph_clipped_cells
-                .saturating_add(stats.glyph_clipped_cells);
-            if let Some(separation) = stats.minimum_line_separation {
-                let current = f64::from_bits(facts.terminal_min_line_separation_bits);
-                facts.terminal_min_line_separation_bits = current.min(separation).to_bits();
-            }
+            replace_terminal_render_quality(facts, stats);
         }
     });
+}
+
+pub(crate) fn replace_terminal_render_quality(
+    facts: &mut TerminalMetricFacts,
+    stats: &TerminalDrawStats,
+) {
+    facts.terminal_glyph_clipped_cells = stats.glyph_clipped_cells;
+    if let Some(separation) = stats.minimum_line_separation {
+        facts.terminal_min_line_separation_bits = separation.to_bits();
+    }
 }
 
 pub(crate) fn metric_facts(widget: &gtk::Widget) -> Option<TerminalMetricFacts> {
