@@ -13,6 +13,10 @@ impl MainWindow {
     pub(crate) fn apply_shell_layout(&mut self, width: i32) {
         let sidebar: gtk::Widget = self.sidebar.widget().clone().upcast();
         self.shell.apply(ShellLayout::for_width(width), &sidebar);
+        self.restore_sidebar_selection();
+    }
+
+    pub(crate) fn restore_sidebar_selection(&self) {
         if let Some(connection) = self.stable_sidebar_selection {
             self.send_sidebar(ConnectionSidebarMsg::SelectConnection(connection));
         }

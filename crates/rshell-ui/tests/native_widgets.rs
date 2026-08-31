@@ -919,20 +919,27 @@ fn assert_mapped_terminal_retries_geometry_after_zero_allocation() {
         .expect("terminal geometry canvas");
     assert_eq!(canvas.width(), 0);
     assert_eq!(canvas.height(), 0);
+    assert!(
+        canvas.has_css_class("terminal-geometry-pending"),
+        "initial geometry must remain pending before model confirmation"
+    );
 
     let window = gtk::Window::new();
     window.set_default_size(640, 360);
     window.set_child(Some(terminal.widget()));
     window.present();
-    assert!(
-        wait_for_gtk(|| !sizes.borrow().is_empty()),
-        "mapped terminal must emit geometry after a positive allocation"
-    );
+    assert!(wait_for_gtk(|| {
+        !sizes.borrow().is_empty() && !canvas.has_css_class("terminal-geometry-pending")
+    }));
     let emitted = sizes.borrow().clone();
     assert_eq!(emitted.len(), 1, "positive geometry must emit once");
     assert!(
         emitted[0].pixel_width > 0 && emitted[0].pixel_height > 0,
         "emitted geometry must have positive physical dimensions"
+    );
+    assert!(
+        !canvas.has_css_class("terminal-geometry-pending"),
+        "geometry pending must clear only after the emitted size reaches the model"
     );
 
     terminal.emit(GeometryHarnessMsg::RefreshGeometry);

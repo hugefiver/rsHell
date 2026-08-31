@@ -1,4 +1,8 @@
-use std::{cell::RefCell, rc::Rc, sync::Arc};
+use std::{
+    cell::{Cell, RefCell},
+    rc::Rc,
+    sync::Arc,
+};
 
 use gtk::{gdk, prelude::*};
 use relm4::ComponentSender;
@@ -28,6 +32,38 @@ pub struct TerminalViewWidgets {
     search: gtk::SearchEntry,
     im_context: gtk::IMMulticontext,
     draw: Rc<RefCell<DrawSnapshot>>,
+    initial_geometry_pending: InitialGeometryPending,
+}
+
+#[derive(Clone)]
+struct InitialGeometryPending {
+    pending: Rc<Cell<bool>>,
+    retry_registered: Rc<Cell<bool>>,
+}
+
+impl InitialGeometryPending {
+    fn new() -> Self {
+        Self {
+            pending: Rc::new(Cell::new(true)),
+            retry_registered: Rc::new(Cell::new(false)),
+        }
+    }
+
+    fn is_pending(&self) -> bool {
+        self.pending.get()
+    }
+
+    fn register_retry(&self) -> bool {
+        !self.retry_registered.replace(true)
+    }
+
+    fn stop_retry(&self) {
+        self.retry_registered.set(false);
+    }
+
+    fn mark_confirmed(&self) {
+        self.pending.set(false);
+    }
 }
 
 impl TerminalViewWidgets {
@@ -38,6 +74,7 @@ impl TerminalViewWidgets {
     ) -> Self {
         let canvas = gtk::DrawingArea::new();
         canvas.add_css_class("terminal-canvas");
+        canvas.add_css_class("terminal-geometry-pending");
         canvas.set_hexpand(true);
         canvas.set_vexpand(true);
         canvas.set_focusable(true);
@@ -92,6 +129,7 @@ impl TerminalViewWidgets {
         });
 
         let im_context = gtk::IMMulticontext::new();
+        let initial_geometry_pending = InitialGeometryPending::new();
         let realize_im = im_context.clone();
         canvas.connect_realize(move |canvas| realize_im.set_client_widget(Some(canvas)));
         let unrealize_im = im_context.clone();
@@ -107,7 +145,7 @@ impl TerminalViewWidgets {
         );
         connect_pointer(&canvas, sender);
         connect_search(&search, sender);
-        connect_resize(&canvas, sender);
+        connect_resize(&canvas, sender, initial_geometry_pending.clone());
         connect_metric_refresh(&canvas, sender);
 
         Self {
@@ -116,10 +154,15 @@ impl TerminalViewWidgets {
             search,
             im_context,
             draw,
+            initial_geometry_pending,
         }
     }
 
     pub fn sync(&self, model: &TerminalViewModel) {
+        if model.has_positive_emitted_geometry() {
+            self.initial_geometry_pending.mark_confirmed();
+            self.canvas.remove_css_class("terminal-geometry-pending");
+        }
         let decorations = TerminalDecorations::new(
             model.search_matches().to_vec(),
             model.current_search_index(),
@@ -178,22 +221,26 @@ fn connect_search(search: &gtk::SearchEntry, sender: &ComponentSender<TerminalVi
     });
 }
 
-fn connect_resize(canvas: &gtk::DrawingArea, sender: &ComponentSender<TerminalView>) {
+fn connect_resize(
+    canvas: &gtk::DrawingArea,
+    sender: &ComponentSender<TerminalView>,
+    initial_geometry_pending: InitialGeometryPending,
+) {
     let input = sender.input_sender().clone();
     canvas.connect_map(move |canvas| {
         let input = input.clone();
-        if send_resize(canvas, canvas.width(), canvas.height(), &input) {
+        if !initial_geometry_pending.is_pending() || !initial_geometry_pending.register_retry() {
             return;
         }
+        let _ = send_resize(canvas, canvas.width(), canvas.height(), &input);
+        let initial_geometry_pending = initial_geometry_pending.clone();
         let _ = canvas.add_tick_callback(move |canvas, _| {
-            if !canvas.is_mapped() {
+            if !canvas.is_mapped() || !initial_geometry_pending.is_pending() {
+                initial_geometry_pending.stop_retry();
                 return gtk::glib::ControlFlow::Break;
             }
-            if send_resize(canvas, canvas.width(), canvas.height(), &input) {
-                gtk::glib::ControlFlow::Break
-            } else {
-                gtk::glib::ControlFlow::Continue
-            }
+            let _ = send_resize(canvas, canvas.width(), canvas.height(), &input);
+            gtk::glib::ControlFlow::Continue
         });
     });
     let input = sender.input_sender().clone();
@@ -209,12 +256,13 @@ fn send_resize(
     input: &relm4::Sender<TerminalViewMsg>,
 ) -> bool {
     if width > 0 && height > 0 {
-        let _ = input.send(TerminalViewMsg::Resize {
-            width,
-            height,
-            scale: f64::from(canvas.scale_factor()),
-        });
-        true
+        input
+            .send(TerminalViewMsg::Resize {
+                width,
+                height,
+                scale: f64::from(canvas.scale_factor()),
+            })
+            .is_ok()
     } else {
         false
     }

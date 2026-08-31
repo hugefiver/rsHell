@@ -224,15 +224,24 @@ fn terminal_child_delivery_handles_disconnected_controllers() {
 fn hosted_native_contracts_keep_selection_thread_and_geometry_boundaries() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR"));
     let live = fs::read_to_string(root.join("tests/application_live_view.rs")).unwrap();
-    let selection = live
+    let live_test = &live[..live.find("#[derive(Clone, Copy)]").unwrap()];
+    let selection = live_test
         .find("select_retained_connection(window.widget());")
         .expect("adaptive test must select through a fresh row lookup");
-    let selected = live[selection..]
+    let selected = live_test[selection..]
         .find("selected connection identity must settle before opening the editor")
         .expect("adaptive test must settle selection before opening the editor")
         + selection;
-    let editor = live.find("ConnectionSidebarOutput::OpenCreate").unwrap();
+    let editor = live_test
+        .find("ConnectionSidebarOutput::OpenCreate")
+        .unwrap();
     assert!(selection < selected && selected < editor);
+    let terminal_search = live_test
+        .find("terminal_search.set_text(\"needle\");")
+        .expect("adaptive test must establish terminal search before opening the editor");
+    assert!(selection < terminal_search && terminal_search < editor);
+    assert!(!live_test[editor..].contains("select_retained_connection"));
+    assert!(!live_test[editor..].contains("canvas.grab_focus"));
 
     let draw = fs::read_to_string(root.join("tests/terminal_draw.rs")).unwrap();
     assert!(draw.contains("fn native_draw_contracts_run_serially_on_one_worker_thread()"));
@@ -261,6 +270,10 @@ fn hosted_native_contracts_keep_selection_thread_and_geometry_boundaries() {
         "if !canvas.is_mapped()",
         "gtk::glib::ControlFlow::Continue",
         "gtk::glib::ControlFlow::Break",
+        "initial_geometry_pending",
+        "model.has_positive_emitted_geometry()",
+        ".send(TerminalViewMsg::Resize",
+        ".is_ok()",
     ] {
         assert!(
             widgets.contains(required),

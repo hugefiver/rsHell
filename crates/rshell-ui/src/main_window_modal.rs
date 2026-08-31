@@ -26,6 +26,7 @@ impl MainWindow {
             ModalRequest::Open { kind, trigger } => {
                 let surface = self.modal_surface(kind);
                 self.modal.open(kind, &surface, &trigger);
+                self.restore_sidebar_selection();
                 match kind {
                     ModalKind::Settings => self.send_settings(SettingsWindowMsg::Open),
                     ModalKind::Import => self.send_import(ImportDialogMsg::Open),

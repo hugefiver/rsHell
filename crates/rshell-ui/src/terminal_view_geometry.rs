@@ -19,6 +19,16 @@ impl TerminalViewModel {
         &self.measured
     }
 
+    pub(crate) fn has_positive_emitted_geometry(&self) -> bool {
+        self.last_emitted_size.is_some_and(|size| {
+            size.cols > 0
+                && size.rows > 0
+                && size.pixel_width > 0
+                && size.pixel_height > 0
+                && size.dpi > 0
+        })
+    }
+
     pub fn cursor_rect(&self) -> Option<ViewRect> {
         let frame = self.frame.as_ref()?;
         let cursor = frame.cursor.filter(|cursor| cursor.visible)?;

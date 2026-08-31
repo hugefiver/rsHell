@@ -45,7 +45,7 @@ fn assert_breakpoint_crossing_preserves_controller_and_reducer_identity() {
 
     let sidebar_search = sidebar_search(window.widget());
     sidebar_search.set_text("Retained");
-    assert!(flush_gtk());
+    assert!(wait_for_gtk(|| connection_row_count(window.widget()) == 1));
     select_retained_connection(window.widget());
     window.emit(MainWindowMsg::Allocated { width: 900 });
     window.emit(MainWindowMsg::Allocated { width: 800 });
@@ -54,6 +54,20 @@ fn assert_breakpoint_crossing_preserves_controller_and_reducer_identity() {
             selected_connection_name(window.widget()).as_deref() == Some("Retained connection")
         }),
         "selected connection identity must settle before opening the editor"
+    );
+    let canvas = active_terminal(window.widget());
+    assert!(press_key(
+        &canvas,
+        gtk::gdk::Key::from_name("f").unwrap(),
+        gtk::gdk::ModifierType::CONTROL_MASK | gtk::gdk::ModifierType::SHIFT_MASK,
+    ));
+    assert!(flush_gtk());
+    let terminal_search = active_terminal_search(window.widget());
+    terminal_search.set_text("needle");
+    assert!(flush_gtk());
+    assert_eq!(
+        selected_connection_name(window.widget()).as_deref(),
+        Some("Retained connection")
     );
     window.emit(MainWindowMsg::Sidebar(ConnectionSidebarOutput::OpenCreate(
         None,
@@ -64,24 +78,6 @@ fn assert_breakpoint_crossing_preserves_controller_and_reducer_identity() {
     let host = editor_field(&editor, "Host");
     name.set_text("Unsaved adaptive draft");
     host.set_text("draft.example.test");
-    let canvas = active_terminal(window.widget());
-    assert!(press_key(
-        &canvas,
-        gtk::gdk::Key::from_name("f").unwrap(),
-        gtk::gdk::ModifierType::CONTROL_MASK | gtk::gdk::ModifierType::SHIFT_MASK,
-    ));
-    assert!(flush_gtk());
-    let terminal_search = active_terminal_search(window.widget());
-    terminal_search.set_text("needle");
-    select_retained_connection(window.widget());
-    canvas.grab_focus();
-    assert!(flush_gtk());
-    assert!(
-        wait_for_gtk(|| {
-            selected_connection_name(window.widget()).as_deref() == Some("Retained connection")
-        }),
-        "selected connection identity must settle before breakpoint assertions"
-    );
 
     let identities = AdaptiveIdentities::capture(window.widget());
     assert!(css_child(window.widget(), "shell-compact").is_visible());
@@ -91,6 +87,7 @@ fn assert_breakpoint_crossing_preserves_controller_and_reducer_identity() {
         active_tab,
         active_pane,
         session,
+        "modal open",
     );
 
     for (width, class) in [
@@ -107,6 +104,7 @@ fn assert_breakpoint_crossing_preserves_controller_and_reducer_identity() {
             active_tab,
             active_pane,
             session,
+            &format!("breakpoint {width}"),
         );
     }
 
@@ -146,6 +144,7 @@ fn assert_adaptive_state(
     active_tab: TabId,
     active_pane: PaneId,
     session: SessionId,
+    stage: &str,
 ) {
     let actual = AdaptiveIdentities::capture(root);
     assert_eq!(actual.sidebar, identities.sidebar);
@@ -162,7 +161,8 @@ fn assert_adaptive_state(
     assert_eq!(actual.editor, identities.editor);
     assert_eq!(
         selected_connection_name(root).as_deref(),
-        Some("Retained connection")
+        Some("Retained connection"),
+        "sidebar selection lost at {stage}"
     );
     assert_eq!(sidebar_search(root).text(), "Retained");
     let terminal_search = active_terminal_search(root);
@@ -221,16 +221,14 @@ fn wait_for_gtk(mut condition: impl FnMut() -> bool) -> bool {
 }
 
 fn selected_connection_name(root: &impl IsA<gtk::Widget>) -> Option<String> {
-    css_child(root, "connection-list")
-        .downcast::<gtk::ListBox>()
-        .ok()?
-        .selected_row()
-        .and_then(|row| {
-            descendants(&row)
-                .into_iter()
-                .filter_map(|widget| widget.downcast::<gtk::Label>().ok())
-                .find(|label| label.text().as_str() == "Retained connection")
-        })
+    let sidebar = css_child(root, "sidebar");
+    sidebar
+        .has_css_class("sidebar-has-selection")
+        .then_some(())?;
+    descendants(&sidebar)
+        .into_iter()
+        .filter_map(|widget| widget.downcast::<gtk::Label>().ok())
+        .find(|label| label.text().as_str() == "Retained connection")
         .map(|label| label.text().into())
 }
 
@@ -246,6 +244,8 @@ fn adaptive_fixture() -> (AppViewModel, TabId, PaneId, SessionId) {
     let retained = ConnectionProfile::new("Retained connection", "retained.example.test");
     let mut catalog = ConnectionCatalog::default();
     catalog.connections.insert(retained.id, retained);
+    let filtered = ConnectionProfile::new("Filtered connection", "filtered.example.test");
+    catalog.connections.insert(filtered.id, filtered);
     let mut view = AppViewModel::from(AppBootstrapState {
         catalog,
         settings: AppSettings::default(),
@@ -301,6 +301,14 @@ fn sidebar_search(root: &impl IsA<gtk::Widget>) -> gtk::SearchEntry {
         .filter_map(|widget| widget.downcast::<gtk::SearchEntry>().ok())
         .find(|entry| !entry.has_css_class("terminal-search"))
         .expect("connection search")
+}
+
+fn connection_row_count(root: &impl IsA<gtk::Widget>) -> u32 {
+    css_child(root, "connection-list")
+        .downcast::<gtk::ListBox>()
+        .expect("connection list")
+        .observe_children()
+        .n_items()
 }
 
 fn editor_field(root: &impl IsA<gtk::Widget>, label: &str) -> gtk::Entry {

@@ -33,8 +33,12 @@ impl MainWindow {
                 self.open_editor(ConnectionEditorMsg::OpenEdit(Box::new(profile)));
             }
             ConnectionSidebarOutput::SelectionChanged(selection) => {
+                let changed = self.stable_sidebar_selection != selection;
                 self.stable_sidebar_selection = selection;
                 self.smoke_state.sidebar_selection = selection;
+                if changed && selection.is_some() && self.modal.open_kind().is_some() {
+                    self.restore_sidebar_selection();
+                }
             }
         }
         if closes_drawer {

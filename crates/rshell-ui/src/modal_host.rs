@@ -70,7 +70,6 @@ impl ModalHost {
         surface.set_visible(true);
         self.scrim.add_css_class("modal-open");
         self.scrim.set_visible(true);
-        self.background.set_sensitive(false);
 
         let fallback = find_css_descendant(&self.background, "terminal-canvas")
             .unwrap_or_else(|| self.background.clone());
@@ -88,6 +87,7 @@ impl ModalHost {
         });
         surface.add_controller(keys.clone());
         focus.focus_first();
+        self.background.set_sensitive(false);
         gtk::glib::idle_add_local_once({
             let focus = focus.clone();
             move || focus.focus_first()

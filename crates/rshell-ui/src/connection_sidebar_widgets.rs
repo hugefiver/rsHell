@@ -7,6 +7,7 @@ use crate::{
 };
 
 pub struct ConnectionSidebarWidgets {
+    root: gtk::Box,
     list: gtk::ListBox,
     row_selected_handler: gtk::glib::SignalHandlerId,
     rows: Vec<SidebarRow>,
@@ -109,6 +110,7 @@ impl ConnectionSidebarWidgets {
         error.add_css_class("dim-label");
         root.append(&error);
         Self {
+            root: root.clone(),
             list,
             row_selected_handler,
             rows: Vec::new(),
@@ -132,6 +134,11 @@ impl ConnectionSidebarWidgets {
         error: Option<&str>,
         empty_text: Option<&str>,
     ) {
+        if selected.is_some() {
+            self.root.add_css_class("sidebar-has-selection");
+        } else {
+            self.root.remove_css_class("sidebar-has-selection");
+        }
         if self.rows != rows {
             while let Some(child) = self.list.first_child() {
                 self.list.remove(&child);
