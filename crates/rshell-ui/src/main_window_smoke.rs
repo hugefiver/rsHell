@@ -34,6 +34,7 @@ pub(crate) struct SmokeUiState {
     pub import_preview_ready: bool,
     pub import_revision: u64,
     pub active_tab: Option<rshell_core::TabId>,
+    pub pane_host_session: Option<SessionId>,
     pub shutdown_complete: bool,
     pub terminal_commands: u64,
     pub clipboard_writes: u64,

@@ -847,17 +847,20 @@ struct GeometryHarnessWidgets;
 enum PaneGeometryHarnessMsg {
     Pane(PaneHostOutput),
     RefreshUnacknowledgedGeometry,
+    SetViewModel(Box<AppViewModel>),
 }
 
 struct PaneGeometryHarnessInit {
     view: AppViewModel,
     probe: StartupProbe,
     sizes: Rc<RefCell<Vec<TerminalSize>>>,
+    rendered_sessions: Rc<RefCell<Vec<Option<SessionId>>>>,
 }
 
 struct PaneGeometryHarness {
     host: Controller<PaneHost>,
     sizes: Rc<RefCell<Vec<TerminalSize>>>,
+    rendered_sessions: Rc<RefCell<Vec<Option<SessionId>>>>,
 }
 
 struct PaneGeometryHarnessWidgets;
@@ -889,6 +892,7 @@ impl SimpleComponent for PaneGeometryHarness {
             model: Self {
                 host,
                 sizes: init.sizes,
+                rendered_sessions: init.rendered_sessions,
             },
             widgets: PaneGeometryHarnessWidgets,
         }
@@ -905,9 +909,15 @@ impl SimpleComponent for PaneGeometryHarness {
                     self.sizes.borrow_mut().push(size);
                 }
             }
+            PaneGeometryHarnessMsg::Pane(PaneHostOutput::RenderedSession(session)) => {
+                self.rendered_sessions.borrow_mut().push(session);
+            }
             PaneGeometryHarnessMsg::Pane(_) => {}
             PaneGeometryHarnessMsg::RefreshUnacknowledgedGeometry => {
                 self.host.emit(PaneHostMsg::RefreshUnacknowledgedGeometry);
+            }
+            PaneGeometryHarnessMsg::SetViewModel(view) => {
+                self.host.emit(PaneHostMsg::SetViewModel(view));
             }
         }
     }
@@ -1047,11 +1057,13 @@ fn assert_pane_host_acknowledges_positive_geometry_after_reparent() {
 
     let probe = StartupProbe::new();
     let sizes = Rc::new(RefCell::new(Vec::new()));
+    let rendered_sessions = Rc::new(RefCell::new(Vec::new()));
     let host = PaneGeometryHarness::builder()
         .launch(PaneGeometryHarnessInit {
-            view,
+            view: view.clone(),
             probe: probe.clone(),
             sizes: Rc::clone(&sizes),
+            rendered_sessions: Rc::clone(&rendered_sessions),
         })
         .detach();
     assert_eq!(host.widget().width(), 0);
@@ -1075,6 +1087,10 @@ fn assert_pane_host_acknowledges_positive_geometry_after_reparent() {
                 .iter()
                 .any(|widget| widget.has_css_class("pane-geometry-pending"))
     }));
+    host.emit(PaneGeometryHarnessMsg::SetViewModel(Box::new(view.clone())));
+    assert!(wait_for_gtk(|| {
+        rendered_sessions.borrow().last().copied() == Some(Some(session))
+    }));
     let emitted = sizes.borrow().clone();
     assert!(
         emitted[0].cols > 0
@@ -1091,6 +1107,19 @@ fn assert_pane_host_acknowledges_positive_geometry_after_reparent() {
             && !descendants(host.widget())
                 .iter()
                 .any(|widget| widget.has_css_class("pane-geometry-pending"))
+    }));
+
+    let replacement = SessionId::new();
+    view.workspace.tabs[0]
+        .pane_tree
+        .replace_session(pane, Some(replacement))
+        .expect("replace bound session");
+    view.session_states.remove(&session);
+    view.session_states
+        .insert(replacement, SessionState::Connected);
+    host.emit(PaneGeometryHarnessMsg::SetViewModel(Box::new(view)));
+    assert!(wait_for_gtk(|| {
+        rendered_sessions.borrow().last().copied() == Some(Some(replacement))
     }));
     window.close();
     assert!(wait_for_gtk(|| !window.is_visible()));

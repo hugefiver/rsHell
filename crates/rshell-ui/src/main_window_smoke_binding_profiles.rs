@@ -1,6 +1,22 @@
-use rshell_core::{AuthenticationKind, ConnectionProfile, TransportKind};
+use rshell_core::{AuthenticationKind, ConnectionProfile, SessionId, TransportKind};
 
 use crate::MainWindow;
+
+#[derive(Clone, Copy)]
+pub(crate) struct ComponentSessionState {
+    pub exists: bool,
+    pub local: bool,
+    pub launch_matches: bool,
+    pub rendered: Option<SessionId>,
+    pub expected: Option<SessionId>,
+}
+
+pub(crate) fn session_component_is_synchronized(
+    rendered: Option<SessionId>,
+    expected: Option<SessionId>,
+) -> bool {
+    expected.is_some() && rendered == expected
+}
 
 pub(crate) fn profile_matches_surface(profile: &ConnectionProfile, surface: &str) -> bool {
     if profile.name != surface {

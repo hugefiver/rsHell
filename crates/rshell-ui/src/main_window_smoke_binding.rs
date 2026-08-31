@@ -3,7 +3,10 @@ use rshell_core::PaneLaunchTarget;
 use crate::{
     ConnectionEditorDraftState, EditorTextField, MainWindow, SmokeAction, SmokeActionKind,
     SmokeBindingEvidence, SmokeConnectionField,
-    main_window_smoke_binding_profiles::{actual_label, profile_matches_surface},
+    main_window_smoke_binding_profiles::{
+        ComponentSessionState, actual_label, profile_matches_surface,
+        session_component_is_synchronized,
+    },
     main_window_smoke_visual::{visual_checkpoint_binding, visual_checkpoint_component_verified},
     smoke_driver_observation::SmokeBindingRequest,
 };
@@ -67,9 +70,13 @@ impl MainWindow {
             request.action.kind(),
             profile.is_some(),
             connection_id,
-            session_id.is_some(),
-            local,
-            launch_matches,
+            ComponentSessionState {
+                exists: session_id.is_some(),
+                local,
+                launch_matches,
+                rendered: self.smoke_state.pane_host_session,
+                expected: session_id,
+            },
         );
         let surface = request.surface.as_deref()?;
         let verified = match surface {
@@ -166,9 +173,7 @@ fn component_verified(
     action: SmokeActionKind,
     profile_exists: bool,
     connection: Option<rshell_core::ConnectionId>,
-    session_exists: bool,
-    local: bool,
-    launch_matches: bool,
+    session: ComponentSessionState,
 ) -> bool {
     match action {
         SmokeActionKind::WaitWindowRealized => window.smoke_state.window_realized,
@@ -189,7 +194,12 @@ fn component_verified(
         | SmokeActionKind::CopySelection
         | SmokeActionKind::Reconnect
         | SmokeActionKind::InterruptTerminal
-        | SmokeActionKind::ResetDisplay => session_exists && (local || launch_matches),
+        | SmokeActionKind::ResetDisplay => {
+            session.exists
+                && (session.local || session.launch_matches)
+                && (!requires_rendered_terminal(action)
+                    || session_component_is_synchronized(session.rendered, session.expected))
+        }
         SmokeActionKind::NewTab
         | SmokeActionKind::SplitHorizontal
         | SmokeActionKind::SplitVertical
@@ -206,6 +216,22 @@ fn component_verified(
             window.smoke_state.shutdown_complete && window.view_model.workspace.tabs.is_empty()
         }
     }
+}
+
+fn requires_rendered_terminal(action: SmokeActionKind) -> bool {
+    matches!(
+        action,
+        SmokeActionKind::SendTerminalText
+            | SmokeActionKind::PasteTextFromEnv
+            | SmokeActionKind::ResizeTerminal
+            | SmokeActionKind::WaitFrameContains
+            | SmokeActionKind::SearchTerminal
+            | SmokeActionKind::SelectRange
+            | SmokeActionKind::CopySelection
+            | SmokeActionKind::Reconnect
+            | SmokeActionKind::InterruptTerminal
+            | SmokeActionKind::ResetDisplay
+    )
 }
 
 fn requires_active_launch(action: SmokeActionKind) -> bool {

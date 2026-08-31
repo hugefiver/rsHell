@@ -52,6 +52,16 @@ pub(crate) fn send_terminal_message(
     terminal.sender().send(message).is_ok()
 }
 
+pub(crate) fn rendered_session(
+    model: &PaneHostModel,
+    terminals: &BTreeMap<SessionId, Controller<TerminalView>>,
+) -> Option<SessionId> {
+    let tab = model.active_tab()?;
+    let pane = model.active_pane(tab)?;
+    let session = model.pane(pane)?.session()?;
+    terminals.contains_key(&session).then_some(session)
+}
+
 pub(crate) fn sync_terminals(
     model: &mut PaneHostModel,
     terminals: &mut BTreeMap<SessionId, Controller<TerminalView>>,

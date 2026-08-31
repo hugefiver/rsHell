@@ -96,6 +96,9 @@ impl MainWindow {
                 self.fail_smoke("pane_handler_rejected");
             }
             PaneHostOutput::ActiveTab(tab) => self.smoke_state.active_tab = Some(tab),
+            PaneHostOutput::RenderedSession(session) => {
+                self.smoke_state.pane_host_session = session;
+            }
             PaneHostOutput::ClipboardWritten { bytes } => {
                 self.smoke_state.clipboard_writes =
                     self.smoke_state.clipboard_writes.saturating_add(1);

@@ -40,6 +40,7 @@ pub(crate) fn run_p0(
     driver: SmokeDriverInit,
     timeout: Duration,
 ) -> P0GuiOutcome {
+    eprintln!("P0_SMOKE bootstrap_start");
     let runtime = match create_runtime().map_err(RootError::Bootstrap) {
         Ok(runtime) => runtime,
         Err(error) => {
@@ -50,6 +51,7 @@ pub(crate) fn run_p0(
             };
         }
     };
+    eprintln!("P0_SMOKE runtime_ready");
     let application = match runtime
         .block_on(start(paths, &BootstrapObserver::default()))
         .map_err(RootError::Bootstrap)
@@ -63,9 +65,12 @@ pub(crate) fn run_p0(
             };
         }
     };
+    eprintln!("P0_SMOKE bootstrap_complete");
     let (init, report) =
         MainWindowInit::from_application(&application.application).with_smoke_driver(driver);
+    eprintln!("P0_SMOKE gtk_start");
     let gui_result = run_gtk_application(init, Some(timeout), true);
+    eprintln!("P0_SMOKE gtk_complete");
     eprintln!("P0_SMOKE cleanup_start");
     let p0_shutdown = runtime.block_on(application.shutdown_p0(temporary_root, secret_environment));
     eprintln!("P0_SMOKE cleanup_complete");

@@ -15,7 +15,8 @@ use crate::{
     pane_host_refresh::{active_terminals_changed, projection_changed, session_is_active},
     pane_host_render::render_projection,
     pane_host_terminals::{
-        detach_terminals, send_active_terminal, send_terminal_message, sync_terminals,
+        detach_terminals, rendered_session, send_active_terminal, send_terminal_message,
+        sync_terminals,
     },
 };
 
@@ -46,6 +47,7 @@ pub enum PaneHostOutput {
     Command(Box<UiCommand>),
     EditConnection(ConnectionId),
     ActiveTab(TabId),
+    RenderedSession(Option<SessionId>),
     ClipboardWritten { bytes: usize },
     Error(&'static str),
 }
@@ -102,6 +104,10 @@ impl SimpleComponent for PaneHost {
         };
         model.sync_terminal_controllers(&sender);
         model.render(&sender);
+        let _ = sender.output(PaneHostOutput::RenderedSession(rendered_session(
+            &model.model,
+            &model.terminals,
+        )));
         ComponentParts {
             model,
             widgets: PaneHostWidgets { status },
@@ -197,6 +203,10 @@ impl SimpleComponent for PaneHost {
     fn update_view(&self, widgets: &mut Self::Widgets, sender: ComponentSender<Self>) {
         if self.render_dirty.replace(false) {
             self.render(&sender);
+            let _ = sender.output(PaneHostOutput::RenderedSession(rendered_session(
+                &self.model,
+                &self.terminals,
+            )));
         }
         widgets.status.set_label(self.model.status().unwrap_or(""));
         widgets.status.set_visible(self.model.status().is_some());

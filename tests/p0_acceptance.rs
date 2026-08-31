@@ -825,6 +825,11 @@ fn production_p0_timeout_logs_redacted_action_and_cleanup_boundaries() {
     let failure = include_str!("../crates/rshell-ui/src/smoke_driver_failure.rs");
 
     for marker in [
+        "P0_SMOKE bootstrap_start",
+        "P0_SMOKE runtime_ready",
+        "P0_SMOKE bootstrap_complete",
+        "P0_SMOKE gtk_start",
+        "P0_SMOKE gtk_complete",
         "P0_SMOKE gtk_timeout",
         "P0_SMOKE cleanup_start",
         "P0_SMOKE cleanup_complete",
