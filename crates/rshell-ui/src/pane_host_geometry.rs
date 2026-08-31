@@ -61,11 +61,7 @@ impl PaneHostGeometryAck {
 
     pub(crate) fn refresh(&self, terminals: &mut BTreeMap<SessionId, Controller<TerminalView>>) {
         for session in self.unacknowledged() {
-            let message = if self.mark_probed(session) {
-                crate::TerminalViewMsg::RefreshGeometry
-            } else {
-                crate::TerminalViewMsg::ReplayGeometry
-            };
+            let message = self.next_probe(session);
             let delivered = terminals
                 .get(&session)
                 .is_some_and(|terminal| send_terminal_message(terminal, message));
@@ -122,11 +118,42 @@ impl PaneHostGeometryAck {
         state.probed.remove(&session);
     }
 
-    fn mark_probed(&self, session: SessionId) -> bool {
-        self.state.borrow_mut().probed.insert(session)
+    fn next_probe(&self, session: SessionId) -> crate::TerminalViewMsg {
+        let mut state = self.state.borrow_mut();
+        if state.probed.remove(&session) {
+            crate::TerminalViewMsg::ReplayGeometry
+        } else {
+            state.probed.insert(session);
+            crate::TerminalViewMsg::RefreshGeometry
+        }
     }
 }
 
 pub(crate) fn positive_terminal_geometry(size: TerminalSize) -> bool {
     size.cols > 0 && size.rows > 0 && size.pixel_width > 0 && size.pixel_height > 0 && size.dpi > 0
+}
+
+#[cfg(test)]
+mod tests {
+    use rshell_core::SessionId;
+
+    use super::PaneHostGeometryAck;
+
+    #[test]
+    fn unacknowledged_geometry_rechecks_allocation_after_an_empty_replay() {
+        let geometry = PaneHostGeometryAck::default();
+        let session = SessionId::new();
+        assert!(matches!(
+            geometry.next_probe(session),
+            crate::TerminalViewMsg::RefreshGeometry
+        ));
+        assert!(matches!(
+            geometry.next_probe(session),
+            crate::TerminalViewMsg::ReplayGeometry
+        ));
+        assert!(matches!(
+            geometry.next_probe(session),
+            crate::TerminalViewMsg::RefreshGeometry
+        ));
+    }
 }

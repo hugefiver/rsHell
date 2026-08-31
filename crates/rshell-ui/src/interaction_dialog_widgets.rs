@@ -72,6 +72,11 @@ impl InteractionDialogWidgets {
     }
 
     pub fn park_focus(&self) {
+        if let Some(root) = self.title.root()
+            && let Ok(window) = root.downcast::<gtk::Window>()
+        {
+            gtk::prelude::GtkWindowExt::set_focus(&window, gtk::Widget::NONE);
+        }
         self.title.set_focusable(true);
         self.title.grab_focus();
     }
