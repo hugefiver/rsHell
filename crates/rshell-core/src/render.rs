@@ -45,6 +45,34 @@ pub struct SearchMatch {
     pub end: CellPosition,
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TerminalDisplayModes {
+    pub alternate_screen: bool,
+    pub enhanced_keyboard: bool,
+    pub mouse_reporting: bool,
+    pub application_cursor: bool,
+    pub cursor_hidden: bool,
+    pub stale_title: bool,
+}
+
+impl TerminalDisplayModes {
+    pub const fn has_residue(self) -> bool {
+        self.alternate_screen
+            || self.enhanced_keyboard
+            || self.mouse_reporting
+            || self.application_cursor
+            || self.cursor_hidden
+            || self.stale_title
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DisplayRecovery {
+    pub before: TerminalDisplayModes,
+    pub after: TerminalDisplayModes,
+    pub changed: bool,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RenderFrame {
     pub generation: u64,
@@ -53,6 +81,8 @@ pub struct RenderFrame {
     pub rows: Arc<[RenderRow]>,
     pub cursor: Option<RenderCursor>,
     pub title: String,
+    #[serde(default)]
+    pub display_modes: TerminalDisplayModes,
     #[serde(default)]
     pub alternate_screen: bool,
     #[serde(default)]

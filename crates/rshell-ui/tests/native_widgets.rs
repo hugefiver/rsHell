@@ -1,28 +1,33 @@
 #![cfg(not(target_os = "macos"))]
 
-use std::sync::Arc;
+use std::{
+    sync::Arc,
+    time::{Duration, Instant},
+};
 
 use gtk::prelude::*;
 use relm4::{Component, ComponentController};
 use rshell_core::{
     AppBootstrapState, AppViewModel, AuthenticationKind, ConnectionCatalog, ConnectionProfile,
-    ErrorPaneView, PaneId, PaneLaunchTarget, PaneTree, RenderFrame, SessionFailure, SessionId,
-    SessionState, SessionUiEvent, SplitAxis, TabId, TabState, TerminalOverrides, TerminalProfile,
-    TerminalSettingsV1, TerminalSize, TransportKind, UiPortError, WorkspaceState,
+    DisplayRecoveryNotice, ErrorPaneView, PaneId, PaneLaunchTarget, PaneTree, RenderFrame,
+    SessionFailure, SessionId, SessionState, SessionUiEvent, SplitAxis, TabId, TabState,
+    TerminalDisplayModes, TerminalOverrides, TerminalProfile, TerminalSettingsV1, TerminalSize,
+    TransportKind, UiPortError, WorkspaceState,
 };
 use rshell_ui::{
     ConnectionEditor, ConnectionEditorInit, ConnectionEditorMsg, ConnectionSidebar,
-    ConnectionSidebarInit, ConnectionSidebarMsg, FontMetrics, PaneHost, PaneHostInit, PaneHostMsg,
-    SessionTabBar, SessionTabBarInit, SessionTabBarMsg, TerminalView, TerminalViewInit,
-    TerminalViewMsg,
+    ConnectionSidebarInit, ConnectionSidebarMsg, FontMetricEnvironment, FontMetricsService,
+    MetricsChange, PaneHost, PaneHostInit, PaneHostMsg, SessionTabBar, SessionTabBarInit,
+    SessionTabBarMsg, TerminalView, TerminalViewInit, TerminalViewMsg,
 };
 
 #[test]
-fn native_components_construct_and_clear_stale_reducer_state() {
+fn twenty_tabs_are_keyboard_and_overflow_reachable() {
     if let Err(error) = gtk::init() {
         eprintln!("native GTK reducer regression skipped: {error}");
         return;
     }
+    assert_twenty_tab_overflow_and_keyboard_reachability();
     assert_terminal_view_native_boundary();
     assert_native_workspace_boundary();
     assert_sidebar_catalog_refresh_preserves_only_the_same_visible_identity();
@@ -34,7 +39,8 @@ fn native_components_construct_and_clear_stale_reducer_state() {
         })
         .detach();
     assert!(editor.widget().has_css_class("editor-dialog"));
-    assert_eq!(editor.widget().width_request(), 560);
+    assert!(editor.widget().has_css_class("content-dialog"));
+    assert_eq!(editor.widget().width_request(), -1);
     assert!(!editor.widget().is_visible());
     let mut source = ConnectionProfile::new("Existing", "existing.example.test");
     source.transport = TransportKind::NativeSsh;
@@ -179,6 +185,118 @@ fn native_components_construct_and_clear_stale_reducer_state() {
     assert!(flush_gtk(), "closed Save must be a native no-op");
 }
 
+fn assert_twenty_tab_overflow_and_keyboard_reachability() {
+    let tabs = (0..20)
+        .map(|index| {
+            let pane = PaneId::new();
+            TabState {
+                id: TabId::new_v4(),
+                title: format!("Tab {:02}", index + 1),
+                pane_tree: PaneTree::leaf(pane),
+                active_pane: pane,
+            }
+        })
+        .collect::<Vec<_>>();
+    let tab_ids = tabs.iter().map(|tab| tab.id).collect::<Vec<_>>();
+    let tab_bar = SessionTabBar::builder()
+        .launch(SessionTabBarInit {
+            workspace: WorkspaceState {
+                tabs,
+                active_tab: Some(tab_ids[0]),
+            },
+        })
+        .detach();
+    let window = gtk::Window::new();
+    window.set_default_size(520, 180);
+    window.set_child(Some(tab_bar.widget()));
+    window.present();
+    assert!(flush_gtk());
+
+    let scroll = descendants(tab_bar.widget())
+        .into_iter()
+        .find(|widget| widget.has_css_class("tab-strip-scroll"))
+        .and_then(|widget| widget.downcast::<gtk::ScrolledWindow>().ok())
+        .expect("tab strip horizontal scroller");
+    assert_eq!(scroll.vscrollbar_policy(), gtk::PolicyType::Never);
+    let scroll_required = scroll.hadjustment().upper() > scroll.hadjustment().page_size();
+    let tab_widgets = descendants(tab_bar.widget())
+        .into_iter()
+        .filter(|widget| widget.has_css_class("terminal-tab"))
+        .collect::<Vec<_>>();
+    let visible_tabs = tab_widgets
+        .iter()
+        .filter(|widget| {
+            widget.compute_bounds(&scroll).is_some_and(|bounds| {
+                bounds.x() >= 0.0
+                    && bounds.width() > 0.0
+                    && bounds.x() + bounds.width() <= scroll.width() as f32
+            })
+        })
+        .count();
+    assert!(
+        scroll_required || (!tab_widgets.is_empty() && visible_tabs == tab_widgets.len()),
+        "rendered tabs must either require scrolling or all fit visibly: visible={visible_tabs}, rendered={}",
+        tab_widgets.len()
+    );
+    let overflow_menu = descendants(tab_bar.widget())
+        .into_iter()
+        .filter(|widget| widget.has_css_class("tab-overflow"))
+        .find_map(|widget| widget.downcast::<gtk::MenuButton>().ok())
+        .expect("accessible tab-overflow menu button");
+    let overflow_popover = overflow_menu.popover().expect("tab-overflow popover");
+    let overflow_titles = descendants(&overflow_popover)
+        .into_iter()
+        .filter(|widget| widget.has_css_class("tab-overflow-row"))
+        .filter_map(|widget| widget.downcast::<gtk::Button>().ok())
+        .filter_map(|button| button.label().map(|label| label.to_string()))
+        .collect::<std::collections::BTreeSet<_>>();
+    assert_eq!(overflow_titles.len(), 17);
+    let last_overflow_row = descendants(&overflow_popover)
+        .into_iter()
+        .filter(|widget| widget.has_css_class("tab-overflow-row"))
+        .filter_map(|widget| widget.downcast::<gtk::Button>().ok())
+        .find(|button| button.label().as_deref() == Some("Tab 20"))
+        .expect("last authoritative overflow row");
+    last_overflow_row.emit_clicked();
+    assert!(flush_gtk());
+    assert!(descendants(tab_bar.widget()).into_iter().any(|widget| {
+        widget.downcast::<gtk::Button>().is_ok_and(|button| {
+            button.has_css_class("active-tab")
+                && button.tooltip_text().as_deref() == Some("Activate Tab 20 tab")
+        })
+    }));
+
+    let mut visited = std::collections::BTreeSet::new();
+    for _ in 0..20 {
+        let active = descendants(tab_bar.widget())
+            .into_iter()
+            .filter_map(|widget| widget.downcast::<gtk::Button>().ok())
+            .find(|button| button.has_css_class("active-tab"))
+            .and_then(|button| button.tooltip_text())
+            .expect("active tab tooltip");
+        visited.insert(active.to_string());
+        assert!(press_key(
+            tab_bar.widget(),
+            gtk::gdk::Key::Tab,
+            gtk::gdk::ModifierType::CONTROL_MASK,
+        ));
+        assert!(flush_gtk());
+    }
+    assert_eq!(visited.len(), 20);
+    assert!(press_key(
+        tab_bar.widget(),
+        gtk::gdk::Key::Tab,
+        gtk::gdk::ModifierType::CONTROL_MASK | gtk::gdk::ModifierType::SHIFT_MASK,
+    ));
+    assert!(flush_gtk());
+    assert!(
+        !scroll_required || scroll.hadjustment().value() > 0.0,
+        "active tab must auto-reveal when scrolling is required"
+    );
+    window.close();
+    assert!(flush_gtk());
+}
+
 fn assert_sidebar_catalog_refresh_preserves_only_the_same_visible_identity() {
     let original = ConnectionProfile::new("Retained row", "retained.example.test");
     let original_id = original.id;
@@ -259,6 +377,7 @@ fn assert_catalog_rebuild_then_identity_switch_quiesces() {
 
 fn assert_native_workspace_boundary() {
     let fixture = native_workspace_fixture();
+    let refreshed_view = fixture.view.clone();
     let tab_bar = SessionTabBar::builder()
         .launch(SessionTabBarInit {
             workspace: fixture.view.workspace.clone(),
@@ -288,6 +407,7 @@ fn assert_native_workspace_boundary() {
     window.set_child(Some(&content));
     window.present();
     assert!(flush_gtk(), "workspace native window must quiesce");
+    assert_positive_pane_allocation(pane_host.widget());
 
     let panes = descendants(pane_host.widget())
         .into_iter()
@@ -303,6 +423,36 @@ fn assert_native_workspace_boundary() {
             .iter()
             .any(|widget| widget.is::<gtk::DrawingArea>()),
         "connected leaf must own a real TerminalView canvas"
+    );
+    let recovery_rows = descendants(pane_host.widget())
+        .into_iter()
+        .filter(|widget| widget.has_css_class("display-recovery-notice"))
+        .collect::<Vec<_>>();
+    assert_eq!(recovery_rows.len(), 1);
+    assert_eq!(
+        visible_label_text(&recovery_rows[0])
+            .into_iter()
+            .filter(|label| label == "Display mode not restored")
+            .count(),
+        1
+    );
+    let reset_buttons = descendants(pane_host.widget())
+        .into_iter()
+        .filter_map(|widget| widget.downcast::<gtk::Button>().ok())
+        .filter(|button| button.tooltip_text().as_deref() == Some("Reset display"))
+        .collect::<Vec<_>>();
+    assert_eq!(reset_buttons.len(), 1);
+    assert_eq!(
+        reset_buttons[0].accessible_role(),
+        gtk::AccessibleRole::Button
+    );
+    assert!(
+        descendants(pane_host.widget())
+            .into_iter()
+            .filter(|widget| widget.has_css_class("pane-command-row"))
+            .flat_map(|toolbar| descendants(&toolbar))
+            .filter_map(|widget| widget.downcast::<gtk::Button>().ok())
+            .all(|button| button.tooltip_text().as_deref() != Some("Reset display"))
     );
     let labels = visible_label_text(pane_host.widget());
     assert!(labels.iter().any(|label| label == "Connecting"));
@@ -368,6 +518,55 @@ fn assert_native_workspace_boundary() {
         ["Retry", "Edit Connection", "Copy Diagnostics", "Close"]
     );
 
+    pane_host.emit(PaneHostMsg::SessionEvent {
+        session: fixture.terminal_session,
+        event: SessionUiEvent::Failed(SessionFailure::Network),
+    });
+    assert!(flush_gtk());
+    assert!(
+        descendants(pane_host.widget())
+            .into_iter()
+            .all(|widget| !widget.is::<gtk::DrawingArea>()),
+        "terminal completion must replace the terminal widget"
+    );
+    assert!(
+        descendants(pane_host.widget())
+            .into_iter()
+            .all(|widget| !widget.has_css_class("display-recovery-notice"))
+    );
+    assert!(
+        visible_label_text(pane_host.widget())
+            .iter()
+            .all(|label| !label.contains('\u{fffd}'))
+    );
+    pane_host.emit(PaneHostMsg::SessionEvent {
+        session: fixture.terminal_session,
+        event: SessionUiEvent::Frame(Arc::new(RenderFrame {
+            generation: 2,
+            size: TerminalSize {
+                cols: 80,
+                rows: 24,
+                pixel_width: 0,
+                pixel_height: 0,
+                dpi: 96,
+            },
+            viewport_top: 0,
+            rows: Arc::from([]),
+            cursor: None,
+            title: "stale terminal frame".into(),
+            display_modes: Default::default(),
+            alternate_screen: false,
+            mouse_reporting: false,
+        })),
+    });
+    assert!(flush_gtk());
+    assert!(
+        descendants(pane_host.widget())
+            .into_iter()
+            .all(|widget| !widget.is::<gtk::DrawingArea>()),
+        "detached terminal controllers must not be recreated by later frames"
+    );
+
     let other_tab = descendants(tab_bar.widget())
         .into_iter()
         .find_map(|widget| {
@@ -389,7 +588,15 @@ fn assert_native_workspace_boundary() {
         "tab click must update the local active-tab surface"
     );
     pane_host.emit(PaneHostMsg::ActivateTab(fixture.other_tab));
+    pane_host.emit(PaneHostMsg::SetViewModel(Box::new(refreshed_view)));
     assert!(flush_gtk());
+    assert_positive_pane_allocation(pane_host.widget());
+    assert!(
+        descendants(pane_host.widget())
+            .iter()
+            .any(|widget| widget.has_css_class("terminal-canvas")),
+        "switching tabs must synchronize the newly active real TerminalView"
+    );
 
     pane_host.emit(PaneHostMsg::ActivateTab(fixture.first_tab));
     pane_host.emit(PaneHostMsg::SessionEvent {
@@ -409,10 +616,41 @@ fn assert_native_workspace_boundary() {
     assert!(flush_gtk(), "workspace native window close must quiesce");
 }
 
+fn assert_positive_pane_allocation(root: &impl IsA<gtk::Widget>) {
+    assert!(
+        wait_for_gtk(|| {
+            let panes = descendants(root)
+                .into_iter()
+                .filter(|widget| widget.is_mapped() && widget.has_css_class("pane-surface"))
+                .collect::<Vec<_>>();
+            !panes.is_empty()
+                && panes
+                    .iter()
+                    .all(|pane| pane.width() > 0 && pane.height() > 0)
+        }),
+        "mapped pane surfaces must settle with positive allocations"
+    );
+}
+
+fn wait_for_gtk(mut condition: impl FnMut() -> bool) -> bool {
+    let deadline = Instant::now() + Duration::from_secs(2);
+    loop {
+        flush_gtk();
+        if condition() {
+            return true;
+        }
+        if Instant::now() >= deadline {
+            return false;
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+}
+
 struct NativeWorkspaceFixture {
     view: AppViewModel,
     first_tab: TabId,
     other_tab: TabId,
+    terminal_session: SessionId,
     pending_session: SessionId,
 }
 
@@ -480,6 +718,18 @@ fn native_workspace_fixture() -> NativeWorkspaceFixture {
     ] {
         view.session_states.insert(session, state);
     }
+    view.display_recovery.insert(
+        terminal_session,
+        DisplayRecoveryNotice {
+            interrupted_generation: 1,
+            observed_generation: 2,
+            modes: TerminalDisplayModes {
+                alternate_screen: true,
+                enhanced_keyboard: true,
+                ..TerminalDisplayModes::default()
+            },
+        },
+    );
     view.error_panes.insert(
         error_session,
         ErrorPaneView {
@@ -493,17 +743,30 @@ fn native_workspace_fixture() -> NativeWorkspaceFixture {
         view,
         first_tab,
         other_tab,
+        terminal_session,
         pending_session,
     }
 }
 
 fn assert_terminal_view_native_boundary() {
+    let profile = TerminalSettingsV1::default().resolve(&TerminalOverrides::default());
+    let metric_probe = gtk::Label::new(None);
+    let context = metric_probe.pango_context();
+    let environment =
+        FontMetricEnvironment::from_context(&context, f64::from(metric_probe.scale_factor()))
+            .expect("native metric environment");
+    let metrics = match FontMetricsService::default()
+        .measure(&context, &profile, environment)
+        .expect("native terminal metrics")
+    {
+        MetricsChange::Changed(metrics) | MetricsChange::Unchanged(metrics) => metrics,
+    };
     let terminal = TerminalView::builder()
         .launch(TerminalViewInit {
             pane: PaneId::new(),
             session: SessionId::new(),
-            profile: TerminalSettingsV1::default().resolve(&TerminalOverrides::default()),
-            metrics: FontMetrics::new(9.0, 18.0).unwrap(),
+            profile,
+            metrics,
         })
         .detach();
     let window = gtk::Window::new();
@@ -537,6 +800,7 @@ fn assert_terminal_view_native_boundary() {
         rows: Arc::from([]),
         cursor: None,
         title: "native terminal fixture".into(),
+        display_modes: Default::default(),
         alternate_screen: false,
         mouse_reporting: false,
     })));
@@ -573,6 +837,19 @@ fn descendants(root: &impl IsA<gtk::Widget>) -> Vec<gtk::Widget> {
     let mut output = Vec::new();
     push_children(root.as_ref(), &mut output);
     output
+}
+
+fn press_key(
+    root: &impl IsA<gtk::Widget>,
+    key: gtk::gdk::Key,
+    state: gtk::gdk::ModifierType,
+) -> bool {
+    let controllers = root.observe_controllers();
+    let controller = (0..controllers.n_items())
+        .filter_map(|index| controllers.item(index))
+        .find_map(|controller| controller.downcast::<gtk::EventControllerKey>().ok())
+        .expect("key controller");
+    controller.emit_by_name::<bool>("key-pressed", &[&key, &0u32, &state])
 }
 
 fn button_by_tooltip(root: &impl IsA<gtk::Widget>, tooltip: &str) -> gtk::Button {

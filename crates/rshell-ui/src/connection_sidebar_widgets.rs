@@ -2,7 +2,7 @@ use gtk::prelude::*;
 use relm4::{ComponentSender, gtk};
 
 use crate::{
-    ConnectionSidebar, ConnectionSidebarMsg, ProductIcon, SidebarRow,
+    ConnectionSidebar, ConnectionSidebarMsg, IconRenderRequest, ProductIcon, SidebarRow,
     connection_sidebar_row::sidebar_row,
 };
 
@@ -31,6 +31,7 @@ impl ConnectionSidebarWidgets {
             .placeholder_text("Search connections")
             .tooltip_text("Search by name, host, user, or tag")
             .build();
+        search.add_css_class("connection-search");
         search.update_property(&[gtk::accessible::Property::Label("Search connections")]);
         search.set_margin_start(6);
         search.set_margin_end(6);
@@ -42,11 +43,23 @@ impl ConnectionSidebarWidgets {
 
         let toolbar = gtk::Box::new(gtk::Orientation::Horizontal, 4);
         toolbar.add_css_class("sidebar-toolbar");
-        let create = action_button(ProductIcon::AddConnection, "Create a connection");
-        let create_group = action_button(ProductIcon::AddGroup, "Create a group");
-        let edit = action_button(ProductIcon::Edit, "Edit selection");
-        let duplicate = action_button(ProductIcon::Duplicate, "Duplicate connection");
-        let delete = action_button(ProductIcon::Delete, "Delete selection");
+        let icon_request = IconRenderRequest::for_widget(16, root);
+        let create = action_button(
+            ProductIcon::AddConnection,
+            Some("New"),
+            "Create a connection",
+            icon_request,
+        );
+        let create_group =
+            action_button(ProductIcon::AddGroup, None, "Create a group", icon_request);
+        let edit = action_button(ProductIcon::Edit, None, "Edit selection", icon_request);
+        let duplicate = action_button(
+            ProductIcon::Duplicate,
+            None,
+            "Duplicate connection",
+            icon_request,
+        );
+        let delete = action_button(ProductIcon::Delete, None, "Delete selection", icon_request);
         for button in [&create, &create_group, &edit, &duplicate, &delete] {
             toolbar.append(button);
         }
@@ -175,8 +188,24 @@ impl ConnectionSidebarWidgets {
     }
 }
 
-fn action_button(icon: ProductIcon, tooltip: &str) -> gtk::Button {
-    icon.button(Some(tooltip)).expect("embedded sidebar icon")
+fn action_button(
+    icon: ProductIcon,
+    text: Option<&str>,
+    tooltip: &str,
+    request: IconRenderRequest,
+) -> gtk::Button {
+    let button = icon
+        .button(Some(tooltip), request)
+        .expect("embedded sidebar icon");
+    if let Some(text) = text {
+        let content = gtk::Box::new(gtk::Orientation::Horizontal, 4);
+        content.append(&icon.image(request).expect("embedded sidebar icon"));
+        let label = gtk::Label::new(Some(text));
+        label.add_css_class("navigation-action-label");
+        content.append(&label);
+        button.set_child(Some(&content));
+    }
+    button
 }
 
 fn delete_confirmation(

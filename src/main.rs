@@ -7,6 +7,7 @@ mod p0_smoke_cleanup;
 mod p0_smoke_contract;
 mod p0_smoke_contract_binding;
 mod p0_smoke_contract_evidence;
+mod p0_smoke_contract_visual;
 mod p0_smoke_evidence;
 mod p0_smoke_report;
 mod p0_smoke_report_steps;
@@ -202,7 +203,10 @@ fn write_startup_report(path: &Path, report: StartupReport) -> Result<(), RootEr
             "{{\"window_realized\":{},\"local_session_connected\":{},",
             "\"non_empty_render_frame\":{},\"shutdown_clean\":{},",
             "\"embedded_css_loaded\":{},\"embedded_icons_renderable\":{},",
-            "\"embedded_icon_backend\":\"{}\"}}\n"
+            "\"embedded_icon_backend\":\"{}\",",
+            "\"measured_terminal_geometry_ready\":{},\"scale_aware_icons_ready\":{},",
+            "\"icon_backend\":\"{}\",\"icon_count\":{},",
+            "\"adaptive_layout_modes\":{}}}\n"
         ),
         report.window_realized,
         report.local_session_connected,
@@ -211,6 +215,11 @@ fn write_startup_report(path: &Path, report: StartupReport) -> Result<(), RootEr
         report.embedded_css_loaded,
         report.embedded_icons_renderable,
         report.embedded_icon_backend,
+        report.measured_terminal_geometry_ready,
+        report.scale_aware_icons_ready,
+        report.icon_backend,
+        report.icon_count,
+        report.adaptive_layout_modes,
     );
     fs::write(path, json).map_err(|_| RootError::SmokeReport)
 }

@@ -34,9 +34,6 @@ impl SimpleComponent for ImportDialog {
         let root = gtk::Box::new(gtk::Orientation::Vertical, 12);
         root.add_css_class("import-dialog");
         root.add_css_class("content-dialog");
-        root.set_width_request(620);
-        root.set_halign(gtk::Align::Center);
-        root.set_valign(gtk::Align::Center);
         root.set_visible(false);
         root
     }
@@ -205,6 +202,7 @@ impl ImportDialog {
 
 fn attach_keys(root: &gtk::Box, sender: &ComponentSender<ImportDialog>) {
     let keys = gtk::EventControllerKey::new();
+    keys.set_propagation_phase(gtk::PropagationPhase::Capture);
     let input = sender.input_sender().clone();
     keys.connect_key_pressed(move |_, key, _, _| {
         if key == gtk::gdk::Key::Escape {

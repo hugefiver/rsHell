@@ -3,7 +3,7 @@ use relm4::gtk;
 use rshell_core::UiCommand;
 
 use crate::{
-    ImportDialogMsg, ImportDialogOutput, InteractionDialogOutput, MainWindow, SettingsWindowMsg,
+    ImportDialogOutput, InteractionDialogOutput, MainWindow, ModalKind, ModalRequest,
     SettingsWindowOutput, main_window_commands::CommandSource,
     main_window_dialogs::DialogCommandSource,
 };
@@ -17,7 +17,10 @@ impl MainWindow {
                     self.status = "Saving terminal settings".into();
                 }
             }
-            SettingsWindowOutput::Closed => self.status = "Ready".into(),
+            SettingsWindowOutput::Closed => {
+                self.handle_modal(ModalRequest::Close(ModalKind::Settings));
+                self.status = "Ready".into();
+            }
         }
     }
 
@@ -29,7 +32,10 @@ impl MainWindow {
                     self.status = "Import operation in progress".into();
                 }
             }
-            ImportDialogOutput::Closed => self.status = "Ready".into(),
+            ImportDialogOutput::Closed => {
+                self.handle_modal(ModalRequest::Close(ModalKind::Import));
+                self.status = "Ready".into();
+            }
             ImportDialogOutput::StateChanged(state) => self.observe_smoke_import(state),
         }
     }
@@ -58,16 +64,11 @@ impl MainWindow {
                     self.status = "Host-key diagnostics copied".into();
                 }
             }
-            InteractionDialogOutput::Closed => self.status = "Ready".into(),
+            InteractionDialogOutput::Closed => {
+                self.handle_modal(ModalRequest::Close(ModalKind::Interaction));
+                self.status = "Ready".into();
+            }
             InteractionDialogOutput::StateChanged(state) => self.observe_smoke_interaction(state),
         }
-    }
-
-    pub(crate) fn open_settings(&self) {
-        self.send_settings(SettingsWindowMsg::Open);
-    }
-
-    pub(crate) fn open_import(&self) {
-        self.send_import(ImportDialogMsg::Open);
     }
 }

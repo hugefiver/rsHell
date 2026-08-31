@@ -37,11 +37,11 @@ pub(crate) fn run(scenario_path: &Path, report_path: &Path) -> Result<(), RootEr
         );
         cleanup
     });
-    let snapshot_exists = outcome
-        .report
-        .as_ref()
-        .and_then(|report| report.png_path.as_ref())
-        .is_some_and(|path| path.is_file());
+    let snapshot_exists = outcome.report.as_ref().is_some_and(|report| {
+        report.png_path.as_ref().is_some_and(|path| path.is_file())
+            && !report.png_paths.is_empty()
+            && report.png_paths.iter().all(|path| path.is_file())
+    });
     let state_removed = fs::remove_dir_all(&temporary_root).is_ok();
     let evidence = QaEvidence::load(&parsed.external_observations);
     let runner_error = outcome.result.err();

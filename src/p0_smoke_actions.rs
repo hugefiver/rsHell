@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 
 use rshell_core::ImportSourceKind;
-use rshell_ui::SmokeAction;
+use rshell_ui::{ShellLayoutMode, SmokeAction, SmokeVisualCheckpoint, SmokeVisualState};
 use serde::Deserialize;
 
 use crate::{
@@ -70,7 +70,13 @@ pub(crate) enum RawAction {
     },
     CopySelection,
     Reconnect,
-    VisualCheckpoint,
+    VisualCheckpoint {
+        id: String,
+        state: String,
+        width: i32,
+        height: i32,
+        expected_mode: String,
+    },
     PreviewImport {
         source: ImportSourceKind,
         path: PathBuf,
@@ -80,6 +86,13 @@ pub(crate) enum RawAction {
     CommitImport,
     CancelImport,
     CloseAll,
+    InterruptTerminal,
+    ResetDisplay,
+    ResizeWindow {
+        width: i32,
+        height: i32,
+        expected_mode: String,
+    },
 }
 
 impl RawAction {
@@ -166,7 +179,20 @@ impl RawAction {
             },
             Self::CopySelection => SmokeAction::CopySelection,
             Self::Reconnect => SmokeAction::Reconnect,
-            Self::VisualCheckpoint => SmokeAction::VisualCheckpoint,
+            Self::VisualCheckpoint {
+                id,
+                state,
+                width,
+                height,
+                expected_mode,
+            } => SmokeAction::VisualCheckpoint(SmokeVisualCheckpoint {
+                id,
+                state: SmokeVisualState::parse(&state).ok_or(ScenarioError::Invalid)?,
+                width,
+                height,
+                expected_mode: ShellLayoutMode::parse(&expected_mode)
+                    .ok_or(ScenarioError::Invalid)?,
+            }),
             Self::PreviewImport {
                 source,
                 path,
@@ -179,6 +205,18 @@ impl RawAction {
             Self::CommitImport => SmokeAction::CommitImport,
             Self::CancelImport => SmokeAction::CancelImport,
             Self::CloseAll => SmokeAction::CloseAll,
+            Self::InterruptTerminal => SmokeAction::InterruptTerminal,
+            Self::ResetDisplay => SmokeAction::ResetDisplay,
+            Self::ResizeWindow {
+                width,
+                height,
+                expected_mode,
+            } => SmokeAction::ResizeWindow {
+                width,
+                height,
+                expected_mode: ShellLayoutMode::parse(&expected_mode)
+                    .ok_or(ScenarioError::Invalid)?,
+            },
         };
         Ok(action)
     }

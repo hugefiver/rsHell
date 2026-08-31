@@ -24,6 +24,7 @@ pub(crate) enum ScenarioError {
     Read,
     Parse,
     Invalid,
+    UnsupportedVersion,
 }
 
 pub(crate) fn read(path: &Path) -> Result<ParsedScenario, ScenarioError> {
@@ -33,10 +34,11 @@ pub(crate) fn read(path: &Path) -> Result<ParsedScenario, ScenarioError> {
 }
 
 pub(crate) fn parse(json: &str) -> Result<ParsedScenario, ScenarioError> {
-    let raw: RawScenario = serde_json::from_str(json).map_err(|_| ScenarioError::Parse)?;
-    if raw.version != SMOKE_SCENARIO_VERSION {
-        return Err(ScenarioError::Invalid);
+    let version: VersionProbe = serde_json::from_str(json).map_err(|_| ScenarioError::Parse)?;
+    if version.version != SMOKE_SCENARIO_VERSION {
+        return Err(ScenarioError::UnsupportedVersion);
     }
+    let raw: RawScenario = serde_json::from_str(json).map_err(|_| ScenarioError::Parse)?;
     let decoded = raw
         .actions
         .into_iter()
@@ -82,9 +84,15 @@ pub(crate) fn parse(json: &str) -> Result<ParsedScenario, ScenarioError> {
 }
 
 #[derive(Deserialize)]
+struct VersionProbe {
+    version: u16,
+}
+
+#[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct RawScenario {
-    version: u16,
+    #[serde(rename = "version")]
+    _version: u16,
     run_nonce: String,
     actions: Vec<RawStep>,
     #[serde(default)]
@@ -152,10 +160,13 @@ mod tests {
         let fixture = include_str!("../tests/fixtures/smoke/p0-scenario.json");
         let value: serde_json::Value = serde_json::from_str(fixture).unwrap();
         for (index, action) in value["actions"].as_array().unwrap().iter().enumerate() {
-            serde_json::from_value::<crate::p0_smoke_actions::RawAction>(action.clone())
-                .unwrap_or_else(|error| {
-                    panic!("static fixture action {index} must parse: {error}")
-                });
+            let mut action = action.clone();
+            let object = action.as_object_mut().expect("action object");
+            object.remove("surface");
+            object.remove("connection_label");
+            serde_json::from_value::<crate::p0_smoke_actions::RawAction>(action).unwrap_or_else(
+                |error| panic!("static fixture action {index} must parse: {error}"),
+            );
         }
         let scenario = super::parse(fixture).expect("fixture must remain a valid scenario");
         assert!(scenario.scenario.actions.len() >= rshell_ui::SmokeAction::ALL.len());
@@ -163,7 +174,7 @@ mod tests {
 
     #[test]
     fn secret_actions_accept_only_environment_variable_names() {
-        let json = r#"{"version":1,"run_nonce":"unit","actions":[{"action":"paste_text_from_env","env_var":"literal secret","effect_marker":"effect"},{"action":"close_all"}]}"#;
+        let json = r#"{"version":2,"run_nonce":"unit","actions":[{"action":"paste_text_from_env","env_var":"literal secret","effect_marker":"effect"},{"action":"close_all"}]}"#;
         assert!(matches!(
             super::parse(json),
             Err(super::ScenarioError::Invalid)
@@ -173,7 +184,7 @@ mod tests {
     #[test]
     fn collects_only_secret_environment_names_for_root_state_scan() {
         let parsed = super::parse(
-            r#"{"version":1,"run_nonce":"unit","actions":[
+            r#"{"version":2,"run_nonce":"unit","actions":[
                 {"action":"respond_auth","prompt":0,"env_var":"AUTH"},
                 {"action":"paste_text_from_env","env_var":"PASTE","effect_marker":"effect"},
                 {"action":"set_connection_field","field":{"kind":"secret_from_env","env_var":"AUTH"}},
@@ -187,9 +198,9 @@ mod tests {
     #[test]
     fn close_all_is_required_exactly_once_and_last() {
         for json in [
-            r#"{"version":1,"run_nonce":"unit","actions":[{"action":"new_tab"}]}"#,
-            r#"{"version":1,"run_nonce":"unit","actions":[{"action":"close_all"},{"action":"new_tab"}]}"#,
-            r#"{"version":1,"run_nonce":"unit","actions":[{"action":"close_all"},{"action":"close_all"}]}"#,
+            r#"{"version":2,"run_nonce":"unit","actions":[{"action":"new_tab"}]}"#,
+            r#"{"version":2,"run_nonce":"unit","actions":[{"action":"close_all"},{"action":"new_tab"}]}"#,
+            r#"{"version":2,"run_nonce":"unit","actions":[{"action":"close_all"},{"action":"close_all"}]}"#,
         ] {
             assert_eq!(
                 super::parse(json).err(),
@@ -202,7 +213,7 @@ mod tests {
     #[test]
     fn scenario_accepts_non_secret_surface_binding_and_run_nonce() {
         let json = r#"{
-            "version":1,
+            "version":2,
             "run_nonce":"review-run-123",
             "actions":[
                 {"action":"wait_window_realized","surface":"gtk","connection_label":"unit-window"},
@@ -212,6 +223,15 @@ mod tests {
         assert!(
             super::parse(json).is_ok(),
             "scenario steps must carry a run-bound surface label"
+        );
+    }
+
+    #[test]
+    fn version_one_fails_with_the_exact_unsupported_version_error() {
+        let json = r#"{"version":1,"run_nonce":"unit","actions":[{"action":"visual_checkpoint"},{"action":"close_all"}]}"#;
+        assert_eq!(
+            super::parse(json).err(),
+            Some(super::ScenarioError::UnsupportedVersion)
         );
     }
 }

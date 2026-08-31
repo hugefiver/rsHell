@@ -1,48 +1,11 @@
 use std::{fmt, sync::Arc};
 
 use rshell_core::{
-    AppViewModel, ConnectionId, ErrorPaneView, PaneId, PaneLaunchTarget, RenderFrame,
-    ResolvedTerminalProfile, SessionFailure, SessionId, SessionState, SplitAxis, UiCommand,
+    AppViewModel, ConnectionId, DisplayRecoveryNotice, ErrorPaneView, PaneId, PaneLaunchTarget,
+    RenderFrame, ResolvedTerminalProfile, SessionFailure, SessionId, SessionState,
 };
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum PanePageKind {
-    Pending,
-    Terminal,
-    Status,
-    Error,
-    Unavailable,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum PaneAction {
-    SplitHorizontal,
-    SplitVertical,
-    Reconnect,
-    Retry,
-    EditConnection,
-    CopyDiagnostics,
-    Close,
-}
-
-impl PaneAction {
-    pub fn command(self, pane: PaneId, _session: Option<SessionId>) -> Option<UiCommand> {
-        match self {
-            Self::SplitHorizontal => Some(UiCommand::Split {
-                pane,
-                axis: SplitAxis::Horizontal,
-            }),
-            Self::SplitVertical => Some(UiCommand::Split {
-                pane,
-                axis: SplitAxis::Vertical,
-            }),
-            Self::Reconnect => Some(UiCommand::RetryPane(pane)),
-            Self::Retry => Some(UiCommand::RetryPane(pane)),
-            Self::Close => Some(UiCommand::ClosePane(pane)),
-            Self::EditConnection | Self::CopyDiagnostics => None,
-        }
-    }
-}
+use crate::pane_status::{self, PaneAction, PanePageKind};
 
 #[derive(Clone)]
 pub struct SessionPaneViewModel {
@@ -52,6 +15,7 @@ pub struct SessionPaneViewModel {
     target: Option<PaneLaunchTarget>,
     frame: Option<Arc<RenderFrame>>,
     error: Option<ErrorPaneView>,
+    recovery_notice: Option<DisplayRecoveryNotice>,
 }
 
 impl fmt::Debug for SessionPaneViewModel {
@@ -73,6 +37,7 @@ impl fmt::Debug for SessionPaneViewModel {
                 &self.frame.as_ref().map(|frame| frame.generation),
             )
             .field("failure", &self.error.as_ref().map(|error| error.failure))
+            .field("recovery_notice", &self.recovery_notice)
             .finish()
     }
 }
@@ -105,6 +70,8 @@ impl SessionPaneViewModel {
             target,
             frame: session.and_then(|session| app.latest_frames.get(&session).cloned()),
             error: session.and_then(|session| app.error_panes.get(&session).cloned()),
+            recovery_notice: session
+                .and_then(|session| app.display_recovery.get(&session).copied()),
         }
     }
 
@@ -124,60 +91,24 @@ impl SessionPaneViewModel {
         self.frame.as_ref()
     }
 
+    pub fn recovery_notice(&self) -> Option<DisplayRecoveryNotice> {
+        self.recovery_notice
+    }
+
     pub fn page(&self) -> PanePageKind {
-        if self.target.is_none() {
-            return PanePageKind::Unavailable;
-        }
-        match self.state {
-            SessionState::Connected => PanePageKind::Terminal,
-            SessionState::Exited => PanePageKind::Status,
-            SessionState::Failed | SessionState::Crashed => PanePageKind::Error,
-            SessionState::Created
-            | SessionState::Connecting
-            | SessionState::AwaitingHostKey
-            | SessionState::AwaitingAuthentication
-            | SessionState::Reconnecting
-            | SessionState::Closing => PanePageKind::Pending,
-        }
+        pane_status::page(self.target.is_some(), self.session.is_some(), self.state)
     }
 
     pub fn status_label(&self) -> &'static str {
-        if self.target.is_none() {
-            return "Session unavailable";
-        }
-        match self.state {
-            SessionState::Created => "Created",
-            SessionState::Connecting => "Connecting",
-            SessionState::AwaitingHostKey => "Awaiting host key",
-            SessionState::AwaitingAuthentication => "Awaiting authentication",
-            SessionState::Connected => "Connected",
-            SessionState::Reconnecting => "Reconnecting",
-            SessionState::Closing => "Closing",
-            SessionState::Exited => "Exited",
-            SessionState::Failed => "Failed",
-            SessionState::Crashed => "Crashed",
-        }
+        pane_status::status_label(self.target.is_some(), self.session.is_some(), self.state)
     }
 
     pub fn actions(&self) -> Vec<PaneAction> {
-        match self.page() {
-            PanePageKind::Error | PanePageKind::Status => {
-                let mut actions = vec![PaneAction::Retry];
-                if self.connection_id().is_some() {
-                    actions.push(PaneAction::EditConnection);
-                }
-                actions.extend([PaneAction::CopyDiagnostics, PaneAction::Close]);
-                actions
-            }
-            PanePageKind::Terminal => vec![
-                PaneAction::SplitHorizontal,
-                PaneAction::SplitVertical,
-                PaneAction::Reconnect,
-                PaneAction::Close,
-            ],
-            PanePageKind::Pending => vec![PaneAction::Close],
-            PanePageKind::Unavailable => vec![PaneAction::Close],
-        }
+        pane_status::actions(
+            self.page(),
+            self.connection_id().is_some(),
+            self.recovery_notice.is_some(),
+        )
     }
 
     pub fn connection_id(&self) -> Option<ConnectionId> {
@@ -198,6 +129,12 @@ impl SessionPaneViewModel {
             (None, SessionState::Exited) => {
                 ("exited", unix_timestamp(), "session exited", target.host())
             }
+            (None, _) if self.session.is_none() => (
+                "disconnected",
+                unix_timestamp(),
+                "session disconnected",
+                target.host(),
+            ),
             _ => return None,
         };
         let mut lines = vec![format!("category: {category}")];

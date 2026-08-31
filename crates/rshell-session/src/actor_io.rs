@@ -1,110 +1,12 @@
 use rshell_core::{ExitStatus, SessionFailure, SessionState};
-use secrecy::ExposeSecret;
 
 use crate::{
-    SessionCommand, SessionError, SessionEvent, SessionTransport, TransportEvent,
+    SessionEvent, SessionTransport, TransportEvent,
     actor::{ActorControl, SessionActor},
+    display_recovery::RecoveryTransition,
 };
 
 impl SessionActor {
-    pub(crate) async fn handle_command(
-        &mut self,
-        transport: &mut dyn SessionTransport,
-        command: SessionCommand,
-    ) -> ActorControl {
-        match command {
-            SessionCommand::Input(input) => {
-                let bytes = match self.engine.encode_input(input) {
-                    Ok(bytes) => bytes,
-                    Err(_) => return ActorControl::Failure(SessionFailure::Platform),
-                };
-                match transport.write(&bytes).await {
-                    Ok(()) => {
-                        if self.presentation.scroll_on_keypress() {
-                            self.presentation.on_input(self.engine.viewport_bounds());
-                            self.frame_clock.mark_dirty();
-                        }
-                        ActorControl::Continue
-                    }
-                    Err(error) => ActorControl::Failure(error.failure()),
-                }
-            }
-            SessionCommand::Mouse(event) => {
-                let bytes = match self.engine.encode_mouse(event) {
-                    Ok(bytes) => bytes,
-                    Err(_) => return ActorControl::Failure(SessionFailure::Platform),
-                };
-                match transport.write(&bytes).await {
-                    Ok(()) => ActorControl::Continue,
-                    Err(error) => ActorControl::Failure(error.failure()),
-                }
-            }
-            SessionCommand::Paste(secret) => {
-                match transport.write(secret.expose_secret().as_bytes()).await {
-                    Ok(()) => ActorControl::Continue,
-                    Err(error) => ActorControl::Failure(error.failure()),
-                }
-            }
-            SessionCommand::Resize(size) => {
-                if self.engine.resize(size).is_err() {
-                    return ActorControl::Failure(SessionFailure::Platform);
-                }
-                self.presentation
-                    .on_resize(size, self.engine.viewport_bounds());
-                match transport.resize(size).await {
-                    Ok(()) => {
-                        self.frame_clock.mark_dirty();
-                        ActorControl::Continue
-                    }
-                    Err(error) => ActorControl::Failure(error.failure()),
-                }
-            }
-            SessionCommand::Scroll(rows) => {
-                if self.engine.scroll(rows).is_err() {
-                    return ActorControl::Failure(SessionFailure::Platform);
-                }
-                self.presentation
-                    .on_scroll(rows, self.engine.viewport_bounds());
-                if rows != 0 {
-                    self.frame_clock.mark_dirty();
-                }
-                ActorControl::Continue
-            }
-            SessionCommand::Search(query) => match self.engine.search(&query) {
-                Ok(matches) => {
-                    let _ = self.events.send(SessionEvent::SearchCompleted(matches));
-                    ActorControl::Continue
-                }
-                Err(_) => ActorControl::Failure(SessionFailure::Platform),
-            },
-            SessionCommand::Select(range) => {
-                self.presentation.set_selection(range);
-                self.frame_clock.mark_dirty();
-                ActorControl::Continue
-            }
-            SessionCommand::CopySelection => {
-                let text = match self.presentation.selection() {
-                    Some(range) => match self.engine.selected_text(range) {
-                        Ok(text) => text,
-                        Err(_) => return ActorControl::Failure(SessionFailure::Platform),
-                    },
-                    None => String::new(),
-                };
-                let _ = self.events.send(SessionEvent::CopyReady(text));
-                ActorControl::Continue
-            }
-            SessionCommand::ClearScrollback => self.clear_scrollback(),
-            SessionCommand::Respond(id, response) => {
-                match self.interactions.respond(id, response) {
-                    Ok(()) => ActorControl::Continue,
-                    Err(error) => ActorControl::Failure(error.failure()),
-                }
-            }
-            SessionCommand::Reconnect => ActorControl::Reconnect,
-            SessionCommand::Shutdown => ActorControl::Shutdown,
-        }
-    }
-
     pub(crate) async fn handle_transport_event(
         &mut self,
         transport: &mut dyn SessionTransport,
@@ -167,89 +69,16 @@ impl SessionActor {
             .engine
             .render(viewport, self.presentation.selection())?;
         std::sync::Arc::make_mut(&mut frame).generation = self.presentation.next_generation()?;
+        let recovery = self.recovery.observe(&frame);
         let first_frame = self.frames.borrow().is_none();
         self.frames.send_replace(Some(frame.clone()));
         if first_frame {
             let _ = self.events.send(SessionEvent::FrameReady(frame));
         }
+        if let RecoveryTransition::Changed(notice) = recovery {
+            let _ = self.events.send(SessionEvent::RecoveryChanged(notice));
+        }
         self.frame_clock.published();
         Ok(())
-    }
-
-    async fn finish_frame(&mut self) {
-        if self.frame_clock.is_dirty() {
-            tokio::time::sleep_until(self.frame_clock.deadline()).await;
-            let _ = self.publish_frame();
-        }
-    }
-
-    pub(crate) async fn shutdown(
-        &mut self,
-        transport: &mut dyn SessionTransport,
-    ) -> Result<(), SessionError> {
-        if !self.transition(SessionState::Closing) {
-            self.lifecycle.illegal(&self.events);
-            return Err(SessionError::ActorJoin);
-        }
-        match transport.shutdown().await {
-            Ok(()) => self.lifecycle.exit(
-                ExitStatus {
-                    code: None,
-                    success: true,
-                },
-                &self.events,
-            ),
-            Err(error) => {
-                self.lifecycle.fail(error.failure(), &self.events);
-                self.finish_frame().await;
-                return Err(SessionError::TransportShutdown(error.failure()));
-            }
-        }
-        self.finish_frame().await;
-        Ok(())
-    }
-
-    pub(crate) async fn exit(
-        &mut self,
-        transport: &mut dyn SessionTransport,
-        status: ExitStatus,
-    ) -> Result<(), SessionError> {
-        match transport.shutdown().await {
-            Ok(()) => self.lifecycle.exit(status, &self.events),
-            Err(error) => {
-                self.lifecycle.fail(error.failure(), &self.events);
-                self.finish_frame().await;
-                return Err(SessionError::TransportShutdown(error.failure()));
-            }
-        }
-        self.finish_frame().await;
-        Ok(())
-    }
-
-    pub(crate) async fn fail(
-        &mut self,
-        transport: &mut dyn SessionTransport,
-        failure: SessionFailure,
-    ) -> Result<(), SessionError> {
-        self.lifecycle.fail(failure, &self.events);
-        let result = transport
-            .shutdown()
-            .await
-            .map_err(|error| SessionError::TransportShutdown(error.failure()));
-        self.finish_frame().await;
-        result
-    }
-
-    pub(crate) async fn illegal(
-        &mut self,
-        transport: &mut dyn SessionTransport,
-    ) -> Result<(), SessionError> {
-        self.lifecycle.illegal(&self.events);
-        let result = transport
-            .shutdown()
-            .await
-            .map_err(|error| SessionError::TransportShutdown(error.failure()));
-        self.finish_frame().await;
-        result
     }
 }

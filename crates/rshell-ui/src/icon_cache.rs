@@ -2,27 +2,34 @@ use std::{cell::RefCell, collections::BTreeMap};
 
 use relm4::gtk;
 
-use crate::{IconBackend, ProductIcon};
+use crate::{IconBackend, IconRenderRequest, ProductIcon};
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub struct IconCacheKey {
+    pub icon: ProductIcon,
+    pub backend: IconBackend,
+    pub physical_size: u16,
+}
 
 thread_local! {
-    static TEXTURES: RefCell<BTreeMap<ProductIcon, gtk::gdk::Texture>> =
+    static TEXTURES: RefCell<BTreeMap<IconCacheKey, gtk::gdk::Texture>> =
         const { RefCell::new(BTreeMap::new()) };
 }
 
-pub(crate) fn get(icon: ProductIcon) -> Option<gtk::gdk::Texture> {
-    TEXTURES.with(|cache| cache.borrow().get(&icon).cloned())
+pub(crate) fn get(key: IconCacheKey) -> Option<gtk::gdk::Texture> {
+    TEXTURES.with(|cache| cache.borrow().get(&key).cloned())
 }
 
-pub(crate) fn insert(icon: ProductIcon, texture: gtk::gdk::Texture) {
+pub(crate) fn insert(key: IconCacheKey, texture: gtk::gdk::Texture) {
     TEXTURES.with(|cache| {
-        cache.borrow_mut().insert(icon, texture);
+        cache.borrow_mut().insert(key, texture);
     });
 }
 
-pub fn embedded_icons_ready() -> bool {
+pub fn embedded_icons_ready(request: IconRenderRequest) -> bool {
     ProductIcon::ALL
         .into_iter()
-        .all(|icon| icon.decode_texture().is_ok())
+        .all(|icon| icon.decode_texture(request).is_ok())
 }
 
 impl IconBackend {

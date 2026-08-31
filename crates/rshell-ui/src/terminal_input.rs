@@ -21,20 +21,12 @@ impl FontMetrics {
     }
 }
 
-impl Default for FontMetrics {
-    fn default() -> Self {
-        Self {
-            cell_width: 9.0,
-            cell_height: 18.0,
-        }
-    }
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TerminalViewError {
     InvalidFontMetrics,
     InvalidAllocation,
     InvalidScale,
+    InvalidDpi,
     GeometryOverflow,
     OutOfBounds,
     InvalidText,
@@ -48,6 +40,7 @@ impl fmt::Display for TerminalViewError {
             Self::InvalidFontMetrics => "terminal font metrics must be positive and finite",
             Self::InvalidAllocation => "terminal allocation must be positive",
             Self::InvalidScale => "terminal scale must be positive and finite",
+            Self::InvalidDpi => "terminal DPI must be positive and finite",
             Self::GeometryOverflow => "terminal geometry exceeds protocol limits",
             Self::OutOfBounds => "terminal pointer coordinate is out of bounds",
             Self::InvalidText => "terminal text failed clipboard policy",

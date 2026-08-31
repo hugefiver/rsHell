@@ -108,6 +108,16 @@ impl PresentationState {
         self.clamp_to_bounds(bounds);
     }
 
+    pub(crate) fn on_display_recovery(&mut self, bounds: ViewportBounds) {
+        self.selection = None;
+        self.follow_bottom = true;
+        self.viewport.top_stable_row = bounds.bottom_top();
+    }
+
+    pub(crate) const fn generation(&self) -> u64 {
+        self.generation
+    }
+
     pub(crate) fn next_generation(&mut self) -> Result<u64, EngineError> {
         self.generation = self
             .generation

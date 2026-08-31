@@ -1,20 +1,50 @@
+use gtk::prelude::Cast;
+use relm4::{ComponentController, gtk};
 use rshell_core::{
     ErrorPaneView, SessionFailure, SessionId, SessionState, SessionUiEvent, WorkspaceState,
 };
 
-use crate::{ConnectionEditorMsg, ConnectionSidebarMsg, MainWindow, PaneHostMsg, SessionTabBarMsg};
+use crate::{
+    ConnectionEditorMsg, ConnectionSidebarMsg, MainWindow, PaneHostMsg, SessionTabBarMsg,
+    ShellLayout, pane_host_refresh::active_terminals_changed,
+};
 
 impl MainWindow {
+    pub(crate) fn apply_shell_layout(&mut self, width: i32) {
+        let sidebar: gtk::Widget = self.sidebar.widget().clone().upcast();
+        self.shell.apply(ShellLayout::for_width(width), &sidebar);
+    }
+
     pub(crate) fn replace_view_model(&mut self, view_model: rshell_core::AppViewModel) {
-        if self.authoritative_view && view_model.revision < self.view_model.revision {
+        if self.authoritative_view
+            && !authoritative_revision_is_newer(self.view_model.revision, view_model.revision)
+        {
             return;
         }
-        self.send_sidebar(ConnectionSidebarMsg::SetCatalog(view_model.catalog.clone()));
-        self.send_editor(ConnectionEditorMsg::SetTerminalProfiles(
-            view_model.terminal_profiles.clone(),
-        ));
-        self.send_tab(SessionTabBarMsg::SetWorkspace(view_model.workspace.clone()));
-        self.send_pane(PaneHostMsg::SetViewModel(Box::new(view_model.clone())));
+        let incoming_active = view_model.workspace.active_tab;
+        let incoming_is_new =
+            incoming_active.is_some_and(|tab| self.view_model.workspace.tab(tab).is_err());
+        let local_was_removed = self
+            .smoke_state
+            .active_tab
+            .is_some_and(|tab| view_model.workspace.tab(tab).is_err());
+        if incoming_is_new || local_was_removed {
+            self.smoke_state.active_tab = incoming_active;
+        }
+        if self.view_model.catalog != view_model.catalog {
+            self.send_sidebar(ConnectionSidebarMsg::SetCatalog(view_model.catalog.clone()));
+        }
+        if self.view_model.terminal_profiles != view_model.terminal_profiles {
+            self.send_editor(ConnectionEditorMsg::SetTerminalProfiles(
+                view_model.terminal_profiles.clone(),
+            ));
+        }
+        if self.view_model.workspace != view_model.workspace {
+            self.send_tab(SessionTabBarMsg::SetWorkspace(view_model.workspace.clone()));
+        }
+        if active_terminals_changed(&self.view_model, &view_model) {
+            self.send_pane(PaneHostMsg::SetViewModel(Box::new(view_model.clone())));
+        }
         if let Some(probe) = &self.startup_probe {
             probe.observe_view_model(&view_model);
         }
@@ -63,12 +93,19 @@ impl MainWindow {
             .error_panes
             .retain(|session, _| sessions.contains(session));
         self.view_model
+            .display_recovery
+            .retain(|session, _| sessions.contains(session));
+        self.view_model
             .pane_launches
             .retain(|pane, _| panes.contains(pane));
         self.view_model.workspace = workspace.clone();
         self.send_tab(SessionTabBarMsg::SetWorkspace(workspace));
         self.send_pane(PaneHostMsg::SetViewModel(Box::new(self.view_model.clone())));
     }
+}
+
+pub(crate) fn authoritative_revision_is_newer(current: u64, incoming: u64) -> bool {
+    incoming > current
 }
 
 pub(crate) fn update_session_snapshot(
@@ -83,13 +120,22 @@ pub(crate) fn update_session_snapshot(
         SessionUiEvent::Frame(frame) => {
             view.latest_frames.insert(session, frame.clone());
         }
+        SessionUiEvent::RecoveryChanged(Some(notice)) => {
+            view.display_recovery.insert(session, *notice);
+        }
+        SessionUiEvent::RecoveryChanged(None) => {
+            view.display_recovery.remove(&session);
+        }
         SessionUiEvent::Exited(_) => {
+            view.display_recovery.remove(&session);
             view.session_states.insert(session, SessionState::Exited);
         }
         SessionUiEvent::Failed(failure) => {
+            view.display_recovery.remove(&session);
             record_error(view, session, *failure, "session failed");
         }
         SessionUiEvent::Crashed(_) => {
+            view.display_recovery.remove(&session);
             record_error(
                 view,
                 session,
@@ -146,4 +192,16 @@ fn unix_timestamp() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |duration| duration.as_secs())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::authoritative_revision_is_newer;
+
+    #[test]
+    fn authoritative_views_reject_equal_and_stale_revisions() {
+        assert!(!authoritative_revision_is_newer(7, 7));
+        assert!(!authoritative_revision_is_newer(7, 6));
+        assert!(authoritative_revision_is_newer(7, 8));
+    }
 }

@@ -5,18 +5,20 @@ use rshell_core::{
     PaneId, RenderFrame, ResolvedTerminalProfile, SessionId, SessionUiEvent, UiCommand,
 };
 
-use crate::{FontMetrics, PointerEvent, TerminalViewError};
+use crate::{FontMetricEnvironment, MeasuredFontMetrics, PointerEvent, TerminalViewError};
 
 #[derive(Debug, Clone)]
 pub struct TerminalViewInit {
     pub pane: PaneId,
     pub session: SessionId,
     pub profile: ResolvedTerminalProfile,
-    pub metrics: FontMetrics,
+    pub metrics: MeasuredFontMetrics,
 }
 
 pub enum TerminalViewMsg {
     ApplyFrame(Arc<RenderFrame>),
+    RefreshMetrics(FontMetricEnvironment),
+    UpdateProfile(ResolvedTerminalProfile),
     Key {
         key: gdk::Key,
         state: gdk::ModifierType,
@@ -55,6 +57,11 @@ impl fmt::Debug for TerminalViewMsg {
                 .debug_tuple("ApplyFrame")
                 .field(&frame.generation)
                 .finish(),
+            Self::RefreshMetrics(environment) => formatter
+                .debug_tuple("RefreshMetrics")
+                .field(environment)
+                .finish(),
+            Self::UpdateProfile(_) => formatter.write_str("UpdateProfile(..)"),
             Self::Key { key, state } => formatter
                 .debug_struct("Key")
                 .field("key", key)

@@ -1,5 +1,6 @@
 //! Native GTK4/Relm4 presentation components for rsHell.
 
+mod adaptive_layout;
 mod command_port;
 mod connection_editor;
 mod connection_editor_bindings;
@@ -24,6 +25,8 @@ mod file_selector;
 mod icon_backend;
 mod icon_cache;
 mod icon_registry;
+mod icon_registry_metadata;
+mod icon_render;
 mod icon_vector;
 mod icon_vector_data;
 mod import_dialog;
@@ -45,35 +48,53 @@ mod main_window_dialogs;
 mod main_window_events;
 mod main_window_init;
 mod main_window_layout;
+mod main_window_message;
+mod main_window_modal;
+mod main_window_shell;
 mod main_window_smoke;
 mod main_window_smoke_binding;
+mod main_window_smoke_binding_profiles;
 #[cfg(test)]
 mod main_window_smoke_binding_tests;
 mod main_window_smoke_capture;
 mod main_window_smoke_close;
 mod main_window_smoke_evidence;
+mod main_window_smoke_frame;
 mod main_window_smoke_input;
+mod main_window_smoke_matrix;
 mod main_window_smoke_observation;
+mod main_window_smoke_recovery;
 mod main_window_smoke_resize;
 mod main_window_smoke_routes;
 mod main_window_smoke_terminal_effects;
 #[cfg(test)]
 mod main_window_smoke_tests;
 mod main_window_smoke_visual;
+mod main_window_smoke_visual_support;
 mod main_window_smoke_workflow_evidence;
 mod main_window_snapshots;
 mod main_window_streams;
+mod modal_focus;
+mod modal_host;
+mod navigation_drawer;
+mod pane_action_layout;
+mod pane_action_widgets;
 mod pane_host;
+mod pane_host_commands;
 mod pane_host_init;
+mod pane_host_layout;
 mod pane_host_model;
+mod pane_host_refresh;
 mod pane_host_render;
 mod pane_host_terminals;
 mod pane_projection;
+mod pane_status;
 mod pane_view_model;
 mod session_diagnostics;
 #[cfg(test)]
 mod session_diagnostics_tests;
 mod session_tab_bar;
+mod session_tab_bar_widgets;
 mod settings_view_model;
 mod settings_window;
 mod settings_window_message;
@@ -83,8 +104,11 @@ mod smoke_driver;
 mod smoke_driver_action_kind;
 mod smoke_driver_actions;
 #[cfg(test)]
+mod smoke_driver_actions_tests;
+#[cfg(test)]
 mod smoke_driver_auth_tests;
 mod smoke_driver_completion;
+mod smoke_driver_completion_evidence;
 #[cfg(test)]
 mod smoke_driver_completion_tests;
 mod smoke_driver_evidence;
@@ -93,6 +117,7 @@ mod smoke_driver_observation;
 mod smoke_driver_progress;
 #[cfg(test)]
 mod smoke_driver_progress_tests;
+mod smoke_driver_recovery;
 mod smoke_driver_report;
 mod smoke_driver_routing;
 mod smoke_driver_sequences;
@@ -101,29 +126,39 @@ mod smoke_driver_state;
 mod smoke_driver_state_tests;
 #[cfg(test)]
 mod smoke_driver_terminal_tests;
+mod smoke_driver_visual_contract;
+mod smoke_driver_visual_matrix;
 #[cfg(test)]
 mod smoke_driver_visual_tests;
 mod startup_probe;
+mod tab_overflow;
+mod terminal_font;
 mod terminal_frame;
 mod terminal_geometry;
 mod terminal_input;
+mod terminal_metrics;
 mod terminal_paint;
 mod terminal_palette;
 mod terminal_render_cache;
 mod terminal_renderer;
 mod terminal_search;
 mod terminal_view;
+mod terminal_view_geometry;
 mod terminal_view_keyboard;
 mod terminal_view_keys;
 mod terminal_view_message;
+mod terminal_view_metrics;
 mod terminal_view_model;
 mod terminal_view_pointer;
 mod terminal_view_widgets;
 mod theme;
 mod view_model;
+mod visual_accessibility;
 mod visual_contract;
 mod visual_png;
+mod visual_terminal_metrics;
 
+pub use adaptive_layout::{ShellLayout, ShellLayoutMode};
 pub use connection_editor::{
     ConnectionEditor, ConnectionEditorDraftState, ConnectionEditorInit, ConnectionEditorMsg,
     ConnectionEditorOutput, ConnectionEditorState, EditorTextField,
@@ -132,10 +167,11 @@ pub use connection_sidebar::{
     ConnectionSidebar, ConnectionSidebarInit, ConnectionSidebarMsg, ConnectionSidebarOutput,
 };
 pub use file_selector::GtkFileSelectionService;
-pub use icon_cache::embedded_icons_ready;
+pub use icon_cache::{IconCacheKey, embedded_icons_ready};
 pub use icon_registry::{
-    IconBackend, IconMetadata, IconRenderError, ProductIcon, SvgDecodeOutcome,
+    IconBackend, IconRenderError, IconRenderRequest, ProductIcon, SvgDecodeOutcome,
 };
+pub use icon_registry_metadata::IconMetadata;
 pub use import_dialog::{
     ImportDialog, ImportDialogInit, ImportDialogMsg, ImportDialogOutput, ImportDialogState,
 };
@@ -145,13 +181,20 @@ pub use interaction_dialog::{
     InteractionDialogState,
 };
 pub use interaction_view_model::{InteractionAction, InteractionViewModel};
-pub use main_window::{MainWindow, MainWindowMsg};
+pub use main_window::MainWindow;
 pub use main_window_init::MainWindowInit;
+pub use main_window_message::MainWindowMsg;
+pub use main_window_shell::MainWindowShell;
+pub use modal_focus::ModalFocusSession;
+pub use modal_host::{ModalHost, ModalKind, ModalRequest};
+pub use navigation_drawer::{NavigationAction, NavigationDrawerState};
+pub use pane_action_layout::PaneActionLayout;
 pub use pane_host::{PaneHost, PaneHostMsg, PaneHostOutput};
 pub use pane_host_init::PaneHostInit;
 pub use pane_host_model::PaneHostModel;
 pub use pane_projection::PaneProjection;
-pub use pane_view_model::{PaneAction, PanePageKind, SessionPaneViewModel};
+pub use pane_status::{PaneAction, PanePageKind};
+pub use pane_view_model::SessionPaneViewModel;
 pub use session_tab_bar::{
     SessionTabBar, SessionTabBarAction, SessionTabBarInit, SessionTabBarMsg, SessionTabBarOutput,
 };
@@ -166,15 +209,26 @@ pub use smoke_driver::{
     SmokeScenario, SmokeScenarioError, SmokeStep,
 };
 pub use smoke_driver_report::{
-    SmokeBindingEvidence, SmokeCellRangeEvidence, SmokeClipboardEvidence, SmokeColorEvidence,
-    SmokeCounters, SmokeFailure, SmokeFieldStatus, SmokeFrameEvidence, SmokeImportEvidence,
-    SmokeImportPreviewEvidence, SmokePasteEvidence, SmokeReconnectEvidence, SmokeReport,
+    SmokeAccessibilityEvidence, SmokeBindingEvidence, SmokeCellRangeEvidence,
+    SmokeClipboardEvidence, SmokeColorEvidence, SmokeCounters, SmokeDpiEvidence, SmokeFailure,
+    SmokeFieldStatus, SmokeFrameEvidence, SmokeImportEvidence, SmokeImportPreviewEvidence,
+    SmokeInterruptEvidence, SmokePasteEvidence, SmokeReconnectEvidence, SmokeReport,
     SmokeReportHandle, SmokeResizeEvidence, SmokeScenarioState, SmokeSearchEvidence,
     SmokeSelectionEvidence, SmokeStepReport, SmokeStepState, SmokeTerminalEvidence,
+    SmokeVisualCheckpointEvidence, SmokeWindowResizeEvidence,
+};
+pub use smoke_driver_visual_matrix::{
+    REQUIRED_SMOKE_VISUAL_MATRIX, SmokeVisualCheckpoint, SmokeVisualState,
 };
 pub use startup_probe::{StartupProbe, StartupReport};
+pub use tab_overflow::TabOverflowModel;
 pub use terminal_geometry::{PointerEvent, ViewRect};
 pub use terminal_input::{FontMetrics, TerminalViewError, map_gdk_key};
+pub use terminal_metrics::{
+    FontMetricEnvironment, FontMetricKey, FontMetricSample, FontMetricsService,
+    MeasuredFontMetrics, MetricsChange, TERMINAL_LINE_SPACING, TerminalGeometryInput,
+    logical_font_description,
+};
 pub use terminal_render_cache::TerminalRenderCache;
 pub use terminal_renderer::{TerminalDecorations, TerminalDrawStats, TerminalRenderer};
 pub use terminal_view::{TerminalView, TerminalViewInit, TerminalViewMsg, TerminalViewOutput};
@@ -186,8 +240,8 @@ pub use view_model::{
     TerminalOverrideKey,
 };
 pub use visual_contract::{
-    SmokePngEvidence, SmokeVisualEvidence, SmokeVisualFacts, collect_visual_facts,
-    selection_treatment_surface,
+    SmokePngEvidence, SmokeVisualEvidence, SmokeVisualFacts, collect_accessibility_evidence,
+    collect_visual_facts, dpi_evidence, selection_treatment_surface, visual_contrast_passes,
 };
 pub use visual_png::{
     NativeByteOrder, analyze_rgba, analyze_rgba_with_accent, argb32_native_to_rgba,

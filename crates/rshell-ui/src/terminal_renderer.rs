@@ -2,10 +2,12 @@ use gtk::{cairo, pango};
 use rshell_core::{CursorShape, RenderCell, RenderFrame, ResolvedTerminalProfile, SearchMatch};
 
 use crate::{
+    MeasuredFontMetrics, logical_font_description,
     terminal_geometry::logical_cell,
     terminal_input::{FontMetrics, TerminalViewError},
     terminal_paint::{CellRect, fill, paint_text, source, update_stats},
     terminal_palette::TerminalPalette,
+    terminal_search::search_index,
 };
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -38,6 +40,8 @@ pub struct TerminalDrawStats {
     pub reversed_cells: usize,
     pub cursor_shape: Option<CursorShape>,
     pub cursor_width: Option<f64>,
+    pub glyph_clipped_cells: usize,
+    pub minimum_line_separation: Option<f64>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -56,14 +60,25 @@ struct CellSite {
 
 impl TerminalRenderer {
     pub fn new(profile: &ResolvedTerminalProfile, metrics: FontMetrics) -> Self {
-        let mut font = pango::FontDescription::new();
-        font.set_family(&profile.font_family);
-        font.set_size((f64::from(pango::SCALE) * f64::from(profile.font_size)).round() as i32);
+        let font = logical_font_description(&profile.font_family, profile.font_size);
         Self {
             metrics,
             font,
             palette: TerminalPalette::for_scheme(profile.color_scheme),
         }
+    }
+
+    pub fn from_measured(
+        profile: &ResolvedTerminalProfile,
+        measured: &MeasuredFontMetrics,
+    ) -> Self {
+        let mut renderer = Self::new(profile, measured.metrics);
+        renderer.font = measured.font_description.clone();
+        renderer
+    }
+
+    pub fn metrics(&self) -> FontMetrics {
+        self.metrics
     }
 
     pub fn draw(
@@ -182,7 +197,16 @@ impl TerminalRenderer {
             stats.selected_cells += 1;
         }
         update_stats(cell, stats);
-        paint_text(context, cell, site.rect, foreground, &self.font)
+        let evidence = paint_text(context, cell, site.rect, foreground, &self.font)?;
+        stats.glyph_clipped_cells += usize::from(evidence.ink_clipped);
+        stats.minimum_line_separation = Some(
+            stats
+                .minimum_line_separation
+                .map_or(evidence.line_separation, |current| {
+                    current.min(evidence.line_separation)
+                }),
+        );
+        Ok(())
     }
 
     fn paint_cursor_row(
@@ -230,18 +254,4 @@ impl TerminalRenderer {
         stats.cursor_width = Some(rect.width);
         Ok(())
     }
-}
-
-fn search_index(matches: &[SearchMatch], row: i64, column: u16, width: u8) -> Option<usize> {
-    let end = column.saturating_add(u16::from(width));
-    matches.iter().position(|found| {
-        if row < found.start.stable_row || row > found.end.stable_row {
-            return false;
-        }
-        if found.start.stable_row == found.end.stable_row {
-            return found.start.column < end && column < found.end.column;
-        }
-        (row != found.start.stable_row || found.start.column < end)
-            && (row != found.end.stable_row || column < found.end.column)
-    })
 }

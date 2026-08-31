@@ -1,8 +1,9 @@
 use std::{collections::BTreeMap, sync::Arc};
 
 use crate::{
-    AppSettings, ConnectionCatalog, ConnectionId, ImportPreviewId, ImportPreviewView, PaneId,
-    RenderFrame, SessionFailure, SessionId, SessionState, TerminalProfile, WorkspaceState,
+    AppSettings, ConnectionCatalog, ConnectionId, DisplayRecoveryNotice, ImportPreviewId,
+    ImportPreviewView, PaneId, RenderFrame, SessionFailure, SessionId, SessionState,
+    TerminalProfile, WorkspaceState,
 };
 
 #[derive(Debug, Clone, PartialEq)]
@@ -51,6 +52,7 @@ pub struct AppViewModel {
     pub terminal_profiles: Vec<TerminalProfile>,
     pub pending_imports: BTreeMap<ImportPreviewId, ImportPreviewView>,
     pub latest_frames: BTreeMap<SessionId, Arc<RenderFrame>>,
+    pub display_recovery: BTreeMap<SessionId, DisplayRecoveryNotice>,
     pub error_panes: BTreeMap<SessionId, ErrorPaneView>,
     pub pane_launches: BTreeMap<PaneId, PaneLaunchTarget>,
     pub session_states: BTreeMap<SessionId, SessionState>,
@@ -66,6 +68,7 @@ impl From<AppBootstrapState> for AppViewModel {
             terminal_profiles: state.terminal_profiles,
             pending_imports: BTreeMap::new(),
             latest_frames: BTreeMap::new(),
+            display_recovery: BTreeMap::new(),
             error_panes: BTreeMap::new(),
             pane_launches: BTreeMap::new(),
             session_states: BTreeMap::new(),

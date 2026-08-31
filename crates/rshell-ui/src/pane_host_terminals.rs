@@ -5,8 +5,8 @@ use relm4::{Component, ComponentController, ComponentSender, Controller, gtk};
 use rshell_core::SessionId;
 
 use crate::{
-    PaneHostModel, PaneHostOutput, TerminalView, TerminalViewInit, TerminalViewMsg,
-    terminal_geometry::terminal_font_metrics,
+    FontMetricEnvironment, FontMetricsService, MetricsChange, PaneHostModel, PaneHostOutput,
+    PanePageKind, TerminalView, TerminalViewInit, TerminalViewMsg,
 };
 
 pub(crate) fn send_active_terminal(
@@ -23,7 +23,15 @@ pub(crate) fn send_active_terminal(
         let _ = sender.output(PaneHostOutput::Error("no active pane"));
         return;
     };
-    let Some(session) = model.pane(pane).and_then(|pane| pane.session()) else {
+    let Some(pane) = model.pane(pane) else {
+        let _ = sender.output(PaneHostOutput::Error("active pane is unavailable"));
+        return;
+    };
+    if pane.page() != PanePageKind::Terminal {
+        let _ = sender.output(PaneHostOutput::Error("active terminal unavailable"));
+        return;
+    }
+    let Some(session) = pane.session() else {
         let _ = sender.output(PaneHostOutput::Error("active pane has no session"));
         return;
     };
@@ -47,42 +55,75 @@ pub(crate) fn send_terminal_message(
 pub(crate) fn sync_terminals(
     model: &mut PaneHostModel,
     terminals: &mut BTreeMap<SessionId, Controller<TerminalView>>,
+    metric_widget: &impl IsA<gtk::Widget>,
     sender: &ComponentSender<crate::PaneHost>,
 ) {
     let panes = model
-        .view_model()
-        .workspace
-        .tabs
-        .iter()
-        .flat_map(|tab| tab.pane_tree.pane_ids())
-        .collect::<Vec<_>>();
+        .active_tab()
+        .and_then(|active| {
+            model
+                .view_model()
+                .workspace
+                .tabs
+                .iter()
+                .find(|tab| tab.id == active)
+        })
+        .map(|tab| tab.pane_tree.pane_ids())
+        .unwrap_or_default();
     let desired = panes
         .iter()
-        .filter_map(|pane| model.pane(*pane).and_then(|pane| pane.session()))
+        .filter_map(|pane_id| {
+            let pane = model.pane(*pane_id)?;
+            (pane.page() == PanePageKind::Terminal)
+                .then_some(pane.session())
+                .flatten()
+        })
         .collect::<BTreeSet<_>>();
     terminals.retain(|session, _| desired.contains(session));
     for pane_id in panes {
         let Some(pane) = model.pane(pane_id) else {
             continue;
         };
+        if pane.page() != PanePageKind::Terminal {
+            continue;
+        }
         let Some(session) = pane.session() else {
             continue;
         };
+        let Some(profile) = pane.resolved_profile(model.view_model()) else {
+            continue;
+        };
         if let Some(terminal) = terminals.get(&session) {
-            let delivered = pane.frame().is_none_or(|frame| {
-                let delivered =
-                    send_terminal_message(terminal, TerminalViewMsg::ApplyFrame(frame.clone()));
-                if delivered {
-                    model.observe_frame(frame);
-                }
-                delivered
-            });
+            let profile_delivered =
+                send_terminal_message(terminal, TerminalViewMsg::UpdateProfile(profile.clone()));
+            let delivered = profile_delivered
+                && pane.frame().is_none_or(|frame| {
+                    let delivered =
+                        send_terminal_message(terminal, TerminalViewMsg::ApplyFrame(frame.clone()));
+                    if delivered {
+                        model.observe_frame(frame);
+                    }
+                    delivered
+                });
             if delivered {
                 continue;
             }
             terminals.remove(&session);
         }
-        let Some(profile) = pane.resolved_profile(model.view_model()) else {
+        let context = metric_widget.pango_context();
+        let environment =
+            FontMetricEnvironment::from_context(&context, f64::from(metric_widget.scale_factor()));
+        let measured = environment.and_then(|environment| {
+            FontMetricsService::default()
+                .measure(&context, &profile, environment)
+                .map(|change| match change {
+                    MetricsChange::Unchanged(measured) | MetricsChange::Changed(measured) => {
+                        measured
+                    }
+                })
+        });
+        let Ok(metrics) = measured else {
+            let _ = sender.output(PaneHostOutput::Error("terminal metrics unavailable"));
             continue;
         };
         let controller = TerminalView::builder()
@@ -90,7 +131,7 @@ pub(crate) fn sync_terminals(
                 pane: pane_id,
                 session,
                 profile,
-                metrics: terminal_font_metrics(),
+                metrics,
             })
             .forward(sender.input_sender(), move |output| {
                 crate::PaneHostMsg::Terminal(session, output)

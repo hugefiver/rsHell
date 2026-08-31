@@ -17,7 +17,7 @@ const REQUIRED_REPORT_FIELDS: [&str; 11] = [
     "cleanup",
 ];
 
-const REQUIRED_ACTIONS: [&str; 25] = [
+const REQUIRED_ACTIONS: [&str; 28] = [
     "wait_window_realized",
     "new_tab",
     "open_connection_editor",
@@ -43,7 +43,74 @@ const REQUIRED_ACTIONS: [&str; 25] = [
     "commit_import",
     "cancel_import",
     "close_all",
+    "interrupt_terminal",
+    "reset_display",
+    "resize_window",
 ];
+
+#[test]
+fn p0_action_schema_preserves_old_discriminants_and_adds_recovery_matrix() {
+    let action_kind = include_str!("../crates/rshell-ui/src/smoke_driver_action_kind.rs");
+    let actions = include_str!("../crates/rshell-ui/src/smoke_driver_actions.rs");
+    let visual_matrix = include_str!("../crates/rshell-ui/src/smoke_driver_visual_matrix.rs");
+    let scenario = include_str!("../crates/rshell-ui/src/smoke_driver.rs");
+    let fixture: serde_json::Value =
+        serde_json::from_str(include_str!("fixtures/smoke/p0-scenario.json")).unwrap();
+
+    assert!(scenario.contains("SMOKE_SCENARIO_VERSION: u16 = 2"));
+    assert_eq!(fixture["version"], 2);
+    for (index, name) in REQUIRED_ACTIONS.into_iter().enumerate() {
+        assert_eq!(
+            action_kind
+                .find(&format!("\"{name}\""))
+                .expect("existing action name must remain present"),
+            action_kind.find("SMOKE_ACTION_NAMES").unwrap()
+                + action_kind[action_kind.find("SMOKE_ACTION_NAMES").unwrap()..]
+                    .find(&format!("\"{name}\""))
+                    .unwrap(),
+            "existing action name {index} moved out of the stable name table"
+        );
+    }
+    for required in [
+        "InterruptTerminal = 25",
+        "ResetDisplay = 26",
+        "ResizeWindow = 27",
+        "VisualCheckpoint(SmokeVisualCheckpoint)",
+        "SmokeVisualState",
+    ] {
+        assert!(
+            action_kind.contains(required)
+                || actions.contains(required)
+                || visual_matrix.contains(required),
+            "missing additive typed smoke schema: {required}"
+        );
+    }
+}
+
+#[test]
+fn p0_report_rejects_incomplete_visual_and_dpi_matrix() {
+    let report = include_str!("../crates/rshell-ui/src/smoke_driver_report.rs");
+    let recovery = include_str!("../crates/rshell-ui/src/smoke_driver_evidence.rs");
+    let visual = include_str!("../src/p0_smoke_report_visual.rs");
+
+    for required in [
+        "SmokeInterruptEvidence",
+        "SmokeDpiEvidence",
+        "SmokeAccessibilityEvidence",
+        "SmokeVisualCheckpointEvidence",
+    ] {
+        assert!(
+            report.contains(required) || recovery.contains(required),
+            "missing closed Task 9 evidence type: {required}"
+        );
+    }
+    assert!(report.contains("BTreeMap<String, SmokeVisualCheckpointEvidence>"));
+    assert!(report.contains("requested_png_paths: Vec<PathBuf>"));
+    assert!(report.contains("png_paths: Vec<PathBuf>"));
+    assert!(visual.contains("checkpoint_id"));
+    assert!(visual.contains("accessibility"));
+    assert!(visual.contains("dpi"));
+}
 
 #[cfg(windows)]
 #[test]
@@ -259,7 +326,7 @@ fn collect_relative_files(root: &Path, directory: &Path, files: &mut Vec<String>
 fn static_p0_fixture_covers_each_exact_ui_action_name() {
     let fixture: serde_json::Value =
         serde_json::from_str(include_str!("fixtures/smoke/p0-scenario.json")).unwrap();
-    assert_eq!(fixture["version"], 1);
+    assert_eq!(fixture["version"], 2);
     let names = fixture["actions"]
         .as_array()
         .unwrap()
@@ -321,7 +388,10 @@ fn visual_contract_uses_native_argb32_range_evidence_and_fatal_gtk_warnings() {
         "Assert-VisualContract",
         "dark_regions_passed",
         "focus_or_selection_thickness_px",
-        "P0 PNG/report dimensions differ",
+        "terminal_glyph_clipped_cells",
+        "terminal_min_line_separation",
+        "P0 terminal glyph ink or line separation evidence failed",
+        "P0 visual checkpoint dimensions are inconsistent",
         "G_DEBUG = \"fatal-warnings\"",
     ] {
         assert!(
@@ -350,8 +420,8 @@ fn embedded_product_assets_and_package_contract_are_closed() {
         .into_iter()
         .map(|icon| icon.metadata().svg)
         .collect::<BTreeSet<_>>();
-    assert_eq!(labels.len(), 16);
-    assert_eq!(assets.len(), 16);
+    assert_eq!(labels.len(), 18);
+    assert_eq!(assets.len(), 18);
     assert!(assets.iter().all(|svg| svg.starts_with(b"<svg")));
 
     let package = include_str!("../scripts/qa/assert-package.ps1");
@@ -390,6 +460,129 @@ fn embedded_product_assets_and_package_contract_are_closed() {
             String::from_utf8_lossy(&output.stderr)
         );
     }
+}
+
+#[test]
+fn workflow_contract_requires_recovery_hidpi_and_native_matrix() {
+    let ci = include_str!("../.github/workflows/ci.yml");
+    let release = include_str!("../.github/workflows/release.yml");
+    let harness = include_str!("../scripts/qa/p0-smoke.ps1");
+    let recovery = include_str!("../crates/rshell-ui/src/smoke_driver_evidence.rs");
+    let visual_matrix = include_str!("../crates/rshell-ui/src/smoke_driver_visual_matrix.rs");
+
+    for required in [
+        "cargo fmt --all -- --check",
+        "cargo check --workspace --all-targets --all-features --locked",
+        "cargo test --workspace --all-features --locked",
+        "cargo clippy --workspace --all-targets --all-features --locked -- -D warnings",
+        "cargo test --locked --test production_module_limits",
+    ] {
+        assert!(
+            ci.contains(required),
+            "CI must retain exact gate: {required}"
+        );
+    }
+    assert_eq!(
+        ci.matches("pwsh -NoProfile -File scripts/qa/p0-smoke.ps1 -Mode All")
+            .count(),
+        3,
+        "CI must run P0 All on every native platform"
+    );
+    assert!(ci.contains("pwsh -NoProfile -File scripts/qa/terminal-engine-gate.ps1"));
+    assert!(
+        harness
+            .contains("$baseEnvironment = @{ G_DEBUG = \"fatal-warnings\"; RSHELL_SHELL = $pwsh }")
+    );
+    assert!(!release.contains("Run terminal engine gate"));
+    assert!(!release.contains("terminal-engine-gate.ps1"));
+    for target in [
+        "x86_64-unknown-linux-gnu",
+        "aarch64-apple-darwin",
+        "x86_64-pc-windows-msvc",
+    ] {
+        assert!(
+            release.contains(target),
+            "release package matrix is missing {target}"
+        );
+    }
+    assert_eq!(
+        release
+            .matches("pwsh -NoProfile -File scripts/qa/assert-package.ps1 -Target $env:RSHELL_TARGET -Package $env:RSHELL_PACKAGE")
+            .count(),
+        2,
+        "release must assert packages for its Unix and Windows matrix branches"
+    );
+    for required in [
+        "SmokeInterruptEvidence",
+        "SmokeDpiEvidence",
+        "SmokeAccessibilityEvidence",
+        "REQUIRED_SMOKE_VISUAL_MATRIX: [(i32, i32, SmokeVisualState, ShellLayoutMode); 26]",
+    ] {
+        assert!(
+            recovery.contains(required) || visual_matrix.contains(required),
+            "native recovery/HiDPI matrix contract is missing {required}"
+        );
+    }
+    assert_source_ordered(
+        harness,
+        &[
+            "Add-Phase \"owned_process_cleanup\"",
+            "-Name \"assert-no-secrets\"",
+            "Remove-Item -LiteralPath $tempRoot -Recurse -Force",
+            "$finalizeRoot = Join-Path",
+        ],
+    );
+
+    for probe in [
+        "skipped-p0-gate",
+        "conditional-p0-gate",
+        "continued-p0-gate",
+        "missing-fatal-gtk-warnings",
+        "missing-platform-matrix-member",
+        "weakened-cleanup-secret-ordering",
+    ] {
+        assert_workflow_contract_probe(probe);
+    }
+}
+
+#[test]
+fn package_contract_requires_measured_geometry_and_physical_icons() {
+    let startup_probe = include_str!("../crates/rshell-ui/src/startup_probe.rs");
+    let root = include_str!("../src/main.rs");
+    let package = include_str!("../scripts/qa/assert-package.ps1");
+
+    for field in [
+        "measured_terminal_geometry_ready",
+        "scale_aware_icons_ready",
+        "icon_backend",
+        "icon_count",
+        "adaptive_layout_modes",
+    ] {
+        assert!(
+            startup_probe.contains(field),
+            "startup report is missing {field}"
+        );
+        assert!(root.contains(field), "startup JSON is missing {field}");
+        assert!(
+            package.contains(field),
+            "package assertion is missing {field}"
+        );
+    }
+    for forbidden in [
+        "font_family",
+        "font_path",
+        "terminal_text",
+        "endpoint",
+        "secret",
+        "physical_scale",
+    ] {
+        assert!(
+            !root.contains(forbidden),
+            "startup JSON must not emit {forbidden}"
+        );
+    }
+    assert_package_contract_probe("missing-recovery-hidpi-fields");
+    assert_workflow_contract_probe("missing-package-startup-field");
 }
 
 #[test]
@@ -1132,6 +1325,54 @@ fn invoke_harness_probe(argument: &str, value: &str) -> std::process::Output {
         .current_dir(env!("CARGO_MANIFEST_DIR"))
         .output()
         .expect("PowerShell must launch the Task20 smoke harness")
+}
+
+fn assert_workflow_contract_probe(probe: &str) {
+    let output = Command::new("pwsh")
+        .args([
+            "-NoProfile",
+            "-File",
+            "scripts/qa/workflow-contract.ps1",
+            "-RegressionProbe",
+            probe,
+        ])
+        .current_dir(env!("CARGO_MANIFEST_DIR"))
+        .output()
+        .expect("PowerShell must launch the workflow contract probe");
+    assert!(
+        output.status.success(),
+        "workflow contract probe {probe} failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+fn assert_package_contract_probe(probe: &str) {
+    let output = Command::new("pwsh")
+        .args([
+            "-NoProfile",
+            "-File",
+            "scripts/qa/assert-package.ps1",
+            "-RegressionProbe",
+            probe,
+        ])
+        .current_dir(env!("CARGO_MANIFEST_DIR"))
+        .output()
+        .expect("PowerShell must launch the package contract probe");
+    assert!(
+        output.status.success(),
+        "package contract probe {probe} failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+fn assert_source_ordered(source: &str, needles: &[&str]) {
+    let mut offset = 0;
+    for needle in needles {
+        let position = source[offset..]
+            .find(needle)
+            .unwrap_or_else(|| panic!("missing ordered source marker: {needle}"));
+        offset += position + needle.len();
+    }
 }
 
 #[test]

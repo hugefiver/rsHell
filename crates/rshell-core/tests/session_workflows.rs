@@ -337,6 +337,7 @@ fn frame(generation: u64) -> Arc<RenderFrame> {
         rows: Arc::from([]),
         cursor: None,
         title: "stale".into(),
+        display_modes: Default::default(),
         alternate_screen: false,
         mouse_reporting: false,
     })

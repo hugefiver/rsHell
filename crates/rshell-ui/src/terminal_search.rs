@@ -52,3 +52,22 @@ impl TerminalSearchState {
         Some(self.matches[next])
     }
 }
+
+pub(crate) fn search_index(
+    matches: &[SearchMatch],
+    row: i64,
+    column: u16,
+    width: u8,
+) -> Option<usize> {
+    let end = column.saturating_add(u16::from(width));
+    matches.iter().position(|found| {
+        if row < found.start.stable_row || row > found.end.stable_row {
+            return false;
+        }
+        if found.start.stable_row == found.end.stable_row {
+            return found.start.column < end && column < found.end.column;
+        }
+        (row != found.start.stable_row || found.start.column < end)
+            && (row != found.end.stable_row || column < found.end.column)
+    })
+}

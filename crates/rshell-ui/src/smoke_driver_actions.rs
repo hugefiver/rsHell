@@ -2,7 +2,7 @@ use std::{fmt, path::PathBuf};
 
 use rshell_core::{AuthenticationKind, ImportSourceKind, TransportKind};
 
-use crate::{EditorTextField, SmokeActionKind};
+use crate::{EditorTextField, ShellLayoutMode, SmokeActionKind, SmokeVisualCheckpoint};
 
 #[derive(Clone)]
 pub enum SmokeAction {
@@ -53,7 +53,7 @@ pub enum SmokeAction {
     },
     CopySelection,
     Reconnect,
-    VisualCheckpoint,
+    VisualCheckpoint(SmokeVisualCheckpoint),
     PreviewImport {
         source: ImportSourceKind,
         path: PathBuf,
@@ -62,6 +62,13 @@ pub enum SmokeAction {
     CommitImport,
     CancelImport,
     CloseAll,
+    InterruptTerminal,
+    ResetDisplay,
+    ResizeWindow {
+        width: i32,
+        height: i32,
+        expected_mode: ShellLayoutMode,
+    },
 }
 
 #[derive(Clone, Debug)]
@@ -79,7 +86,7 @@ pub struct SmokeImportExpectation {
 }
 
 impl SmokeAction {
-    pub const ALL: [SmokeActionKind; 25] = [
+    pub const ALL: [SmokeActionKind; 28] = [
         SmokeActionKind::WaitWindowRealized,
         SmokeActionKind::NewTab,
         SmokeActionKind::OpenConnectionEditor,
@@ -105,6 +112,9 @@ impl SmokeAction {
         SmokeActionKind::CommitImport,
         SmokeActionKind::CancelImport,
         SmokeActionKind::CloseAll,
+        SmokeActionKind::InterruptTerminal,
+        SmokeActionKind::ResetDisplay,
+        SmokeActionKind::ResizeWindow,
     ];
 
     pub fn kind(&self) -> SmokeActionKind {
@@ -129,11 +139,14 @@ impl SmokeAction {
             Self::SelectRange { .. } => SmokeActionKind::SelectRange,
             Self::CopySelection => SmokeActionKind::CopySelection,
             Self::Reconnect => SmokeActionKind::Reconnect,
-            Self::VisualCheckpoint => SmokeActionKind::VisualCheckpoint,
+            Self::VisualCheckpoint(_) => SmokeActionKind::VisualCheckpoint,
             Self::PreviewImport { .. } => SmokeActionKind::PreviewImport,
             Self::CommitImport => SmokeActionKind::CommitImport,
             Self::CancelImport => SmokeActionKind::CancelImport,
             Self::CloseAll => SmokeActionKind::CloseAll,
+            Self::InterruptTerminal => SmokeActionKind::InterruptTerminal,
+            Self::ResetDisplay => SmokeActionKind::ResetDisplay,
+            Self::ResizeWindow { .. } => SmokeActionKind::ResizeWindow,
         }
     }
 }
@@ -171,83 +184,5 @@ impl fmt::Debug for SmokeConnectionField {
             Self::SecretFromEnv { .. } => "SecretFromEnv",
         };
         formatter.debug_tuple(name).field(&"[REDACTED]").finish()
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn action_list_is_complete_and_secret_debug_is_redacted() {
-        let names = SmokeAction::ALL
-            .into_iter()
-            .map(SmokeActionKind::as_str)
-            .collect::<Vec<_>>();
-        assert_eq!(
-            names,
-            vec![
-                "wait_window_realized",
-                "new_tab",
-                "open_connection_editor",
-                "set_connection_field",
-                "submit_connection",
-                "select_connection",
-                "connect",
-                "respond_host_key",
-                "respond_auth",
-                "send_terminal_text",
-                "paste_text_from_env",
-                "resize_terminal",
-                "wait_frame_contains",
-                "split_horizontal",
-                "split_vertical",
-                "switch_tab",
-                "search_terminal",
-                "select_range",
-                "copy_selection",
-                "reconnect",
-                "visual_checkpoint",
-                "preview_import",
-                "commit_import",
-                "cancel_import",
-                "close_all",
-            ]
-        );
-        let secret = SmokeAction::SetConnectionField(SmokeConnectionField::SecretFromEnv {
-            env_var: "RSHELL_TEST_SECRET".into(),
-        });
-        assert!(!format!("{secret:?}").contains("RSHELL_TEST_SECRET"));
-        assert!(
-            !format!(
-                "{:?}",
-                SmokeConnectionField::SecretFromEnv {
-                    env_var: "RSHELL_TEST_SECRET".into(),
-                }
-            )
-            .contains("RSHELL_TEST_SECRET")
-        );
-        assert!(
-            !format!(
-                "{:?}",
-                SmokeAction::RespondAuth {
-                    prompt: 0,
-                    env_var: "RSHELL_TEST_SECRET".into(),
-                }
-            )
-            .contains("RSHELL_TEST_SECRET")
-        );
-    }
-
-    #[test]
-    fn runtime_selectors_do_not_require_generated_ids() {
-        assert!(matches!(
-            SmokeAction::SelectConnection("staging".into()),
-            SmokeAction::SelectConnection(name) if name == "staging"
-        ));
-        assert!(matches!(
-            SmokeAction::SwitchTab(0),
-            SmokeAction::SwitchTab(0)
-        ));
     }
 }

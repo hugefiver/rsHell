@@ -1,6 +1,6 @@
 use std::collections::BTreeSet;
 
-use rshell_core::InteractionId;
+use rshell_core::{InteractionId, SessionState};
 
 use crate::{
     SmokeAction, SmokeCounters,
@@ -80,6 +80,30 @@ fn auth_prompt_completion_requires_its_own_dialog_progress() {
     ));
     let final_response = SmokeObservation {
         last_interaction_response: Some(interaction),
+        counters: SmokeCounters {
+            interaction_responses: 1,
+            active_session_state: Some(SessionState::Connecting),
+            ..Default::default()
+        },
+        ..final_response
+    };
+    let mut context = CompletionContext::new(&before, &final_response);
+    context.auth_interaction = Some(interaction);
+    context.auth_submits = true;
+    assert!(!action_is_complete(
+        &SmokeAction::RespondAuth {
+            prompt: 1,
+            env_var: "TEST_SECRET".into(),
+        },
+        &context,
+        |_| false,
+    ));
+    let final_response = SmokeObservation {
+        counters: SmokeCounters {
+            interaction_responses: 1,
+            active_session_state: Some(SessionState::Connected),
+            ..Default::default()
+        },
         ..final_response
     };
     let mut context = CompletionContext::new(&before, &final_response);

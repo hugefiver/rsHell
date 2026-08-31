@@ -1,6 +1,6 @@
 use std::collections::BTreeSet;
 
-use rshell_core::InteractionId;
+use rshell_core::{InteractionId, SessionState};
 
 use crate::{
     SmokeAction, SmokeBindingEvidence, SmokeConnectionField, SmokeCounters,
@@ -85,11 +85,21 @@ fn completion_waits_for_monotonic_app_events_not_transient_dialog_state() {
     ));
     let counters = SmokeCounters {
         interaction_responses: 1,
+        active_session_state: Some(SessionState::Connecting),
         ..Default::default()
     };
     let host_interaction = InteractionId::new();
     let mut host_response = observation(counters);
     host_response.last_interaction_response = Some(host_interaction);
+    let mut host_context = CompletionContext::new(&before, &host_response);
+    host_context.auth_interaction = Some(host_interaction);
+    host_context.auth_submits = true;
+    assert!(!action_is_complete(
+        &SmokeAction::RespondHostKey { accept: true },
+        &host_context,
+        |_| false,
+    ));
+    host_response.counters.active_session_state = Some(SessionState::Connected);
     let mut host_context = CompletionContext::new(&before, &host_response);
     host_context.auth_interaction = Some(host_interaction);
     host_context.auth_submits = true;

@@ -2,11 +2,11 @@ use rshell_core::{AuthenticationKind, ConnectionId, TransportKind};
 
 use crate::{
     ConnectionEditorDraftState, EditorTextField, SmokeAction, SmokeConnectionField,
-    SmokeVisualEvidence, SmokeVisualFacts,
     main_window_smoke_binding::editor_action_matches,
     main_window_smoke_visual::{
         VisualCheckpointPhase, visual_checkpoint_binding, visual_checkpoint_component_verified,
     },
+    smoke_driver_visual_tests::passing_visual_evidence,
 };
 
 fn draft() -> ConnectionEditorDraftState {
@@ -30,23 +30,7 @@ fn draft() -> ConnectionEditorDraftState {
 
 #[test]
 fn visual_checkpoint_binding_is_global_verified_main_window_evidence() {
-    let visual = SmokeVisualEvidence {
-        facts: SmokeVisualFacts {
-            requested_width: 1_360,
-            requested_height: 860,
-            realized_width: 1_360,
-            realized_height: 852,
-            command_bar: true,
-            dense_sidebar: true,
-            tab_strip: true,
-            pane_command_row: true,
-            terminal_canvas: true,
-            content_dialog: true,
-            embedded_icon_count: 13,
-            focus_or_selection_treatment: true,
-        },
-        png: None,
-    };
+    let visual = passing_visual_evidence();
     for phase in [
         VisualCheckpointPhase::Idle,
         VisualCheckpointPhase::Opening,

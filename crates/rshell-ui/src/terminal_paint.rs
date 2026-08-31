@@ -2,7 +2,8 @@ use gtk::{cairo, pango};
 use rshell_core::RenderCell;
 
 use crate::{
-    terminal_input::TerminalViewError, terminal_palette::Rgb, terminal_renderer::TerminalDrawStats,
+    terminal_font, terminal_input::TerminalViewError, terminal_palette::Rgb,
+    terminal_renderer::TerminalDrawStats,
 };
 
 #[derive(Clone, Copy)]
@@ -13,15 +14,21 @@ pub(crate) struct CellRect {
     pub(crate) height: f64,
 }
 
+#[derive(Clone, Copy)]
+pub(crate) struct TextPaintEvidence {
+    pub(crate) ink_clipped: bool,
+    pub(crate) line_separation: f64,
+}
+
 pub(crate) fn paint_text(
     context: &cairo::Context,
     cell: &RenderCell,
     rect: CellRect,
     foreground: Rgb,
     base_font: &pango::FontDescription,
-) -> Result<(), TerminalViewError> {
+) -> Result<TextPaintEvidence, TerminalViewError> {
     let layout = pangocairo::functions::create_layout(context);
-    let mut font = base_font.clone();
+    let mut font = terminal_font::for_text(base_font, &cell.text);
     if cell.attributes.bold {
         font.set_weight(pango::Weight::Bold);
     }
@@ -30,17 +37,41 @@ pub(crate) fn paint_text(
     }
     layout.set_font_description(Some(&font));
     layout.set_text(&cell.text);
-    let (_, text_height) = layout.pixel_size();
+    let (ink, logical) = layout.extents();
+    let scale = f64::from(pango::SCALE);
+    let ink_x = f64::from(ink.x()) / scale;
+    let ink_y = f64::from(ink.y()) / scale;
+    let ink_width = f64::from(ink.width()) / scale;
+    let ink_height = f64::from(ink.height()) / scale;
+    let logical_width = f64::from(logical.width()) / scale;
+    let logical_height = f64::from(logical.height()) / scale;
+    let preferred_x = rect.x + (rect.width - logical_width) / 2.0;
+    let preferred_y = rect.y + (rect.height - logical_height) / 2.0;
+    let origin_x = fitted_origin(
+        preferred_x,
+        rect.x - ink_x,
+        rect.x + rect.width - (ink_x + ink_width),
+    );
+    let origin_y = fitted_origin(
+        preferred_y,
+        rect.y - ink_y,
+        rect.y + rect.height - (ink_y + ink_height),
+    );
+    let ink_left = origin_x + ink_x;
+    let ink_top = origin_y + ink_y;
+    let ink_right = ink_left + ink_width;
+    let ink_bottom = ink_top + ink_height;
+    let ink_clipped = ink_left < rect.x
+        || ink_top < rect.y
+        || ink_right > rect.x + rect.width
+        || ink_bottom > rect.y + rect.height;
     context
         .save()
         .map_err(|_| TerminalViewError::DrawingFailed)?;
     context.rectangle(rect.x, rect.y, rect.width, rect.height);
     context.clip();
     source(context, foreground);
-    context.move_to(
-        rect.x,
-        rect.y + (rect.height - f64::from(text_height)).max(0.0) / 2.0,
-    );
+    context.move_to(origin_x, origin_y);
     pangocairo::functions::show_layout(context, &layout);
     context
         .restore()
@@ -63,7 +94,18 @@ pub(crate) fn paint_text(
             foreground,
         )?;
     }
-    Ok(())
+    Ok(TextPaintEvidence {
+        ink_clipped,
+        line_separation: rect.height - ink_height,
+    })
+}
+
+fn fitted_origin(preferred: f64, minimum: f64, maximum: f64) -> f64 {
+    if minimum <= maximum {
+        preferred.clamp(minimum, maximum)
+    } else {
+        preferred
+    }
 }
 
 pub(crate) fn update_stats(cell: &RenderCell, stats: &mut TerminalDrawStats) {

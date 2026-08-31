@@ -14,10 +14,10 @@ impl ConnectionEditor {
         let Some(view) = self.draft.as_ref().map(ConnectionEditorDraft::view) else {
             root.set_visible(false);
             widgets.secret.set_text("");
-            widgets.open = false;
             widgets.syncing.set(false);
             return;
         };
+        widgets.title.set_focusable(false);
         if self
             .draft
             .as_ref()
@@ -27,10 +27,6 @@ impl ConnectionEditor {
             widgets.secret.set_text("");
         }
         root.set_visible(true);
-        if !widgets.open {
-            widgets.name.grab_focus();
-            widgets.open = true;
-        }
         widgets.title.set_label(if view.is_new {
             "New connection"
         } else {

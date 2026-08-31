@@ -35,6 +35,19 @@ impl SettingsWindowWidgets {
         let body = gtk::Box::new(gtk::Orientation::Vertical, 12);
         body.add_css_class("dialog-body");
 
+        body.append(&section("Application"));
+        let app_form = gtk::Grid::builder()
+            .column_spacing(12)
+            .row_spacing(8)
+            .hexpand(true)
+            .build();
+        let default_profile = dropdown(&app_form, 0, "Default profile");
+        default_profile.add_css_class("modal-focus-first");
+        let app_scheme = scheme_dropdown(&app_form, 1, "Default color scheme");
+        let app_bindings = entry(&app_form, 2, "Default key bindings");
+        body.append(&app_form);
+
+        body.append(&section("Active terminal profile"));
         let form = gtk::Grid::builder()
             .column_spacing(12)
             .row_spacing(8)
@@ -71,19 +84,6 @@ impl SettingsWindowWidgets {
         let answerback = entry(&form, 17, "Answerback");
         body.append(&form);
 
-        let app_title = gtk::Label::new(Some("Application defaults"));
-        app_title.add_css_class("heading");
-        app_title.set_halign(gtk::Align::Start);
-        body.append(&app_title);
-        let app_form = gtk::Grid::builder()
-            .column_spacing(12)
-            .row_spacing(8)
-            .hexpand(true)
-            .build();
-        let default_profile = dropdown(&app_form, 0, "Default profile");
-        let app_scheme = scheme_dropdown(&app_form, 1, "Default color scheme");
-        let app_bindings = entry(&app_form, 2, "Default key bindings");
-        body.append(&app_form);
         let scroll = gtk::ScrolledWindow::builder()
             .hscrollbar_policy(gtk::PolicyType::Never)
             .vscrollbar_policy(gtk::PolicyType::Automatic)
@@ -102,12 +102,13 @@ impl SettingsWindowWidgets {
         actions.add_css_class("dialog-footer");
         actions.set_halign(gtk::Align::End);
         let close = gtk::Button::with_label("Close");
+        close.add_css_class("modal-focus-last");
         let save_profile = gtk::Button::with_label("Save profile");
         let save_app = gtk::Button::with_label("Save defaults");
         save_profile.add_css_class("suggested-action");
-        actions.append(&close);
         actions.append(&save_profile);
         actions.append(&save_app);
+        actions.append(&close);
         root.append(&actions);
         close.connect_clicked({
             let input = sender.input_sender().clone();
@@ -149,6 +150,13 @@ impl SettingsWindowWidgets {
             profile_names: Vec::new(),
         }
     }
+}
+
+fn section(text: &str) -> gtk::Label {
+    let label = gtk::Label::new(Some(text));
+    label.add_css_class("dialog-section");
+    label.set_halign(gtk::Align::Start);
+    label
 }
 
 fn label(grid: &gtk::Grid, row: i32, text: &str) {

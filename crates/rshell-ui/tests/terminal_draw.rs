@@ -1,11 +1,17 @@
 use std::sync::Arc;
 
-use gtk::cairo::{Context, Format, ImageSurface};
+use gtk::{
+    cairo::{Context, Format, ImageSurface},
+    pango,
+};
 use rshell_core::{
     CellAttributes, CellPosition, Color, CursorShape, RenderCell, RenderCursor, RenderFrame,
     RenderRow, SearchMatch, TerminalOverrides, TerminalSettingsV1, TerminalSize,
 };
-use rshell_ui::{FontMetrics, TerminalDecorations, TerminalRenderCache, TerminalRenderer};
+use rshell_ui::{
+    FontMetricEnvironment, FontMetrics, FontMetricsService, MetricsChange, TerminalDecorations,
+    TerminalRenderCache, TerminalRenderer,
+};
 
 #[test]
 fn offscreen_renderer_paints_deterministic_geometry_cursor_and_overlays() {
@@ -230,6 +236,104 @@ fn retained_renderer_never_adopts_equal_generation_content() {
     assert_eq!(unchanged, Default::default());
 }
 
+#[test]
+fn native_fallback_and_combining_glyphs_never_paint_outside_assigned_cells() {
+    let profile = TerminalSettingsV1::default().resolve(&TerminalOverrides::default());
+    let font_map = pangocairo::FontMap::new();
+    let pango_context = pango::Context::new();
+    pango_context.set_font_map(Some(&font_map));
+    let measured = match FontMetricsService::default()
+        .measure(
+            &pango_context,
+            &profile,
+            FontMetricEnvironment {
+                effective_scale: 1.0,
+                effective_dpi: 96.0,
+                dpi_fallback_used: false,
+            },
+        )
+        .unwrap()
+    {
+        MetricsChange::Changed(measured) | MetricsChange::Unchanged(measured) => measured,
+    };
+    let renderer = TerminalRenderer::new(&profile, measured.metrics);
+
+    for (text, columns) in [("M", 1_u8), ("e\u{301}", 1), ("🙂", 1), ("界", 2)] {
+        let painted = rendered_cell_bytes(&renderer, measured.metrics, text, columns);
+        let baseline = rendered_cell_bytes(&renderer, measured.metrics, "", columns);
+        let clip_x = (measured.metrics.cell_width * f64::from(columns)) as usize;
+        let width = (measured.metrics.cell_width * 4.0) as usize;
+        let stride = width * 4;
+        let mut changed_inside = false;
+        for (index, (actual, empty)) in painted.iter().zip(&baseline).enumerate() {
+            let x = (index % stride) / 4;
+            if actual != empty {
+                if x >= clip_x {
+                    panic!("{text:?} painted beyond its {columns}-cell clip at x={x}");
+                }
+                changed_inside = true;
+            }
+        }
+        assert!(changed_inside, "{text:?} must produce visible in-cell ink");
+    }
+}
+
+#[test]
+fn scale_two_measured_glyph_ink_fits_logical_cells_with_line_separation() {
+    let profile = TerminalSettingsV1::default().resolve(&TerminalOverrides::default());
+    let context = native_context();
+    let measured = match FontMetricsService::default()
+        .measure(
+            &context,
+            &profile,
+            FontMetricEnvironment {
+                effective_scale: 2.0,
+                effective_dpi: 192.0,
+                dpi_fallback_used: false,
+            },
+        )
+        .unwrap()
+    {
+        MetricsChange::Changed(measured) | MetricsChange::Unchanged(measured) => measured,
+    };
+    let renderer = TerminalRenderer::from_measured(&profile, &measured);
+    let mut failures = Vec::new();
+    for (text, columns) in [("M", 1_u8), ("e\u{301}", 1), ("界", 2), ("🙂", 2)] {
+        let diagnostic_surface = ImageSurface::create(Format::ARgb32, 128, 128).unwrap();
+        diagnostic_surface.set_device_scale(2.0, 2.0);
+        let diagnostic_context = Context::new(&diagnostic_surface).unwrap();
+        let diagnostic_layout = pangocairo::functions::create_layout(&diagnostic_context);
+        diagnostic_layout.set_font_description(Some(&measured.font_description));
+        diagnostic_layout.set_text(text);
+        let (ink, logical) = diagnostic_layout.pixel_extents();
+        let mut cache = TerminalRenderCache::new();
+        let stats = cache
+            .update(
+                &renderer,
+                single_cell_frame(text, columns, measured.metrics),
+                &TerminalDecorations::default(),
+                (measured.metrics.cell_width * 4.0) as i32,
+                (measured.metrics.cell_height * 2.0) as i32,
+                2,
+            )
+            .unwrap();
+
+        if stats.glyph_clipped_cells != 0
+            || !stats.minimum_line_separation.is_some_and(|gap| gap >= 1.0)
+        {
+            failures.push(format!(
+                "{text:?}/{columns}: metrics={:?}, ink={ink:?}, logical={logical:?}, clipped={}, gap={:?}",
+                measured.metrics, stats.glyph_clipped_cells, stats.minimum_line_separation
+            ));
+        }
+    }
+    assert!(
+        failures.is_empty(),
+        "scale-2 terminal glyph contract failures: {}",
+        failures.join("; ")
+    );
+}
+
 fn fixture_frame() -> Arc<RenderFrame> {
     Arc::new(RenderFrame {
         generation: 1,
@@ -260,6 +364,7 @@ fn fixture_frame() -> Arc<RenderFrame> {
             visible: true,
         }),
         title: "draw fixture".into(),
+        display_modes: Default::default(),
         alternate_screen: false,
         mouse_reporting: false,
     })
@@ -319,6 +424,83 @@ fn styled_frame() -> Arc<RenderFrame> {
         }]),
         cursor: None,
         title: "style fixture".into(),
+        display_modes: Default::default(),
+        alternate_screen: false,
+        mouse_reporting: false,
+    })
+}
+
+fn rendered_cell_bytes(
+    renderer: &TerminalRenderer,
+    metrics: FontMetrics,
+    text: &str,
+    columns: u8,
+) -> Vec<u8> {
+    let width = (metrics.cell_width * 4.0) as i32;
+    let height = metrics.cell_height as i32;
+    let mut surface = ImageSurface::create(Format::ARgb32, width, height).unwrap();
+    let context = Context::new(&surface).unwrap();
+    let frame = RenderFrame {
+        generation: 1,
+        size: TerminalSize {
+            cols: 4,
+            rows: 1,
+            pixel_width: width as u32,
+            pixel_height: height as u32,
+            dpi: 96,
+        },
+        viewport_top: 0,
+        rows: Arc::from([RenderRow {
+            stable_row: 0,
+            wrapped: false,
+            cells: Arc::from([cell(text, columns, false)]),
+        }]),
+        cursor: None,
+        title: String::new(),
+        display_modes: Default::default(),
+        alternate_screen: false,
+        mouse_reporting: false,
+    };
+    renderer
+        .draw(
+            &context,
+            &frame,
+            &TerminalDecorations::default(),
+            width,
+            height,
+        )
+        .unwrap();
+    drop(context);
+    surface.flush();
+    surface.data().unwrap().to_vec()
+}
+
+fn native_context() -> pango::Context {
+    let font_map = pangocairo::FontMap::new();
+    let context = pango::Context::new();
+    context.set_font_map(Some(&font_map));
+    context
+}
+
+fn single_cell_frame(text: &str, width: u8, metrics: FontMetrics) -> Arc<RenderFrame> {
+    Arc::new(RenderFrame {
+        generation: 1,
+        size: TerminalSize {
+            cols: 4,
+            rows: 1,
+            pixel_width: (metrics.cell_width * 8.0) as u32,
+            pixel_height: (metrics.cell_height * 2.0) as u32,
+            dpi: 192,
+        },
+        viewport_top: 0,
+        rows: Arc::from([RenderRow {
+            stable_row: 0,
+            wrapped: false,
+            cells: Arc::from([cell(text, width, false)]),
+        }]),
+        cursor: None,
+        title: String::new(),
+        display_modes: Default::default(),
         alternate_screen: false,
         mouse_reporting: false,
     })

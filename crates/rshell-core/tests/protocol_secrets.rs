@@ -9,7 +9,7 @@ use rshell_core::{
     },
     render::{
         CellAttributes, CellPosition, Color, MouseButton, MouseEventKind, RenderCell, RenderFrame,
-        RenderRow, TerminalMouseEvent, TerminalSize, Viewport,
+        RenderRow, TerminalDisplayModes, TerminalMouseEvent, TerminalSize, Viewport,
     },
 };
 use secrecy::SecretString;
@@ -132,8 +132,13 @@ fn interaction_requests_and_non_secret_render_values_are_constructible_and_seria
         }]),
         cursor: None,
         title: "safe".into(),
-        alternate_screen: false,
-        mouse_reporting: false,
+        display_modes: TerminalDisplayModes {
+            alternate_screen: true,
+            mouse_reporting: true,
+            ..TerminalDisplayModes::default()
+        },
+        alternate_screen: true,
+        mouse_reporting: true,
     };
     let event = AppEvent::Session {
         session: SessionId::new(),
@@ -142,13 +147,17 @@ fn interaction_requests_and_non_secret_render_values_are_constructible_and_seria
 
     assert_eq!(frame.rows[0].cells[0].width, 2);
     assert!(!frame.rows[0].cells[0].selected);
-    assert!(!frame.alternate_screen);
-    assert!(!frame.mouse_reporting);
+    assert!(frame.alternate_screen);
+    assert!(frame.mouse_reporting);
+    assert!(frame.display_modes.has_residue());
+    assert_eq!(frame.alternate_screen, frame.display_modes.alternate_screen);
+    assert_eq!(frame.mouse_reporting, frame.display_modes.mouse_reporting);
 
     let mut legacy_value = serde_json::to_value(&frame).unwrap();
     let legacy_object = legacy_value.as_object_mut().unwrap();
     legacy_object.remove("alternate_screen");
     legacy_object.remove("mouse_reporting");
+    legacy_object.remove("display_modes");
     legacy_object["rows"][0]["cells"][0]
         .as_object_mut()
         .unwrap()
@@ -156,6 +165,7 @@ fn interaction_requests_and_non_secret_render_values_are_constructible_and_seria
     let legacy_frame: RenderFrame = serde_json::from_value(legacy_value).unwrap();
     assert!(!legacy_frame.alternate_screen);
     assert!(!legacy_frame.mouse_reporting);
+    assert_eq!(legacy_frame.display_modes, TerminalDisplayModes::default());
     assert!(!legacy_frame.rows[0].cells[0].selected);
     assert_eq!(
         serde_json::from_value::<RenderFrame>(serde_json::to_value(&frame).unwrap()).unwrap(),

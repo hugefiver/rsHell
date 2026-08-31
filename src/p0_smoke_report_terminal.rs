@@ -9,8 +9,24 @@ pub(crate) struct TerminalEvidence {
     reconnect: Option<ReconnectEvidence>,
     paste: Option<PasteEvidence>,
     color: Option<ColorEvidence>,
+    interrupt: Option<InterruptEvidence>,
     tui_entered: bool,
     tui_exited: bool,
+}
+
+#[derive(Serialize)]
+struct InterruptEvidence {
+    sequence: u64,
+    command_count: u64,
+    wire_byte: u8,
+    exact_etx: bool,
+    enhanced_encoder_bypassed: bool,
+    surviving_tui: bool,
+    notice_visible: bool,
+    reset_generation: Option<u64>,
+    modes_clean: bool,
+    replacement_character_count: usize,
+    old_tui_overlap: bool,
 }
 
 #[derive(Serialize)]
@@ -158,6 +174,19 @@ pub(crate) fn terminal_evidence(value: &rshell_ui::SmokeTerminalEvidence) -> Ter
             marker_cells: evidence.marker_cells,
             non_default_foreground: evidence.non_default_foreground,
             red_foreground: evidence.red_foreground,
+        }),
+        interrupt: value.interrupt.map(|evidence| InterruptEvidence {
+            sequence: evidence.sequence,
+            command_count: evidence.command_count,
+            wire_byte: evidence.wire_byte,
+            exact_etx: evidence.exact_etx,
+            enhanced_encoder_bypassed: evidence.enhanced_encoder_bypassed,
+            surviving_tui: evidence.surviving_tui,
+            notice_visible: evidence.notice_visible,
+            reset_generation: evidence.reset_generation,
+            modes_clean: evidence.modes_clean,
+            replacement_character_count: evidence.replacement_character_count,
+            old_tui_overlap: evidence.old_tui_overlap,
         }),
         tui_entered: value.tui_entered,
         tui_exited: value.tui_exited,

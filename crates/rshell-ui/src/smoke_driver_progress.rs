@@ -45,7 +45,21 @@ impl SmokeDriver {
     }
 
     pub(crate) fn record_png_path(&self, path: std::path::PathBuf) {
-        self.report.mutate(|report| report.png_path = Some(path));
+        self.report.mutate(|report| {
+            report.png_path = Some(path.clone());
+            if !report.png_paths.contains(&path) {
+                report.png_paths.push(path);
+            }
+        });
+    }
+
+    pub(crate) fn record_requested_png_path(&self, path: std::path::PathBuf) {
+        self.report.mutate(|report| {
+            report.requested_png_path = Some(path.clone());
+            if !report.requested_png_paths.contains(&path) {
+                report.requested_png_paths.push(path);
+            }
+        });
     }
 
     pub(crate) fn record_png_error(&self, error: &'static str) {

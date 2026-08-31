@@ -3,7 +3,10 @@ use rshell_core::{
     KeyCode, KeyModifiers, PaneId, SessionUiCommand, TerminalInput, TerminalOverrides,
     TerminalSettingsV1, UiCommand,
 };
-use rshell_ui::{FontMetrics, TerminalViewModel, TerminalViewMsg, map_gdk_key};
+use rshell_ui::{
+    FontMetricEnvironment, FontMetricKey, FontMetrics, MeasuredFontMetrics, TerminalViewModel,
+    TerminalViewMsg, map_gdk_key,
+};
 
 #[test]
 fn maps_terminal_keys_and_f1_through_f24_deterministically() {
@@ -92,10 +95,7 @@ fn character_mapping_preserves_all_terminal_modifiers() {
 
 #[test]
 fn committed_text_and_normalized_paste_are_redacted() {
-    let model = TerminalViewModel::new(
-        rshell_core::SessionId::new(),
-        FontMetrics::new(9.0, 18.0).unwrap(),
-    );
+    let model = TerminalViewModel::new(rshell_core::SessionId::new(), measured_metrics());
     let committed = model.committed_text("IME-SENSITIVE-秘密").unwrap();
     assert_session_input(&committed);
     assert!(!format!("{committed:?}").contains("IME-SENSITIVE"));
@@ -151,8 +151,31 @@ fn alt_model(left_alt_as_meta: bool, right_alt_as_meta: bool) -> TerminalViewMod
         PaneId::new(),
         rshell_core::SessionId::new(),
         profile,
-        FontMetrics::new(9.0, 18.0).unwrap(),
+        measured_metrics(),
     )
+}
+
+fn measured_metrics() -> MeasuredFontMetrics {
+    let environment = FontMetricEnvironment {
+        effective_scale: 1.0,
+        effective_dpi: 96.0,
+        dpi_fallback_used: false,
+    };
+    MeasuredFontMetrics {
+        metrics: FontMetrics::new(9.0, 18.0).unwrap(),
+        key: FontMetricKey {
+            family: "test monospace".into(),
+            font_size_bits: 15.0_f32.to_bits(),
+            effective_scale_bits: environment.effective_scale.to_bits(),
+            effective_dpi_bits: environment.effective_dpi.to_bits(),
+            dpi_fallback_used: false,
+            color_scheme: Default::default(),
+        },
+        environment,
+        fallback_used: false,
+        font_description: rshell_ui::logical_font_description("test monospace", 15.0),
+        minimum_line_separation: 2.0,
+    }
 }
 
 fn assert_alt_sides(mut model: TerminalViewModel, left_meta: bool, right_meta: bool) {

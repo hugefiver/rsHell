@@ -1,4 +1,4 @@
-/* rsHell — Task21 Fluent shell authority */
+/* rsHell — Terminal recovery authority */
 /* Opaque Windows Terminal Dark / Fluent 2 presentation. */
 
 window,
@@ -9,7 +9,8 @@ window,
 .content-dialog {
     background: #202020;
     color: #f5f5f5;
-    font-family: "Segoe UI", system-ui, sans-serif;
+    font-family: "Segoe UI Variable Text", "Segoe UI Variable", "Segoe UI", system-ui, sans-serif;
+    font-size: 15px;
 }
 
 window.csd {
@@ -52,17 +53,17 @@ headerbar button {
 
 /* ── In-content command bar ──────────────────────── */
 .command-bar {
-    min-height: 36px;
+    min-height: 44px;
     padding: 0 8px;
     border-bottom: 1px solid rgba(255, 255, 255, 0.10);
 }
 
 .command-bar button {
-    min-height: 26px;
-    min-width: 26px;
-    padding: 2px 8px;
+    min-height: 36px;
+    min-width: 36px;
+    padding: 4px 12px;
     border-radius: 4px;
-    font-size: 13px;
+    font-size: 15px;
     transition: background 100ms ease;
     background: transparent;
     color: #d4d4d4;
@@ -77,6 +78,11 @@ headerbar button {
     background: rgba(255, 255, 255, 0.05);
 }
 
+.command-status {
+    color: #cccccc;
+    font-size: 14px;
+}
+
 .command-bar button:focus,
 .sidebar button:focus,
 .connection-list row:focus,
@@ -87,6 +93,7 @@ headerbar button {
 .pane-toolbar button:focus,
 .content-dialog button:focus,
 .content-dialog entry:focus,
+.content-dialog label:focus,
 .terminal-canvas:focus {
     outline: 2px solid #60cdff;
     outline-offset: -2px;
@@ -108,24 +115,24 @@ headerbar button {
 }
 
 .sidebar-header {
-    font-size: 11px;
+    color: #9d9d9d;
+    font-size: 14px;
     font-weight: 700;
     letter-spacing: 0.1em;
-    padding: 8px 10px 3px 10px;
-    opacity: 0.5;
+    padding: 16px 12px 8px 12px;
     text-transform: uppercase;
 }
 
 .sidebar-toolbar {
-    padding: 3px 6px;
+    padding: 8px;
 }
 
 .sidebar-toolbar button {
-    min-height: 22px;
-    min-width: 22px;
-    padding: 2px 6px;
+    min-height: 32px;
+    min-width: 32px;
+    padding: 4px;
     border-radius: 4px;
-    font-size: 12px;
+    font-size: 14px;
     transition: background 100ms ease;
     background: transparent;
     color: #d4d4d4;
@@ -142,7 +149,7 @@ headerbar button {
 }
 
 .connection-list row {
-    padding: 1px 4px;
+    padding: 4px 6px;
     border-radius: 4px;
     transition: background 80ms ease;
 }
@@ -158,27 +165,27 @@ headerbar button {
 }
 
 .connection-row {
-    padding: 4px 8px;
+    padding: 10px 8px;
     border-radius: 4px;
 }
 
 .connection-name {
     color: #f5f5f5;
-    font-size: 13px;
+    font-size: 15px;
     font-weight: 600;
 }
 
 .connection-meta {
     color: #cccccc;
-    font-size: 11px;
+    font-size: 14px;
 }
 
 .folder-header {
     color: #cccccc;
-    font-size: 11px;
+    font-size: 14px;
     font-weight: 700;
     letter-spacing: 0.06em;
-    padding: 8px 10px 2px 10px;
+    padding: 12px 12px 4px 12px;
 }
 
 /* ── Editor / Settings Dialog ────────────────────── */
@@ -189,7 +196,7 @@ headerbar button {
 
 .editor-group {
     background: #252525;
-    padding: 6px 10px;
+    padding: 16px;
 }
 
 .editor-dialog notebook {
@@ -208,18 +215,18 @@ headerbar button {
 }
 
 .editor-group label {
-    font-size: 13px;
-    margin-top: 4px;
-    opacity: 0.7;
+    color: #cccccc;
+    font-size: 15px;
+    margin-top: 12px;
 }
 
 /* ── Global entry/spinbutton/password styling ────── */
 entry,
 spinbutton,
 passwordentry {
-    min-height: 30px;
+    min-height: 36px;
     border-radius: 4px;
-    font-size: 14px;
+    font-size: 15px;
     color: #f5f5f5;
     border: 1px solid rgba(255, 255, 255, 0.16);
     border-bottom: 2px solid rgba(255, 255, 255, 0.24);
@@ -238,7 +245,8 @@ passwordentry:focus {
 entry:disabled,
 spinbutton:disabled,
 passwordentry:disabled {
-    opacity: 0.45;
+    color: #9d9d9d;
+    background: #252525;
     border-color: rgba(255, 255, 255, 0.08);
     border-bottom-color: rgba(255, 255, 255, 0.10);
 }
@@ -250,8 +258,8 @@ passwordentry:disabled {
 }
 
 .editor-dialog notebook > header tab {
-    padding: 6px 14px;
-    font-size: 13px;
+    padding: 10px 16px;
+    font-size: 15px;
     border-radius: 0;
     border-bottom: 2px solid transparent;
     transition: border-color 120ms ease, color 120ms ease;
@@ -268,21 +276,24 @@ passwordentry:disabled {
 /* ── Dialog Buttons ──────────────────────────────── */
 .editor-dialog button.suggested-action,
 .editor-dialog .connect-button {
-    min-height: 30px;
+    min-height: 36px;
     padding: 4px 20px;
-    font-size: 14px;
+    font-size: 15px;
 }
 
 .editor-dialog button {
-    min-height: 28px;
+    min-height: 34px;
     padding: 4px 14px;
     border-radius: 4px;
-    font-size: 14px;
+    font-size: 15px;
+    background: #333333;
+    color: #f5f5f5;
+    border: 1px solid rgba(255, 255, 255, 0.12);
 }
 
 /* ── Drop Down (theme selector etc.) ─────────────── */
 dropdown {
-    min-height: 30px;
+    min-height: 36px;
     color: #f5f5f5;
     border: 1px solid rgba(255, 255, 255, 0.16);
     border-bottom: 2px solid rgba(255, 255, 255, 0.24);
@@ -316,10 +327,10 @@ dropdown > popover > contents {
 }
 
 dropdown > popover listview > row {
-    padding: 4px 10px;
+    padding: 6px 12px;
     border-radius: 4px;
-    font-size: 14px;
-    min-height: 24px;
+    font-size: 15px;
+    min-height: 28px;
     transition: background 80ms ease;
 }
 
@@ -333,7 +344,7 @@ dropdown > popover listview > row:selected {
 
 /* ── CheckButton ─────────────────────────────────── */
 checkbutton {
-    font-size: 13px;
+    font-size: 15px;
 }
 
 checkbutton indicator {
@@ -349,8 +360,8 @@ checkbutton:checked indicator {
 
 /* ── TextView (notes field) ──────────────────────── */
 textview {
-    font-size: 14px;
-    padding: 4px 6px;
+    font-size: 15px;
+    padding: 8px;
 }
 
 textview text {
@@ -400,10 +411,10 @@ paned > separator:hover {
     background: transparent;
     color: #9d9d9d;
     border-radius: 0;
-    padding: 4px 12px;
-    font-size: 13px;
+    padding: 6px 14px;
+    font-size: 15px;
     border: none;
-    min-height: 26px;
+    min-height: 36px;
     margin: 0 0;
     border-bottom: 2px solid transparent;
     transition: color 100ms ease, border-color 120ms ease, background 100ms ease;
@@ -449,7 +460,7 @@ paned > separator:hover {
     padding: 0 3px;
     min-height: 16px;
     min-width: 16px;
-    font-size: 11px;
+    font-size: 14px;
     transition: background 80ms ease, color 80ms ease;
 }
 
@@ -473,7 +484,7 @@ paned > separator:hover {
 
 .pane-command-row,
 .pane-toolbar {
-    min-height: 26px;
+    min-height: 36px;
     padding: 0 4px;
     background: #1e1e1e;
     border-bottom: 1px solid rgba(255, 255, 255, 0.06);
@@ -482,9 +493,9 @@ paned > separator:hover {
 .pane-command-row button,
 .pane-toolbar button,
 .pane-error-actions button {
-    min-height: 22px;
-    min-width: 22px;
-    padding: 2px 6px;
+    min-height: 32px;
+    min-width: 32px;
+    padding: 4px 8px;
     border-radius: 4px;
     transition: background 100ms ease, color 100ms ease;
     background: transparent;
@@ -494,7 +505,7 @@ paned > separator:hover {
 
 .pane-state-label {
     color: #d4d4d4;
-    font-size: 12px;
+    font-size: 14px;
 }
 
 .pane-status-page {
@@ -509,7 +520,7 @@ paned > separator:hover {
 .terminal-view {
     background: #1a1a1a;
     color: #cccccc;
-    font-family: "Cascadia Mono", "JetBrains Mono", "Consolas", monospace;
+    font-family: "Cascadia Mono", "Microsoft YaHei UI", "Segoe UI Emoji", "Consolas", monospace;
 }
 
 .terminal-canvas {
@@ -535,20 +546,6 @@ paned > separator:hover {
     background: #1a1a1a;
 }
 
-/* ── Status Bar (always dark / accent) ───────────── */
-.status-bar {
-    background: #1e1e1e;
-    border-top: 1px solid rgba(96, 205, 255, 0.55);
-    padding: 0 10px;
-    min-height: 20px;
-}
-
-.status-label {
-    color: #d4d4d4;
-    font-size: 12px;
-    font-weight: 500;
-}
-
 /* ── Scrollbar (terminal area — always dark) ─────── */
 .terminal-container scrollbar {
     background: transparent;
@@ -572,13 +569,13 @@ paned > separator:hover {
 
 /* ── Placeholder ─────────────────────────────────── */
 .dim-label {
-    opacity: 0.4;
+    color: #9d9d9d;
 }
 
 /* ── Grid labels in dialogs ──────────────────────── */
 .editor-dialog grid > label {
-    font-size: 13px;
-    opacity: 0.75;
+    color: #cccccc;
+    font-size: 15px;
 }
 
 /* ── Separator in dialogs ────────────────────────── */
@@ -595,7 +592,7 @@ paned > separator:hover {
     color: #f5f5f5;
     border: 1px solid rgba(255, 255, 255, 0.12);
     border-radius: 8px;
-    padding: 16px;
+    padding: 24px;
 }
 
 .content-dialog {
@@ -603,21 +600,31 @@ paned > separator:hover {
     color: #f5f5f5;
     border: 1px solid rgba(255, 255, 255, 0.12);
     border-radius: 8px;
+    padding: 24px;
 }
 
 .dialog-header {
     color: #f5f5f5;
-    font-size: 16px;
+    font-size: 18px;
     font-weight: 600;
-    padding-bottom: 4px;
+    padding-bottom: 12px;
 }
 
 .dialog-body {
     color: #f5f5f5;
+    font-size: 15px;
+}
+
+.dialog-section {
+    color: #cccccc;
+    font-size: 15px;
+    font-weight: 700;
+    padding-top: 20px;
+    padding-bottom: 8px;
 }
 
 .dialog-footer {
-    padding-top: 8px;
+    padding-top: 16px;
     border-top: 1px solid rgba(255, 255, 255, 0.10);
 }
 
@@ -627,8 +634,8 @@ paned > separator:hover {
 }
 
 .settings-window grid > label {
-    font-size: 13px;
-    opacity: 0.75;
+    color: #cccccc;
+    font-size: 15px;
 }
 
 .settings-window .settings-error,
@@ -644,13 +651,14 @@ paned > separator:hover {
 }
 
 .import-candidate {
-    min-height: 42px;
-    padding: 6px 8px;
+    min-height: 48px;
+    padding: 8px 12px;
     border-bottom: 1px solid rgba(255, 255, 255, 0.08);
 }
 
 .import-candidate:disabled {
-    opacity: 0.55;
+    background: #252525;
+    color: #9d9d9d;
 }
 
 .import-warnings .warning,
@@ -672,7 +680,9 @@ paned > separator:hover {
 .settings-window button,
 .import-dialog button,
 .interaction-dialog button {
-    min-height: 30px;
+    min-height: 36px;
+    padding: 6px 14px;
+    font-size: 15px;
     border-radius: 4px;
     transition: background 100ms ease;
     background: #333333;
@@ -690,6 +700,111 @@ paned > separator:hover {
     background: rgba(255, 80, 100, 0.16);
     color: #ff99a4;
     border-color: rgba(255, 80, 100, 0.35);
+}
+
+/* ── Recovery / adaptive composition contract hooks ── */
+.modal-scrim,
+.modal-scrim.modal-open {
+    background: #121212;
+    color: #f5f5f5;
+}
+
+.display-recovery-notice {
+    min-height: 36px;
+    padding: 4px 12px;
+    background: #252525;
+    color: #f5f5f5;
+    border: 2px solid #60cdff;
+    border-radius: 4px;
+    transition: border-color 120ms ease;
+}
+
+.display-recovery-notice.pending {
+    border-color: #60cdff;
+}
+
+.display-recovery-notice.success {
+    border-color: #6ccb8e;
+}
+
+.display-recovery-notice.error {
+    border-color: #ff99a4;
+}
+
+.compact-nav-rail {
+    min-width: 48px;
+    padding: 4px;
+    background: #202020;
+    color: #f5f5f5;
+    border-right: 2px solid rgba(255, 255, 255, 0.10);
+}
+
+.compact-nav-rail button {
+    min-width: 38px;
+}
+
+.navigation-drawer {
+    background: #202020;
+    color: #f5f5f5;
+    border-right: 2px solid rgba(255, 255, 255, 0.10);
+}
+
+.tab-strip-scroll {
+    border: none;
+    border-radius: 0;
+}
+
+.tab-overflow,
+.pane-action-overflow {
+    padding: 4px;
+    background: #1e1e1e;
+    color: #f5f5f5;
+}
+
+.display-recovery-notice button,
+.compact-nav-rail button,
+.tab-overflow button,
+.pane-action-overflow button {
+    min-height: 24px;
+    min-width: 24px;
+    padding: 4px 8px;
+    background: #2b2b2b;
+    color: #f5f5f5;
+    border: 2px solid transparent;
+    border-radius: 4px;
+    transition: background 100ms ease, color 100ms ease, border-color 120ms ease;
+}
+
+.display-recovery-notice button:hover,
+.compact-nav-rail button:hover,
+.tab-overflow button:hover,
+.pane-action-overflow button:hover {
+    background: #333333;
+}
+
+.display-recovery-notice button:focus,
+.compact-nav-rail button:focus,
+.tab-overflow button:focus,
+.pane-action-overflow button:focus {
+    outline: 2px solid #60cdff;
+    outline-offset: -2px;
+}
+
+.display-recovery-notice button:active,
+.compact-nav-rail button:active,
+.tab-overflow button:active,
+.pane-action-overflow button:active {
+    background: #1e1e1e;
+    border-color: #4ab5e6;
+}
+
+.display-recovery-notice button:disabled,
+.compact-nav-rail button:disabled,
+.tab-overflow button:disabled,
+.pane-action-overflow button:disabled {
+    background: #252525;
+    color: #9d9d9d;
+    border-color: rgba(255, 255, 255, 0.10);
 }
 
 /* ══════════════════════════════════════════════════ */
@@ -721,9 +836,9 @@ popover.menu arrow {
 }
 
 popover.menu modelbutton {
-    font-size: 14px;
-    min-height: 28px;
-    padding: 4px 12px 4px 12px;
+    font-size: 15px;
+    min-height: 32px;
+    padding: 6px 12px;
     border-radius: 4px;
     color: #e0e0e0;
     transition: background 80ms ease;
@@ -759,7 +874,7 @@ popover.menu modelbutton:hover arrow {
 
 /* Accelerator / shortcut labels inside menu items */
 popover.menu accelerator {
-    font-size: 13px;
+    font-size: 14px;
     color: #6e6e6e;
     opacity: 1;
 }

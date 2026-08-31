@@ -1,8 +1,9 @@
-use rshell_core::{AuthenticationKind, PaneLaunchTarget, TransportKind};
+use rshell_core::PaneLaunchTarget;
 
 use crate::{
     ConnectionEditorDraftState, EditorTextField, MainWindow, SmokeAction, SmokeActionKind,
     SmokeBindingEvidence, SmokeConnectionField,
+    main_window_smoke_binding_profiles::{actual_label, profile_matches_surface},
     main_window_smoke_visual::{visual_checkpoint_binding, visual_checkpoint_component_verified},
     smoke_driver_observation::SmokeBindingRequest,
 };
@@ -13,10 +14,10 @@ impl MainWindow {
         request: Option<&SmokeBindingRequest>,
     ) -> Option<SmokeBindingEvidence> {
         let request = request?;
-        if matches!(request.action, SmokeAction::VisualCheckpoint) {
+        if let SmokeAction::VisualCheckpoint(checkpoint) = &request.action {
             let component_verified = visual_checkpoint_component_verified(
                 self.smoke_state.visual_checkpoint,
-                self.smoke_state.visual.as_ref(),
+                self.smoke_state.visuals.get(&checkpoint.id),
             );
             return Some(visual_checkpoint_binding(
                 request.surface.as_deref(),
@@ -186,15 +187,18 @@ fn component_verified(
         | SmokeActionKind::SearchTerminal
         | SmokeActionKind::SelectRange
         | SmokeActionKind::CopySelection
-        | SmokeActionKind::Reconnect => session_exists && (local || launch_matches),
+        | SmokeActionKind::Reconnect
+        | SmokeActionKind::InterruptTerminal
+        | SmokeActionKind::ResetDisplay => session_exists && (local || launch_matches),
         SmokeActionKind::NewTab
         | SmokeActionKind::SplitHorizontal
         | SmokeActionKind::SplitVertical
         | SmokeActionKind::SwitchTab => !window.view_model.workspace.tabs.is_empty(),
         SmokeActionKind::VisualCheckpoint => visual_checkpoint_component_verified(
             window.smoke_state.visual_checkpoint,
-            window.smoke_state.visual.as_ref(),
+            window.smoke_state.visuals.values().next_back(),
         ),
+        SmokeActionKind::ResizeWindow => window.smoke_state.window_realized,
         SmokeActionKind::PreviewImport => window.smoke_state.import_preview_ready,
         SmokeActionKind::CommitImport => window.smoke_state.imports.completed,
         SmokeActionKind::CancelImport => window.smoke_state.imports.cancel_pending_zero,
@@ -214,45 +218,4 @@ fn requires_active_launch(action: SmokeActionKind) -> bool {
             | SmokeActionKind::WaitFrameContains
             | SmokeActionKind::Reconnect
     )
-}
-
-fn profile_matches_surface(profile: &rshell_core::ConnectionProfile, surface: &str) -> bool {
-    if profile.name != surface {
-        return false;
-    }
-    matches!(
-        (surface, profile.transport, profile.authentication),
-        (
-            "native_password" | "host_key" | "vault",
-            TransportKind::NativeSsh,
-            AuthenticationKind::Password
-        ) | (
-            "native_key",
-            TransportKind::NativeSsh,
-            AuthenticationKind::PublicKey
-        ) | (
-            "native_keyboard_interactive",
-            TransportKind::NativeSsh,
-            AuthenticationKind::KeyboardInteractive
-        ) | (
-            "system_agent",
-            TransportKind::SystemOpenSsh,
-            AuthenticationKind::Agent
-        )
-    )
-}
-
-fn actual_label(window: &MainWindow, surface: &str, profile_name: Option<&str>) -> Option<String> {
-    let component_label = match surface {
-        "local_terminal" => Some("local"),
-        "tabs_splits" => Some("workspace"),
-        "imports" if window.smoke_state.imports.completed => Some("import_catalog"),
-        "imports" => Some("import_preview"),
-        "gtk" => Some("main_window"),
-        "cleanup" => Some("shutdown"),
-        _ => None,
-    };
-    component_label
-        .map(str::to_owned)
-        .or_else(|| profile_name.map(str::to_owned))
 }

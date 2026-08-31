@@ -1,6 +1,17 @@
 use gtk::prelude::*;
 use relm4::gtk;
 
+use crate::{
+    IconBackend, ProductIcon, SmokeDpiEvidence,
+    visual_accessibility::descendants_including,
+    visual_terminal_metrics::{measured_root_metrics, metric_facts},
+};
+
+pub use crate::visual_accessibility::{collect_accessibility_evidence, visual_contrast_passes};
+pub(crate) use crate::visual_terminal_metrics::{
+    record_terminal_metrics, record_terminal_render_quality,
+};
+
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct SmokeVisualFacts {
     pub requested_width: i32,
@@ -14,23 +25,64 @@ pub struct SmokeVisualFacts {
     pub terminal_canvas: bool,
     pub content_dialog: bool,
     pub embedded_icon_count: usize,
+    pub icon_logical_size: i32,
+    pub icon_texture_width: i32,
+    pub icon_texture_height: i32,
+    pub icon_backend: Option<IconBackend>,
+    pub effective_scale_bits: u64,
+    pub effective_dpi_bits: u64,
+    pub measured_cell_width_bits: u64,
+    pub measured_cell_height_bits: u64,
+    pub dpi_fallback_used: bool,
     pub focus_or_selection_treatment: bool,
+    pub terminal_glyph_clipped_cells: usize,
+    pub terminal_min_line_separation_bits: u64,
 }
 
 impl SmokeVisualFacts {
+    pub const fn terminal_typography_passes(self) -> bool {
+        !self.terminal_canvas
+            || (self.terminal_glyph_clipped_cells == 0
+                && f64::from_bits(self.terminal_min_line_separation_bits).is_finite()
+                && f64::from_bits(self.terminal_min_line_separation_bits)
+                    >= crate::TERMINAL_LINE_SPACING)
+    }
+
     pub const fn contract_passes(self) -> bool {
-        self.requested_width == 1_360
-            && self.requested_height == 860
-            && self.realized_width > 0
+        crate::smoke_driver_visual_matrix::supported_dimensions(
+            self.requested_width,
+            self.requested_height,
+        ) && self.realized_width > 0
             && self.realized_height > 0
             && self.command_bar
-            && self.dense_sidebar
-            && self.tab_strip
-            && self.pane_command_row
-            && self.terminal_canvas
-            && self.content_dialog
-            && self.embedded_icon_count >= 6
-            && self.focus_or_selection_treatment
+            && self.embedded_icon_count > 0
+            && self.icon_logical_size > 0
+            && self.icon_texture_width >= self.icon_logical_size
+            && self.icon_texture_height >= self.icon_logical_size
+            && self.icon_backend.is_some()
+            && (!self.terminal_canvas
+                || (f64::from_bits(self.effective_scale_bits).is_finite()
+                    && f64::from_bits(self.effective_scale_bits) > 0.0
+                    && f64::from_bits(self.effective_dpi_bits).is_finite()
+                    && f64::from_bits(self.effective_dpi_bits) > 0.0
+                    && f64::from_bits(self.measured_cell_width_bits) > 0.0
+                    && f64::from_bits(self.measured_cell_height_bits) > 0.0))
+            && self.terminal_typography_passes()
+    }
+}
+
+pub fn dpi_evidence(facts: SmokeVisualFacts) -> SmokeDpiEvidence {
+    SmokeDpiEvidence {
+        logical_width: facts.realized_width,
+        logical_height: facts.realized_height,
+        effective_scale: f64::from_bits(facts.effective_scale_bits),
+        effective_dpi: f64::from_bits(facts.effective_dpi_bits),
+        cell_width: f64::from_bits(facts.measured_cell_width_bits),
+        cell_height: f64::from_bits(facts.measured_cell_height_bits),
+        icon_logical_size: u16::try_from(facts.icon_logical_size).unwrap_or_default(),
+        icon_texture_width: facts.icon_texture_width,
+        icon_texture_height: facts.icon_texture_height,
+        dpi_fallback_used: facts.dpi_fallback_used,
     }
 }
 
@@ -78,6 +130,19 @@ pub fn collect_visual_facts(root: &gtk::Widget, requested: (i32, i32)) -> SmokeV
         .filter(visible)
         .filter(|widget| widget.has_css_class("product-icon"))
         .count();
+    let icon = widgets.iter().filter(visible).find_map(|widget| {
+        let image = widget.downcast_ref::<gtk::Image>()?;
+        widget.has_css_class("product-icon").then_some(image)
+    });
+    let texture = icon
+        .and_then(|image| image.paintable())
+        .and_then(|paintable| paintable.downcast::<gtk::gdk::Texture>().ok());
+    let terminal_metrics = widgets
+        .iter()
+        .filter(visible)
+        .find(|widget| widget.has_css_class("terminal-canvas"))
+        .and_then(metric_facts)
+        .or_else(|| measured_root_metrics(root));
     let focus_or_selection_treatment = widgets.iter().filter(visible).any(|widget| {
         ["active-tab", "active-pane", "navigation-selected"]
             .into_iter()
@@ -95,7 +160,22 @@ pub fn collect_visual_facts(root: &gtk::Widget, requested: (i32, i32)) -> SmokeV
         terminal_canvas: has_visible_class("terminal-canvas"),
         content_dialog: has_visible_class("content-dialog"),
         embedded_icon_count,
+        icon_logical_size: icon.map_or(0, gtk::Image::pixel_size),
+        icon_texture_width: texture.as_ref().map_or(0, gtk::gdk::Texture::width),
+        icon_texture_height: texture.as_ref().map_or(0, gtk::gdk::Texture::height),
+        icon_backend: texture.as_ref().map(|_| ProductIcon::backend()),
+        effective_scale_bits: terminal_metrics.map_or(0, |facts| facts.effective_scale_bits),
+        effective_dpi_bits: terminal_metrics.map_or(0, |facts| facts.effective_dpi_bits),
+        measured_cell_width_bits: terminal_metrics
+            .map_or(0, |facts| facts.measured_cell_width_bits),
+        measured_cell_height_bits: terminal_metrics
+            .map_or(0, |facts| facts.measured_cell_height_bits),
+        dpi_fallback_used: terminal_metrics.is_some_and(|facts| facts.dpi_fallback_used),
         focus_or_selection_treatment,
+        terminal_glyph_clipped_cells: terminal_metrics
+            .map_or(usize::MAX, |facts| facts.terminal_glyph_clipped_cells),
+        terminal_min_line_separation_bits: terminal_metrics
+            .map_or(0, |facts| facts.terminal_min_line_separation_bits),
     }
 }
 
@@ -111,18 +191,4 @@ pub fn selection_treatment_surface(root: &gtk::Widget) -> Option<gtk::Widget> {
         current = widget.parent();
     }
     None
-}
-
-fn descendants_including(root: &gtk::Widget) -> Vec<gtk::Widget> {
-    fn collect(widget: &gtk::Widget, output: &mut Vec<gtk::Widget>) {
-        output.push(widget.clone());
-        let mut child = widget.first_child();
-        while let Some(current) = child {
-            collect(&current, output);
-            child = current.next_sibling();
-        }
-    }
-    let mut output = Vec::new();
-    collect(root, &mut output);
-    output
 }

@@ -1,5 +1,6 @@
 #![allow(dead_code)]
 
+pub mod display_recovery;
 pub mod ssh_server;
 
 use std::{
@@ -14,6 +15,7 @@ use rshell_core::{
     CellAttributes, Color, InteractionRequest, RenderCell, RenderCursor, RenderFrame, RenderRow,
     SearchMatch, SearchQuery, SelectionRange, SessionFailure, TerminalInput, TerminalMouseEvent,
     TerminalSize, Viewport,
+    render::{DisplayRecovery, TerminalDisplayModes},
 };
 use rshell_session::{
     EngineDelta, EngineError, InteractionBroker, SessionLaunch, SessionTransport, TerminalEngine,
@@ -61,6 +63,33 @@ impl WriteBlocker {
     }
 }
 
+#[derive(Clone)]
+pub struct ShutdownBlocker {
+    started: Arc<Semaphore>,
+    release: Arc<Semaphore>,
+}
+
+impl ShutdownBlocker {
+    pub fn new() -> Self {
+        Self {
+            started: Arc::new(Semaphore::new(0)),
+            release: Arc::new(Semaphore::new(0)),
+        }
+    }
+
+    pub async fn wait_started(&self) {
+        tokio::time::timeout(Duration::from_secs(1), self.started.acquire())
+            .await
+            .expect("shutdown did not start")
+            .expect("started semaphore closed")
+            .forget();
+    }
+
+    pub fn release(&self) {
+        self.release.add_permits(1);
+    }
+}
+
 pub enum NextBehavior {
     Events(VecDeque<TransportEvent>),
     Controlled(mpsc::UnboundedReceiver<TransportEvent>),
@@ -90,6 +119,8 @@ pub struct TransportScript {
     pub next: NextBehavior,
     pub interactions: VecDeque<InteractionRequest>,
     pub write_blocker: Option<WriteBlocker>,
+    pub shutdown_blocker: Option<ShutdownBlocker>,
+    pub write_failure: Option<SessionFailure>,
     pub shutdown_failure: Option<SessionFailure>,
 }
 
@@ -99,6 +130,8 @@ impl TransportScript {
             next: NextBehavior::Pending,
             interactions: VecDeque::new(),
             write_blocker: None,
+            shutdown_blocker: None,
+            write_failure: None,
             shutdown_failure: None,
         }
     }
@@ -108,6 +141,8 @@ impl TransportScript {
             next: NextBehavior::Events(events.into_iter().collect()),
             interactions: VecDeque::new(),
             write_blocker: None,
+            shutdown_blocker: None,
+            write_failure: None,
             shutdown_failure: None,
         }
     }
@@ -119,6 +154,8 @@ impl TransportScript {
                 next: NextBehavior::Controlled(receiver),
                 interactions: VecDeque::new(),
                 write_blocker: None,
+                shutdown_blocker: None,
+                write_failure: None,
                 shutdown_failure: None,
             },
             EventStream { sender },
@@ -136,6 +173,8 @@ impl TransportScript {
             },
             interactions: VecDeque::new(),
             write_blocker: None,
+            shutdown_blocker: None,
+            write_failure: None,
             shutdown_failure: None,
         }
     }
@@ -145,6 +184,8 @@ impl TransportScript {
             next: NextBehavior::Panic,
             interactions: VecDeque::new(),
             write_blocker: None,
+            shutdown_blocker: None,
+            write_failure: None,
             shutdown_failure: None,
         }
     }
@@ -158,12 +199,24 @@ impl TransportScript {
             next: NextBehavior::Pending,
             interactions: requests.into_iter().collect(),
             write_blocker: None,
+            shutdown_blocker: None,
+            write_failure: None,
             shutdown_failure: None,
         }
     }
 
     pub fn with_write_blocker(mut self, blocker: WriteBlocker) -> Self {
         self.write_blocker = Some(blocker);
+        self
+    }
+
+    pub fn with_shutdown_blocker(mut self, blocker: ShutdownBlocker) -> Self {
+        self.shutdown_blocker = Some(blocker);
+        self
+    }
+
+    pub fn with_write_failure(mut self, failure: SessionFailure) -> Self {
+        self.write_failure = Some(failure);
         self
     }
 
@@ -236,6 +289,8 @@ impl TransportFactory for FakeFactory {
             interactions: script.interactions,
             write_blocker: script.write_blocker,
             block_next_write: true,
+            shutdown_blocker: script.shutdown_blocker,
+            write_failure: script.write_failure,
             shutdown_failure: script.shutdown_failure,
             probe: self.probe.clone(),
         }))
@@ -248,6 +303,8 @@ struct FakeTransport {
     interactions: VecDeque<InteractionRequest>,
     write_blocker: Option<WriteBlocker>,
     block_next_write: bool,
+    shutdown_blocker: Option<ShutdownBlocker>,
+    write_failure: Option<SessionFailure>,
     shutdown_failure: Option<SessionFailure>,
     probe: FactoryProbe,
 }
@@ -303,6 +360,9 @@ impl SessionTransport for FakeTransport {
     }
 
     async fn write(&mut self, bytes: &[u8]) -> Result<(), TransportError> {
+        if let Some(failure) = self.write_failure {
+            return Err(TransportError::new(failure));
+        }
         if self.block_next_write
             && let Some(blocker) = &self.write_blocker
         {
@@ -326,6 +386,15 @@ impl SessionTransport for FakeTransport {
 
     async fn shutdown(&mut self) -> Result<(), TransportError> {
         lock(&self.probe.log).push(format!("shutdown:{}", self.id));
+        if let Some(blocker) = &self.shutdown_blocker {
+            blocker.started.add_permits(1);
+            blocker
+                .release
+                .acquire()
+                .await
+                .map_err(|_| TransportError::new(SessionFailure::Crashed))?
+                .forget();
+        }
         self.shutdown_failure
             .map_or(Ok(()), |failure| Err(TransportError::new(failure)))
     }
@@ -344,6 +413,10 @@ impl EngineProbe {
     pub fn render_count(&self) -> usize {
         lock(&self.state).renders
     }
+
+    pub fn recover_display_count(&self) -> usize {
+        lock(&self.state).recover_display_count
+    }
 }
 
 struct EngineState {
@@ -352,6 +425,10 @@ struct EngineState {
     generation: u64,
     fixed_generation: bool,
     size: TerminalSize,
+    display_modes: TerminalDisplayModes,
+    title: String,
+    recover_display_failure: bool,
+    recover_display_count: usize,
     log: Arc<Mutex<Vec<String>>>,
 }
 
@@ -361,16 +438,32 @@ pub struct FakeEngine {
 
 impl FakeEngine {
     pub fn new(log: Arc<Mutex<Vec<String>>>) -> (Self, EngineProbe) {
-        Self::with_generation(log, false)
+        Self::with_options(log, false, TerminalDisplayModes::default(), false)
     }
 
     pub fn fixed_generation(log: Arc<Mutex<Vec<String>>>) -> (Self, EngineProbe) {
-        Self::with_generation(log, true)
+        Self::with_options(log, true, TerminalDisplayModes::default(), false)
     }
 
-    fn with_generation(
+    pub fn with_display_modes(
+        log: Arc<Mutex<Vec<String>>>,
+        display_modes: TerminalDisplayModes,
+    ) -> (Self, EngineProbe) {
+        Self::with_options(log, false, display_modes, false)
+    }
+
+    pub fn with_recovery_failure(
+        log: Arc<Mutex<Vec<String>>>,
+        display_modes: TerminalDisplayModes,
+    ) -> (Self, EngineProbe) {
+        Self::with_options(log, false, display_modes, true)
+    }
+
+    fn with_options(
         log: Arc<Mutex<Vec<String>>>,
         fixed_generation: bool,
+        display_modes: TerminalDisplayModes,
+        recover_display_failure: bool,
     ) -> (Self, EngineProbe) {
         let state = Arc::new(Mutex::new(EngineState {
             bytes: Vec::new(),
@@ -378,6 +471,14 @@ impl FakeEngine {
             generation: 0,
             fixed_generation,
             size: size(),
+            display_modes,
+            title: if display_modes.stale_title {
+                "stale".to_owned()
+            } else {
+                "fake".to_owned()
+            },
+            recover_display_failure,
+            recover_display_count: 0,
             log,
         }));
         (
@@ -390,6 +491,27 @@ impl FakeEngine {
 }
 
 impl TerminalEngine for FakeEngine {
+    fn display_modes(&self) -> TerminalDisplayModes {
+        lock(&self.state).display_modes
+    }
+
+    fn recover_display(&mut self) -> Result<DisplayRecovery, EngineError> {
+        let mut state = lock(&self.state);
+        lock(&state.log).push("engine:recover_display".to_owned());
+        state.recover_display_count += 1;
+        if state.recover_display_failure {
+            return Err(EngineError::UnsupportedInput("fake display recovery"));
+        }
+        let before = state.display_modes;
+        state.display_modes = TerminalDisplayModes::default();
+        state.title = "rsHell".to_owned();
+        Ok(DisplayRecovery {
+            before,
+            after: TerminalDisplayModes::default(),
+            changed: before.has_residue(),
+        })
+    }
+
     fn advance(&mut self, bytes: &[u8]) -> Result<EngineDelta, EngineError> {
         lock(&self.state).bytes.extend_from_slice(bytes);
         Ok(EngineDelta {
@@ -438,9 +560,10 @@ impl TerminalEngine for FakeEngine {
                 cells: Arc::from([cell]),
             }]),
             cursor: None::<RenderCursor>,
-            title: "fake".to_owned(),
-            alternate_screen: false,
-            mouse_reporting: false,
+            title: state.title.clone(),
+            display_modes: state.display_modes,
+            alternate_screen: state.display_modes.alternate_screen,
+            mouse_reporting: state.display_modes.mouse_reporting,
         }))
     }
 
@@ -497,6 +620,29 @@ pub fn launch(probe: &FactoryProbe) -> (SessionLaunch, EngineProbe) {
 
 pub fn launch_fixed_generation(probe: &FactoryProbe) -> (SessionLaunch, EngineProbe) {
     let (engine, engine_probe) = FakeEngine::fixed_generation(probe.shared_log());
+    (
+        SessionLaunch::new(TransportRequest::new(size()), Box::new(engine)),
+        engine_probe,
+    )
+}
+
+pub fn launch_with_display_modes(
+    probe: &FactoryProbe,
+    display_modes: TerminalDisplayModes,
+) -> (SessionLaunch, EngineProbe) {
+    let (engine, engine_probe) = FakeEngine::with_display_modes(probe.shared_log(), display_modes);
+    (
+        SessionLaunch::new(TransportRequest::new(size()), Box::new(engine)),
+        engine_probe,
+    )
+}
+
+pub fn launch_with_recovery_failure(
+    probe: &FactoryProbe,
+    display_modes: TerminalDisplayModes,
+) -> (SessionLaunch, EngineProbe) {
+    let (engine, engine_probe) =
+        FakeEngine::with_recovery_failure(probe.shared_log(), display_modes);
     (
         SessionLaunch::new(TransportRequest::new(size()), Box::new(engine)),
         engine_probe,

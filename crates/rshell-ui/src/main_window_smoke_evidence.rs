@@ -43,6 +43,7 @@ impl MainWindow {
             generation,
             latest_frame.as_deref(),
         );
+        self.observe_smoke_recovery_command(*session, command, generation);
         match command {
             SessionUiCommand::Resize(size) => {
                 self.observe_smoke_resize_command(*session, *size, generation);
@@ -96,6 +97,7 @@ impl MainWindow {
         session: SessionId,
         event: &SessionUiEvent,
     ) {
+        self.observe_smoke_recovery_event(session, event);
         match event {
             SessionUiEvent::Frame(frame) => self.observe_smoke_frame(session, frame),
             SessionUiEvent::Search(matches) => {
@@ -150,6 +152,7 @@ impl MainWindow {
     }
 
     fn observe_smoke_frame(&mut self, session: SessionId, frame: &RenderFrame) {
+        self.observe_smoke_recovery_frame(session, frame);
         self.observe_smoke_terminal_effect_frame(session, frame);
         self.observe_smoke_resize_frame(session, frame);
         self.observe_smoke_tui_frame(session, frame);

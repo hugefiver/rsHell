@@ -95,8 +95,9 @@ impl SessionPort for SessionPortAdapter {
         session: SessionId,
         command: SessionUiCommand,
     ) -> Result<(), SessionFailure> {
+        let command = map_command(command);
         self.manager
-            .command(session, map_command(command))
+            .command(session, command)
             .map_err(map_session_error)
     }
 
@@ -158,6 +159,8 @@ fn binding(mut client: SessionClient) -> SessionBinding {
 
 fn map_command(command: SessionUiCommand) -> SessionCommand {
     match command {
+        SessionUiCommand::Interrupt => SessionCommand::Interrupt,
+        SessionUiCommand::ResetDisplay => SessionCommand::ResetDisplay,
         SessionUiCommand::Input(value) => SessionCommand::Input(value),
         SessionUiCommand::Mouse(value) => SessionCommand::Mouse(value),
         SessionUiCommand::Paste(value) => SessionCommand::Paste(value),
@@ -180,6 +183,7 @@ fn map_event(event: SessionEvent) -> SessionUiEvent {
     match event {
         SessionEvent::StateChanged(value) => SessionUiEvent::State(value),
         SessionEvent::FrameReady(value) => SessionUiEvent::Frame(value),
+        SessionEvent::RecoveryChanged(value) => SessionUiEvent::RecoveryChanged(value),
         SessionEvent::SearchCompleted(value) => SessionUiEvent::Search(value),
         SessionEvent::CopyReady(value) => SessionUiEvent::Copy(value),
         SessionEvent::InteractionRequired(value) => SessionUiEvent::InteractionRequired(value),

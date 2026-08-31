@@ -4,6 +4,7 @@ use crate::{
     SmokeConnectionField, TerminalViewMsg,
     main_window_smoke_input::{smoke_terminal_messages, split_smoke_terminal_submission},
 };
+use gtk::gdk;
 
 impl MainWindow {
     pub(crate) fn route_smoke_action(&mut self, action: SmokeAction) -> Result<bool, &'static str> {
@@ -157,7 +158,9 @@ impl MainWindow {
                 self.prepare_smoke_reconnect()?;
                 self.send_active_pane_action(PaneAction::Reconnect)?;
             }
-            SmokeAction::VisualCheckpoint => return self.route_visual_checkpoint(),
+            SmokeAction::VisualCheckpoint(checkpoint) => {
+                return self.route_visual_checkpoint(checkpoint);
+            }
             SmokeAction::PreviewImport {
                 source,
                 path,
@@ -169,6 +172,16 @@ impl MainWindow {
             SmokeAction::CommitImport => self.send_import(ImportDialogMsg::Commit),
             SmokeAction::CancelImport => self.send_import(ImportDialogMsg::Close),
             SmokeAction::CloseAll => return self.route_smoke_close_all(),
+            SmokeAction::InterruptTerminal => self.send_terminal(TerminalViewMsg::Key {
+                key: gdk::Key::c,
+                state: gdk::ModifierType::CONTROL_MASK,
+            }),
+            SmokeAction::ResetDisplay => self.send_active_pane_action(PaneAction::ResetDisplay)?,
+            SmokeAction::ResizeWindow {
+                width,
+                height,
+                expected_mode,
+            } => self.route_smoke_window_resize(width, height, expected_mode)?,
             SmokeAction::WaitWindowRealized | SmokeAction::WaitFrameContains(_) => {
                 return Err("wait_action_routed");
             }

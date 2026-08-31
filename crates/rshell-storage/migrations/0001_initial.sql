@@ -65,7 +65,7 @@ CREATE INDEX idx_connection_tags_tag ON connection_tags(tag, connection_id);
 INSERT INTO terminal_profiles(id, name, settings_json) VALUES(
     '00000000-0000-0000-0000-000000000001',
     'Default',
-    '{"version":1,"terminal_type":"xterm-256color","initial_cols":120,"initial_rows":36,"scrollback_lines":6000,"font_family":"Monospace","font_size":15.0,"color_scheme":"default","key_bindings":[],"left_alt_as_meta":true,"right_alt_as_meta":true,"enable_csi_u":false,"enable_kitty_keyboard":false,"mouse_reporting":true,"scroll_on_output":true,"scroll_on_keypress":false,"answerback":"rsHell"}'
+    '{"version":1,"terminal_type":"xterm-256color","initial_cols":120,"initial_rows":36,"scrollback_lines":6000,"font_family":"Cascadia Mono","font_size":15.0,"color_scheme":"default","key_bindings":[],"left_alt_as_meta":true,"right_alt_as_meta":true,"enable_csi_u":false,"enable_kitty_keyboard":false,"mouse_reporting":true,"scroll_on_output":true,"scroll_on_keypress":false,"answerback":"rsHell"}'
 );
 
 INSERT INTO app_settings(singleton, default_terminal_profile, color_scheme, key_bindings_json)

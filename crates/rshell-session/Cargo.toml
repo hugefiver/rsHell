@@ -48,6 +48,18 @@ path = "tests/fixtures/p0_tui.rs"
 test = false
 bench = false
 
+[[bin]]
+name = "rshell-interrupt-tui"
+path = "tests/fixtures/interrupt_tui.rs"
+test = false
+bench = false
+
+[[bin]]
+name = "rshell-p0-shell"
+path = "tests/fixtures/p0_shell.rs"
+test = false
+bench = false
+
 [[bench]]
 name = "terminal_engine"
 harness = false

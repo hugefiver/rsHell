@@ -1,5 +1,7 @@
 use crate::ProductIcon;
 
+pub(crate) const VIEWBOX_SIZE: f64 = 16.0;
+
 #[derive(Clone, Copy)]
 pub(crate) enum VectorOp {
     MoveTo(f64, f64),
@@ -187,6 +189,22 @@ const HOST_TRUST: &[VectorOp] = &[
     VectorOp::LineTo(7.5, 9.5),
     VectorOp::LineTo(10.5, 6.5),
 ];
+const MORE: &[VectorOp] = &[
+    VectorOp::MoveTo(4.0, 8.0),
+    VectorOp::LineTo(4.01, 8.0),
+    VectorOp::MoveTo(8.0, 8.0),
+    VectorOp::LineTo(8.01, 8.0),
+    VectorOp::MoveTo(12.0, 8.0),
+    VectorOp::LineTo(12.01, 8.0),
+];
+const NAVIGATION: &[VectorOp] = &[
+    VectorOp::MoveTo(3.0, 4.0),
+    VectorOp::LineTo(13.0, 4.0),
+    VectorOp::MoveTo(3.0, 8.0),
+    VectorOp::LineTo(13.0, 8.0),
+    VectorOp::MoveTo(3.0, 12.0),
+    VectorOp::LineTo(13.0, 12.0),
+];
 
 pub(crate) fn operations(icon: ProductIcon) -> &'static [VectorOp] {
     match icon {
@@ -206,5 +224,7 @@ pub(crate) fn operations(icon: ProductIcon) -> &'static [VectorOp] {
         ProductIcon::Warning => WARNING,
         ProductIcon::SecretPresent => SECRET_PRESENT,
         ProductIcon::HostTrust => HOST_TRUST,
+        ProductIcon::More => MORE,
+        ProductIcon::Navigation => NAVIGATION,
     }
 }

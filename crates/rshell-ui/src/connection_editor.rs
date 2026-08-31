@@ -31,7 +31,6 @@ impl SimpleComponent for ConnectionEditor {
         let root = gtk::Box::new(gtk::Orientation::Vertical, 0);
         root.add_css_class("editor-dialog");
         root.add_css_class("content-dialog");
-        root.set_width_request(560);
         root.set_visible(false);
         root
     }
@@ -164,6 +163,9 @@ impl SimpleComponent for ConnectionEditor {
     }
 
     fn update_view(&self, widgets: &mut Self::Widgets, _sender: ComponentSender<Self>) {
+        if self.draft.is_none() && widgets.root.is_visible() {
+            widgets.park_focus();
+        }
         let root = widgets.root.clone();
         self.render(&root, widgets);
     }

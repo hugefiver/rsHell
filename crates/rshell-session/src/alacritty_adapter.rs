@@ -1,17 +1,12 @@
-use alacritty_terminal::{
-    Term,
-    grid::Dimensions,
-    index::Line,
-    term::{Config, TermMode},
-    vte::ansi::Processor,
-};
+use alacritty_terminal::{Term, grid::Dimensions, index::Line, term::Config, vte::ansi::Processor};
 use rshell_core::{
     KeyCode, KeyModifiers, ResolvedTerminalProfile, TerminalMouseEvent, TerminalSize,
+    render::{DisplayRecovery, TerminalDisplayModes},
 };
 
 use crate::{
-    EngineError, ViewportBounds, alacritty_event::EventSink, alacritty_feed, alacritty_key,
-    alacritty_mouse, alacritty_primary_rows::PrimaryRows, alacritty_tracker,
+    EngineError, ViewportBounds, alacritty_display, alacritty_event::EventSink, alacritty_feed,
+    alacritty_key, alacritty_mouse, alacritty_primary_rows::PrimaryRows, alacritty_tracker,
 };
 
 pub(crate) struct AlacrittyAdapter {
@@ -55,11 +50,19 @@ impl AlacrittyAdapter {
     }
 
     pub(crate) fn mouse_reporting_active(&self) -> bool {
-        self.settings.mouse_reporting && self.terminal.mode().intersects(TermMode::MOUSE_MODE)
+        self.settings.mouse_reporting && self.display_modes().mouse_reporting
     }
 
     pub(crate) fn alternate_screen(&self) -> bool {
-        self.terminal.mode().contains(TermMode::ALT_SCREEN)
+        self.display_modes().alternate_screen
+    }
+
+    pub(crate) fn display_modes(&self) -> TerminalDisplayModes {
+        alacritty_display::modes(&self.terminal, &self.events)
+    }
+
+    pub(crate) fn recover_display(&mut self) -> DisplayRecovery {
+        alacritty_display::recover(&mut self.terminal, &self.events, &self.settings)
     }
 
     pub(crate) fn origin(&self) -> i64 {

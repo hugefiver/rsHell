@@ -4,9 +4,10 @@ use std::{path::PathBuf, sync::Arc, time::Duration};
 
 use rshell_core::{
     AppError, AppEvent, AppFailureCategory, ApplicationService, AuthenticationKind,
-    CatalogMutation, ConnectionProfile, CredentialOperationError, CredentialRef, ImportSourceKind,
-    InteractionId, InteractionRequest, InteractionResponse, RecoveryAction, RenderFrame, RenderRow,
-    RepositoryError, SessionFailure, SessionState, SessionUiCommand, SessionUiEvent, SplitAxis,
+    CatalogMutation, ConnectionProfile, CredentialOperationError, CredentialRef,
+    DisplayRecoveryNotice, ExitStatus, ImportSourceKind, InteractionId, InteractionRequest,
+    InteractionResponse, RecoveryAction, RenderFrame, RenderRow, RepositoryError, SessionFailure,
+    SessionState, SessionUiCommand, SessionUiEvent, SplitAxis, TerminalDisplayModes,
     TerminalProfile, TerminalSize, TransportKind, UI_COMMAND_CAPACITY, UiCommand, UiPortError,
     VaultFailure,
 };
@@ -416,6 +417,7 @@ async fn session_binding_forwards_events_latest_frame_and_interaction_to_same_ac
         rows: Vec::<RenderRow>::new().into(),
         cursor: None,
         title: "test".into(),
+        display_modes: Default::default(),
         alternate_screen: false,
         mouse_reporting: false,
     });
@@ -945,6 +947,7 @@ async fn replaced_and_closed_sessions_drop_their_binding_forwarders() {
         rows: Vec::<RenderRow>::new().into(),
         cursor: None,
         title: "old".into(),
+        display_modes: Default::default(),
         alternate_screen: false,
         mouse_reporting: false,
     });
@@ -989,6 +992,253 @@ async fn replaced_and_closed_sessions_drop_their_binding_forwarders() {
     .await
     .expect("closed session bridge remained open");
     app.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn recovery_notice_is_bound_to_current_session() {
+    fn frame(generation: u64) -> Arc<RenderFrame> {
+        Arc::new(RenderFrame {
+            generation,
+            size: TerminalSize {
+                cols: 80,
+                rows: 24,
+                pixel_width: 0,
+                pixel_height: 0,
+                dpi: 96,
+            },
+            viewport_top: 0,
+            rows: Vec::<RenderRow>::new().into(),
+            cursor: None,
+            title: format!("frame-{generation}"),
+            display_modes: Default::default(),
+            alternate_screen: false,
+            mouse_reporting: false,
+        })
+    }
+
+    let notice = DisplayRecoveryNotice {
+        interrupted_generation: 6,
+        observed_generation: 7,
+        modes: TerminalDisplayModes {
+            alternate_screen: true,
+            ..Default::default()
+        },
+    };
+    let bootstrap = bootstrap_state();
+    let ports = RecordingPorts::new(&bootstrap);
+    let app = ApplicationService::start(ports.dependencies(), bootstrap)
+        .await
+        .unwrap();
+    let events = app.event_receiver();
+    let tab = &app.initial_view_model().workspace.tabs[0];
+    let pane = tab.active_pane;
+    let original = tab.pane_tree.session_id(pane).unwrap().unwrap();
+
+    ports.send_frame(original, frame(7));
+    recv_matching(&events, |event| {
+        matches!(
+            event,
+            AppEvent::Session {
+                session,
+                event: SessionUiEvent::Frame(frame),
+            } if *session == original && frame.generation == 7
+        )
+    })
+    .await;
+    let mut view = app.view_stream();
+    ports.send_frame(original, frame(6));
+    match timeout(Duration::from_secs(2), view.changed()).await {
+        Ok(Some(updated)) => assert_eq!(updated.latest_frames[&original].generation, 7),
+        Ok(None) => panic!("view stream closed while filtering stale frames"),
+        Err(_) => assert_eq!(app.view_model().latest_frames[&original].generation, 7),
+    }
+
+    ports.send_session_event(original, SessionUiEvent::RecoveryChanged(Some(notice)));
+    let added = recv_matching(&events, |event| {
+        matches!(
+            event,
+            AppEvent::Session {
+                session,
+                event: SessionUiEvent::RecoveryChanged(Some(current)),
+            } if *session == original && *current == notice
+        )
+    })
+    .await;
+    assert!(matches!(
+        added,
+        AppEvent::Session {
+            session,
+            event: SessionUiEvent::RecoveryChanged(Some(current)),
+        } if session == original && current == notice
+    ));
+    assert_eq!(
+        app.view_model().display_recovery.get(&original),
+        Some(&notice)
+    );
+
+    ports.send_session_event(original, SessionUiEvent::RecoveryChanged(None));
+    recv_matching(&events, |event| {
+        matches!(
+            event,
+            AppEvent::Session {
+                session,
+                event: SessionUiEvent::RecoveryChanged(None),
+            } if *session == original
+        )
+    })
+    .await;
+    assert!(!app.view_model().display_recovery.contains_key(&original));
+
+    ports.send_session_event(original, SessionUiEvent::RecoveryChanged(Some(notice)));
+    recv_matching(&events, |event| {
+        matches!(
+            event,
+            AppEvent::Session {
+                session,
+                event: SessionUiEvent::RecoveryChanged(Some(current)),
+            } if *session == original && *current == notice
+        )
+    })
+    .await;
+    let stale_notice = DisplayRecoveryNotice {
+        observed_generation: 8,
+        ..notice
+    };
+    ports.send_session_event(
+        original,
+        SessionUiEvent::RecoveryChanged(Some(stale_notice)),
+    );
+    app.ui_port().try_send(UiCommand::RetryPane(pane)).unwrap();
+    let replacement_workspace = recv_matching(&events, |event| {
+        matches!(event, AppEvent::WorkspaceChanged(_))
+    })
+    .await;
+    let AppEvent::WorkspaceChanged(replacement_workspace) = replacement_workspace else {
+        unreachable!()
+    };
+    let replacement = replacement_workspace.tabs[0]
+        .pane_tree
+        .session_id(pane)
+        .unwrap()
+        .unwrap();
+    timeout(
+        Duration::from_secs(2),
+        ports.wait_for_binding_closed(original),
+    )
+    .await
+    .expect("replaced session bridge remained open");
+    let replacement_view = app.view_model();
+    assert_ne!(replacement, original);
+    assert!(!replacement_view.display_recovery.contains_key(&original));
+    assert!(!replacement_view.display_recovery.contains_key(&replacement));
+    assert!(!replacement_view.latest_frames.contains_key(&original));
+
+    ports.send_session_event(replacement, SessionUiEvent::RecoveryChanged(Some(notice)));
+    recv_matching(&events, |event| {
+        matches!(
+            event,
+            AppEvent::Session {
+                session,
+                event: SessionUiEvent::RecoveryChanged(Some(current)),
+            } if *session == replacement && *current == notice
+        )
+    })
+    .await;
+    assert_eq!(
+        app.view_model().display_recovery.get(&replacement),
+        Some(&notice)
+    );
+    app.ui_port()
+        .try_send(UiCommand::CloseTab(replacement_workspace.tabs[0].id))
+        .unwrap();
+    recv_matching(
+        &events,
+        |event| matches!(event, AppEvent::WorkspaceChanged(workspace) if workspace.tabs.is_empty()),
+    )
+    .await;
+    assert!(app.view_model().display_recovery.is_empty());
+    app.shutdown().await.unwrap();
+
+    for (completion, expected_state, expected_error) in [
+        (
+            SessionUiEvent::Exited(ExitStatus {
+                code: Some(0),
+                success: true,
+            }),
+            SessionState::Exited,
+            None,
+        ),
+        (
+            SessionUiEvent::Failed(SessionFailure::Network),
+            SessionState::Failed,
+            Some(SessionFailure::Network),
+        ),
+        (
+            SessionUiEvent::Crashed("diagnostic-secret".into()),
+            SessionState::Crashed,
+            Some(SessionFailure::Crashed),
+        ),
+    ] {
+        let bootstrap = bootstrap_state();
+        let ports = RecordingPorts::new(&bootstrap);
+        let app = ApplicationService::start(ports.dependencies(), bootstrap)
+            .await
+            .unwrap();
+        let events = app.event_receiver();
+        let session = ports.latest_session();
+
+        ports.send_frame(session, frame(7));
+        recv_matching(&events, |event| {
+            matches!(
+                event,
+                AppEvent::Session {
+                    session: event_session,
+                    event: SessionUiEvent::Frame(frame),
+                } if *event_session == session && frame.generation == 7
+            )
+        })
+        .await;
+        ports.send_session_event(session, SessionUiEvent::RecoveryChanged(Some(notice)));
+        recv_matching(&events, |event| {
+            matches!(
+                event,
+                AppEvent::Session {
+                    session: event_session,
+                    event: SessionUiEvent::RecoveryChanged(Some(current)),
+                } if *event_session == session && *current == notice
+            )
+        })
+        .await;
+        ports.send_session_event(session, completion);
+        recv_matching(&events, |event| {
+            matches!(
+                event,
+                AppEvent::Session {
+                    session: event_session,
+                    event: SessionUiEvent::Exited(_)
+                        | SessionUiEvent::Failed(_)
+                        | SessionUiEvent::Crashed(_),
+                } if *event_session == session
+            )
+        })
+        .await;
+        timeout(
+            Duration::from_secs(2),
+            ports.wait_for_binding_closed(session),
+        )
+        .await
+        .expect("completed session bridge remained open");
+
+        let view = app.view_model();
+        assert!(!view.display_recovery.contains_key(&session));
+        assert!(!view.latest_frames.contains_key(&session));
+        assert_eq!(view.session_states.get(&session), Some(&expected_state));
+        assert_eq!(
+            view.error_panes.get(&session).map(|pane| pane.failure),
+            expected_error
+        );
+        app.shutdown().await.unwrap();
+    }
 }
 
 #[tokio::test]

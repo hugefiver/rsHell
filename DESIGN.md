@@ -1,25 +1,45 @@
 # rsHell Design System
 
-## 0. Task21 Fluent shell authority
+## 0. Terminal recovery authority
 
-This document records the current implemented visual system. For the Task21 change, `docs/superpowers/specs/2026-08-24-fluent-task21-design.md` is the source of truth; this file mirrors that approved design and no longer authorizes adaptive GNOME HeaderBar chrome.
+This document is the current product design authority. It mirrors the approved
+`docs/superpowers/specs/2026-08-28-terminal-hidpi-ui-recovery-design.md` and
+supersedes the Task21-only authority. The existing Task21 widget selectors stay
+valid until their components migrate to the adaptive composition.
 
-The design was derived from the existing GTK4/Relm4 application, `resources/style.css`, and the realized Windows Task20 screenshot. The framework remains GTK4/Relm4 so the product stays native and cross-platform; the product-owned shell is now a unified Windows Terminal Dark / Fluent 2 presentation rather than a GTK-theme-dependent light shell around a dark terminal.
+rsHell remains a native GTK4/Relm4 terminal-first SSH workspace. This authority
+makes no framework or security change: SSH authentication, host-key handling,
+credential storage, journaling, import, reconnect, and secret-redaction
+semantics remain unchanged.
 
 ## 1. Identity and tokens
 
-rsHell is a dense operations console. Connection identity, session state, and terminal content remain dominant. Depth comes from opaque tonal layers and one-pixel boundaries, not cards or decorative effects.
+Terminal content, connection identity, and session state dominate. Depth comes
+from opaque Fluent dark tonal layers and boundaries, never floating cards.
 
 | Token | Value |
 |---|---|
-| font-ui | `"Segoe UI", system-ui, sans-serif` |
-| font-terminal | `"Cascadia Mono", "JetBrains Mono", "Consolas", monospace` |
-| surface-shell | opaque Fluent dark neutral |
+| font-ui | `"Segoe UI Variable Text", "Segoe UI Variable", "Segoe UI", system-ui, sans-serif` |
+| font-terminal | `"Cascadia Mono", "Microsoft YaHei UI", "Segoe UI Emoji", "Consolas", monospace` |
+| type-root | 15 logical px |
+| type-secondary | 14 logical px |
+| type-control | 15 logical px |
+| type-dialog-title | 18 logical px |
+| line-body | 22 logical px minimum |
+| line-control | 36 logical px minimum |
+| terminal-line-spacing | 2 logical px |
+| spacing-unit | 4 logical px |
+| border-exception | 2 logical px |
+| navigation-compact | 48 logical px |
+| navigation-standard | 260 logical px |
+| navigation-wide-max | 280 logical px |
+| surface-shell | `#202020` |
 | surface-command | `#202020` |
 | surface-sidebar | `#202020` |
 | surface-control | `#2b2b2b` |
 | surface-control-hover | `#333333` |
 | surface-overlay | `#2b2b2b` |
+| surface-scrim | `#121212` |
 | surface-tab | `#1e1e1e` |
 | surface-terminal | `#1a1a1a` |
 | content-primary | `#f5f5f5` |
@@ -31,6 +51,8 @@ rsHell is a dense operations console. Connection identity, session state, and te
 | accent-hover | `#78d6ff` |
 | accent-active | `#4ab5e6` |
 | accent-content | `#002b40` |
+| semantic-error | `#ff99a4` |
+| semantic-success | `#6ccb8e` |
 | control-radius | 4px |
 | overlay-radius | 8px |
 | focus-width | 2px |
@@ -38,96 +60,148 @@ rsHell is a dense operations console. Connection identity, session state, and te
 | motion-standard | 100ms |
 | motion-focus | 120ms |
 
-Semantic danger, warning, and success colors must always be paired with visible text or an accessible name. Accent is reserved for focus, selection, current state, and primary action.
+Application chrome, commands, tabs, and primary rows use the 15px root size.
+Secondary metadata never falls below 14px; entries, menus, and dialog actions
+use 15px, while modal titles use 18px with a distinct 15px section hierarchy.
+Connection identity uses weight rather than oversized type. Controls provide at
+least a 36px readable line box. Spacing and modal composition follow a 4px
+rhythm; 2px is reserved for terminal line separation, borders, separators, and
+focus treatment rather than general layout spacing.
 
-## 2. Typography
+## 2. Safe interrupt and recovery
 
-- Application chrome prefers Segoe UI and falls back to the active system sans-serif face.
-- Terminal content prefers Cascadia Mono, then JetBrains Mono, Consolas, and the platform monospace face.
-- Primary chrome and row text is 13px; input text is 14px; metadata and overlines are 11px; status text is 12px.
-- Connection names use weight 600 rather than increased size. Required instructions and errors never rely on 11px metadata text.
+Unmodified Ctrl+C is a safety interrupt and sends exactly one ETX byte (`03`),
+independent of Kitty or CSI-u negotiation. Ctrl+Shift+C remains copy. Sending an
+interrupt never automatically resets a surviving application: a TUI that
+catches ETX must remain active, alternate, and usable.
 
-## 3. Geometry and layout
+If the next authoritative frame from that surviving session still has display
+residue, the pane shows the exact non-secret status `Display mode not restored`
+with an accessible Reset display action. Recovery returns to primary screen and
+clears enhanced keyboard, mouse reporting, application cursor, hidden cursor,
+and stale title while preserving primary text and scrollback.
 
-- Default requested window size is **1360×860**. Smoke evidence reports the actual realized size instead of assuming the request was honored.
-- The sidebar starts at **232px**, remains resizable, and indents nested groups by 12px per level.
-- Spacing follows a dense 2px base grid: 2, 4, 6, 8, 10, 12, 14, and 20px roles.
-- Standard controls use a 4px radius. ContentDialog and popover surfaces use an 8px radius.
-- Fields and primary dialog actions have a 30px minimum height. Compact icon controls use 22–28px geometry.
-- Focus is a visible 2px cyan outline or underline with sufficient contrast.
-- Native window decorations remain enabled. The product shell begins with a custom in-content command bar; it does not replace the operating system title bar.
+Session exit, failure, crash, disconnect, and reconnect from the old transport
+recover automatically before publishing their terminal state. Terminal,
+recovery notice, and disconnected state are mutually exclusive pane layers;
+detached terminal controllers receive no further presentation updates.
 
-## 4. Shell architecture
+## 3. Measured terminal geometry and HiDPI
 
-### Command bar
+Terminal geometry comes from one absolute logical-pixel Pango font description
+resolved on the GTK main thread and carried unchanged into PangoCairo drawing.
+Cell width is the ceiling of the larger monospace approximate width, measured
+ASCII advance, and scale-aware representative ink width per protocol column.
+Cell height is the ceiling of ascent plus descent or representative ink height,
+plus `terminal-line-spacing`. No point/device-DPI reinterpretation and no
+product 9×18 fallback is authorized.
 
-The top in-content command bar carries product identity, global import and settings actions, and concise application status. It uses product-owned accessible icons and never duplicates command dispatch. All commands continue through `command_port::dispatch` and `UiCommandPort::try_send`.
+One measured value drives rendering, cursor, selection, hit-testing, IME,
+rows/columns, PTY pixel dimensions, and DPI. Wide cells occupy exactly two grid
+cells; fallback glyph advance never changes column identity. Font, effective
+scale/DPI, and rendering identity invalidate the metric without recreating the
+session or emitting a duplicate unchanged resize.
 
-### Navigation sidebar
+Product icons remain source-controlled SVG/internal vectors. GTK allocates the
+logical icon size while rendering and caching by icon, backend, and effective
+physical size; no external payload is introduced.
 
-The left pane follows a compact NavigationView pattern: section title, search, a small action row, grouped connection rows, and explicit confirmation/error states. Rows are transparent at rest, gain a tonal hover state, and use an accent edge plus tonal fill when selected. Connection data is not presented as cards.
+## 4. Adaptive terminal-first shell
 
-### Session tabs and pane command row
+Layout follows the main window's realized logical allocation and reparents
+existing controllers without recreating reducer or session state.
 
-The tab strip follows Windows Terminal geometry: dark continuous rail, compact tabs, clear selected accent, product-owned close action, and a dedicated new-tab action. Tabs remain core-confirmed; no optimistic tab insertion is allowed.
+| Mode | Width | Navigation and terminal behavior |
+|---|---:|---|
+| Compact | `< 900` | 48px navigation rail; connection drawer; icon global actions; pane-action overflow. |
+| Standard | `900–1439` | 240px resizable sidebar; compact text/icon actions; terminal owns remaining width. |
+| Wide | `>= 1440` | Sidebar may grow to 280px; forms stay capped; terminal receives extra width. |
 
-Each terminal leaf uses a compact pane command row for state, split, reconnect, copy diagnostics, edit, and close. `PaneTree` projection, actor ownership, shutdown-before-collapse, and retry semantics are unchanged.
+Crossing a breakpoint preserves the active tab, focused pane, live sessions,
+search, selection, and unsaved editor draft. The native title bar alone owns
+the product name. The in-content command bar presents New session, Import,
+Settings, and concise workspace status without duplicate identity. Session
+state belongs to tabs and pane rows rather than a permanent global status strip.
 
-### Terminal
+## 5. Navigation, tabs, panes, and overflow
 
-The terminal canvas remains `#1a1a1a`, renders only immutable `Arc<RenderFrame>` values, and preserves search, selection, cursor, mouse, resize, IME, and clipboard behavior. Chrome must not access engine, storage, or session internals from the draw path.
+Navigation uses readable text and icons in Standard/Wide and accessible icons
+plus a drawer in Compact. Connection rows are tonal list rows, not cards.
 
-### ContentDialog overlays
-
-Connection editor, settings, import, and secure interaction surfaces use opaque Fluent ContentDialog-style tonal surfaces inside the existing GTK overlay architecture. They use an 8px boundary, grouped fields, persistent labels, adjacent errors, and a clear primary/secondary action row. They remain real GTK controls rather than custom-drawn form widgets.
-
-## 5. Component state requirements
+Tabs use a horizontal scroller, automatically reveal the active tab, and expose
+an accessible overflow list. At least twenty tabs remain keyboard reachable.
+Pane actions use priority groups: split, reconnect/retry, and close remain
+visible where space allows; diagnostics and edit move to pane-action overflow.
+All supported split trees retain non-zero terminal allocations in every mode.
 
 | Surface | Required states |
 |---|---|
-| Command bar | default, hover, pressed, keyboard focus, disabled, command rejection |
-| Sidebar search/actions | empty, populated, no results, hover, focus, disabled, send error |
-| Group and connection rows | default, hover, selected, focused, keyboard activation, metadata, empty group |
-| Session tabs | inactive, hover, active, focus, close hover/focus, rejected command |
-| Pane surfaces | pending, connecting, host-key wait, auth wait, connected, reconnecting, closing, exited, failed, crashed, unavailable |
+| Command and navigation actions | default, hover, pressed, keyboard focus, disabled, rejected |
+| Connection rows | default, hover, selected, focused, empty, error |
+| Session tabs and overflow | inactive, hover, active, focus, close, disabled, rejected |
+| Pane actions and recovery notice | default, hover, focus, pressed, disabled, pending, success, error |
 | Fields | default, focus, populated, disabled, invalid, inherited, explicit override |
-| Import | source selection, preview, disabled wildcard, warning, secret-present marker, pending, result, retry, cancel |
-| Secure interaction | unknown key, changed key, password, passphrase, keyboard-interactive, pending, rejected, retry |
+| Import and secure interaction | pending, warning, success, rejected, retry, cancel |
 
-Every icon-only action has an accessible name and tooltip. Every state has text or native semantics; color and motion are never the only signal.
+Every icon-only action has a non-empty accessible name and tooltip. State text
+or native semantics accompanies color and motion.
 
-## 6. Motion and interaction
+## 6. Modal behavior
 
-- `motion-fast` 80ms: row hover, close/destructive hover, small state acknowledgement.
-- `motion-standard` 100ms: command, sidebar, tab, and pane-control background/content changes.
-- `motion-focus` 120ms: focus border/outline and field boundary changes.
-- Motion honors `gtk-enable-animations`, never delays dispatch, and never conveys required information by itself.
-- Keyboard activation remains native. Ctrl+Enter saves the connection editor; Escape closes or cancels the active overlay; Enter submits only when the corresponding reducer permits it.
-- Secret input is cleared from GTK and reducer buffers immediately after submit/cancel and is never restored from public state.
+Connection editor, Settings, Import, and secure Interaction share the main GTK
+overlay. Each uses an opaque `.modal-scrim` and has a max width of `min(680px, window width - 48px)`.
+The header and footer remain fixed while the
+body scrolls; grouped fields do not stretch merely because the window is Wide.
 
-## 7. Depth and exclusions
+Opening a modal makes background widgets insensitive, moves focus to an
+intentional first control, contains Tab order, supports Escape cancel, and
+returns focus to the trigger. Errors remain adjacent to their field or action.
+The controls remain native GTK widgets, not custom-painted form controls.
 
-Depth is borders-first and tonal. The following are explicitly absent:
+## 7. Motion and interaction
 
-- Mica, acrylic, backdrop blur, or fake translucency;
-- gradients or decorative filters;
-- drop shadows and floating card stacks;
-- emoji used as icons;
-- platform-specific title-bar APIs;
-- browser or web-UI infrastructure.
+- `motion-fast` 80ms covers hover and immediate acknowledgements.
+- `motion-standard` 100ms covers command, navigation, tab, and pane changes.
+- `motion-focus` 120ms covers focus and field-boundary changes.
+- No other duration is authorized. Motion honors `gtk-enable-animations`, never
+  delays dispatch, and never changes sensitivity after input.
+- Keyboard activation remains native. Ctrl+Enter saves where the reducer allows;
+  Escape closes the active overlay; Enter submits only an enabled action.
 
-Product icons are source-controlled monochrome SVGs compiled into the binary. They use `currentColor`, contain no external references, scripts, fonts, animation, raster payloads, gradients, or filters. Missing SVG-loader support selects the compiled internal-vector backend; malformed assets remain hard errors rather than silently falling back.
+## 8. Contrast, depth, and exclusions
 
-## 8. Accessibility and evidence
+Primary operational text must maintain at least 4.5:1 contrast at its rendered
+size; focus treatment and non-text state boundaries maintain at least 3:1.
+Operational labels use explicit foreground tokens rather than 40–50% opacity.
+Semantic colors are paired with visible text or an accessible name.
 
-- Follow WCAG 2.2 AA principles where GTK exposes equivalent native semantics.
-- Native controls retain roles, keyboard navigation, disabled state, labels, and focus behavior.
-- Focus is visible at 2px. Error, warning, success, selection, and host-trust states include text or an accessible name.
-- Existing secrets never enter widgets, screenshots, public snapshots, diagnostics, JSON, JUnit, or logs.
-- Changed host keys have no acceptance path. Unknown host keys expose Reject and Accept-and-store only.
-- The visual checkpoint must verify realized command bar, sidebar, tabs, pane command row, ContentDialog state, and resolved product icons through component-owned facts.
-- Native PNG analysis converts premultiplied Cairo ARGB32 to canonical RGBA before checking dark-shell, accent, danger, focus, and missing-image ranges.
-- Task20 smoke remains the authoritative local real-surface flow. Task21 package checks verify the embedded resources through startup; no external icon payload is required.
-- Hosted Linux, macOS, and Windows jobs remain external evidence and are not claimed until a GitHub run exists.
+Depth is borders-first and tonal. Gradients, drop shadows, fake Mica/acrylic,
+backdrop blur, decorative filters, fake transparency, floating card stacks,
+emoji icons, browser infrastructure, and platform-specific title-bar APIs are
+not authorized. The terminal canvas remains the opaque `surface-terminal`.
 
-No accessibility debt is waived. Windows local smoke supplies the current native evidence; screen-reader announcements, high-contrast behavior, and hosted Linux/macOS rendering remain unverified until their explicit acceptance runs.
+Product SVGs use `currentColor` and contain no external references, scripts,
+fonts, animation, raster payloads, gradients, or filters. Missing SVG-loader
+support selects the compiled internal-vector backend; malformed assets fail.
+
+## 9. Accessibility and evidence
+
+Native controls retain roles, labels, keyboard navigation, disabled state, and
+visible 2px focus. Changed host keys have no acceptance path. Unknown host keys
+offer Reject and Accept-and-store only. Secrets never enter widgets,
+screenshots, public snapshots, diagnostics, JSON, JUnit, or logs.
+
+Realized visual evidence covers approximately 800×600, 1360×860, and
+1920×1080 across Compact, Standard, and Wide states. Screenshot metadata records
+the realized logical window and widget sizes, active breakpoint, effective
+scale and DPI, measured cell metrics, icon logical size, icon physical source
+size, and texture dimensions. It records state identifiers rather than terminal
+text, endpoints, paths, credentials, or other secret content.
+
+Evidence must reject terminal ink escaping its assigned one/two-cell rectangle
+and any rendered row whose minimum ink separation is below
+`terminal-line-spacing`. It must cover empty, connected, twenty-tab, nested-split, modal,
+host-key, authentication, failure, and recovery states. Unavailable monitor
+scales or hosted platforms are reported as unavailable rather than synthesized.
+No accessibility debt or external CI result is claimed without its acceptance
+run.

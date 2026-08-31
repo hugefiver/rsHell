@@ -119,6 +119,11 @@ impl TerminalRenderCache {
         Ok(stats)
     }
 
+    pub fn invalidate_metrics(&mut self) {
+        self.surface = None;
+        self.renderer = None;
+    }
+
     pub fn paint(&self, context: &cairo::Context) -> Result<(), TerminalViewError> {
         let surface = self
             .surface
@@ -193,7 +198,7 @@ mod tests {
     #[test]
     fn hidpi_cache_has_physical_backing_pixels_and_logical_device_scale() {
         let profile = TerminalSettingsV1::default().resolve(&TerminalOverrides::default());
-        let renderer = TerminalRenderer::new(&profile, FontMetrics::new(9.0, 18.0).unwrap());
+        let renderer = TerminalRenderer::new(&profile, FontMetrics::new(12.0, 24.0).unwrap());
         let frame = Arc::new(RenderFrame {
             generation: 1,
             size: TerminalSize {
@@ -207,6 +212,7 @@ mod tests {
             rows: Arc::from([]),
             cursor: None,
             title: String::new(),
+            display_modes: Default::default(),
             alternate_screen: false,
             mouse_reporting: false,
         });
@@ -219,5 +225,10 @@ mod tests {
         let surface = cache.surface.as_ref().unwrap();
         assert_eq!((surface.width(), surface.height()), (72, 36));
         assert_eq!(surface.device_scale(), (2.0, 2.0));
+
+        cache.invalidate_metrics();
+        assert!(cache.surface.is_none());
+        assert!(cache.renderer.is_none());
+        assert!(cache.frame.is_some());
     }
 }

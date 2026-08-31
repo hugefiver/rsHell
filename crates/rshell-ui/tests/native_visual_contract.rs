@@ -16,12 +16,7 @@ use rshell_ui::{
     apply_global_css, argb32_native_to_rgba, collect_visual_facts, selection_treatment_surface,
 };
 
-#[test]
-fn realized_main_window_satisfies_the_fluent_visual_contract() {
-    if let Err(error) = gtk::init() {
-        eprintln!("native visual contract skipped: {error}");
-        return;
-    }
+fn assert_realized_main_window_satisfies_the_fluent_visual_contract() {
     apply_global_css();
     let main = MainWindow::builder()
         .launch(MainWindowInit::new(
@@ -40,8 +35,8 @@ fn realized_main_window_satisfies_the_fluent_visual_contract() {
     let allocation = sidebar.allocation();
     let (minimum, natural, _, _) = sidebar.measure(gtk::Orientation::Horizontal, -1);
     assert!(
-        allocation.x() >= 0 && allocation.width() <= 280 && minimum <= 232,
-        "sidebar must fit its 232px pane without left clipping: allocation={allocation:?}, minimum={minimum}, natural={natural}"
+        allocation.x() >= 0 && allocation.width() <= 280 && minimum <= 260,
+        "sidebar must fit its 260px pane without left clipping: allocation={allocation:?}, minimum={minimum}, natural={natural}"
     );
     assert_eq!(
         (facts.requested_width, facts.requested_height),
@@ -55,8 +50,16 @@ fn realized_main_window_satisfies_the_fluent_visual_contract() {
     assert!(facts.terminal_canvas);
     assert!(facts.content_dialog);
     assert!(facts.embedded_icon_count >= 6);
+    assert_eq!(facts.icon_logical_size, 16);
+    assert!(facts.icon_texture_width >= facts.icon_logical_size);
+    assert!(facts.icon_texture_height >= facts.icon_logical_size);
+    assert!(facts.icon_backend.is_some());
+    assert!(f64::from_bits(facts.effective_scale_bits) > 0.0);
+    assert!(f64::from_bits(facts.effective_dpi_bits) > 0.0);
+    assert!(f64::from_bits(facts.measured_cell_width_bits) > 0.0);
+    assert!(f64::from_bits(facts.measured_cell_height_bits) > 0.0);
     assert!(facts.focus_or_selection_treatment);
-    assert!(facts.contract_passes());
+    assert!(facts.contract_passes(), "{facts:?}");
     let pixels = wait_for_realized_pixels(main.widget());
     assert_eq!(
         (pixels.width, pixels.height),
@@ -67,6 +70,98 @@ fn realized_main_window_satisfies_the_fluent_visual_contract() {
 
     main.widget().close();
     assert!(flush_gtk());
+}
+
+#[test]
+fn breakpoint_crossing_uses_typed_detach_without_gtk_warning() {
+    if let Err(error) = gtk::init() {
+        eprintln!("native adaptive shell regression skipped: {error}");
+        return;
+    }
+    let main = MainWindow::builder()
+        .launch(MainWindowInit::new(
+            Arc::new(AcceptingPort),
+            visual_fixture(),
+        ))
+        .detach();
+    main.widget().set_default_size(800, 600);
+    main.widget().present();
+    assert!(flush_gtk());
+    let sidebar = find_by_css_class(main.widget().upcast_ref(), "sidebar").unwrap();
+    let terminal = find_by_css_class(main.widget().upcast_ref(), "terminal-canvas").unwrap();
+    let sidebar_identity = sidebar.as_ptr();
+    let terminal_identity = terminal.as_ptr();
+
+    for (width, class, overlay) in [
+        (800, "shell-compact", true),
+        (900, "shell-standard", false),
+        (1_440, "shell-wide", false),
+        (800, "shell-compact", true),
+    ] {
+        main.emit(MainWindowMsg::Allocated { width });
+        assert!(flush_gtk(), "allocation {width} must quiesce");
+        let background = find_by_css_class(main.widget().upcast_ref(), class)
+            .unwrap_or_else(|| panic!("missing .{class} at width {width}"));
+        assert!(background.is_visible());
+        let parent = sidebar.parent().expect("sidebar owner");
+        if overlay {
+            assert!(parent.is::<gtk::Overlay>(), "compact owner at {width}");
+        } else {
+            let paned = parent
+                .downcast::<gtk::Paned>()
+                .expect("standard/wide paned owner");
+            assert_eq!(paned.start_child().as_ref(), Some(&sidebar));
+        }
+        assert_eq!(sidebar.as_ptr(), sidebar_identity);
+        assert_eq!(terminal.as_ptr(), terminal_identity);
+    }
+
+    main.emit(MainWindowMsg::Allocated { width: 900 });
+    assert!(flush_gtk());
+    let paned = sidebar
+        .parent()
+        .and_then(|parent| parent.downcast::<gtk::Paned>().ok())
+        .expect("standard sidebar owner");
+    paned.set_position(268);
+    main.emit(MainWindowMsg::Allocated { width: 1_440 });
+    assert!(flush_gtk());
+    assert_eq!(paned.position(), 268, "Wide preserves a user resize");
+    main.emit(MainWindowMsg::Allocated { width: 800 });
+    assert!(flush_gtk());
+    assert_eq!(
+        sidebar.width_request(),
+        280,
+        "Compact drawer keeps its bounded width"
+    );
+    let rail = find_by_css_class(main.widget().upcast_ref(), "compact-nav-rail")
+        .expect("Compact navigation rail");
+    assert_eq!(rail.width_request(), 48, "Compact rail owns the 48px token");
+    main.emit(MainWindowMsg::Allocated { width: 900 });
+    assert!(flush_gtk());
+    assert_eq!(
+        paned.position(),
+        268,
+        "Compact must not overwrite the resize"
+    );
+    main.emit(MainWindowMsg::Allocated { width: 1_440 });
+    assert!(flush_gtk());
+    paned.set_position(320);
+    main.emit(MainWindowMsg::Allocated { width: 1_440 });
+    assert!(flush_gtk());
+    assert_eq!(paned.position(), 280, "Wide clamps navigation to its token");
+    main.emit(MainWindowMsg::Allocated { width: 800 });
+    assert!(flush_gtk());
+    main.emit(MainWindowMsg::Allocated { width: 900 });
+    assert!(flush_gtk());
+    assert_eq!(
+        paned.position(),
+        320,
+        "Wide clamping must retain the user's Standard logical width"
+    );
+
+    main.widget().close();
+    assert!(flush_gtk());
+    assert_realized_main_window_satisfies_the_fluent_visual_contract();
 }
 
 fn find_by_css_class(root: &gtk::Widget, class: &str) -> Option<gtk::Widget> {
@@ -123,7 +218,9 @@ fn rendered_rgba(widget: &gtk::Widget) -> Result<(Vec<u8>, i32, i32), &'static s
     let paintable = gtk::WidgetPaintable::new(Some(widget));
     let snapshot = gtk::Snapshot::new();
     paintable.snapshot(&snapshot, f64::from(width), f64::from(height));
-    let node = snapshot.to_node().expect("realized snapshot node");
+    let node = snapshot
+        .to_node()
+        .ok_or("realized snapshot node unavailable")?;
     let renderer = gtk::gsk::CairoRenderer::new();
     renderer.realize(None).expect("Cairo renderer");
     let viewport = gtk::graphene::Rect::new(0.0, 0.0, width as f32, height as f32);
@@ -178,17 +275,23 @@ fn nonempty_frame() -> RenderFrame {
         rows: Arc::from([RenderRow {
             stable_row: 0,
             wrapped: false,
-            cells: Arc::from([RenderCell {
-                text: "Visual fixture".into(),
-                width: 1,
-                foreground: Color::Default,
-                background: Color::Default,
-                attributes: CellAttributes::default(),
-                selected: false,
-            }]),
+            cells: Arc::from(
+                "Visual fixture"
+                    .chars()
+                    .map(|character| RenderCell {
+                        text: character.to_string(),
+                        width: 1,
+                        foreground: Color::Default,
+                        background: Color::Default,
+                        attributes: CellAttributes::default(),
+                        selected: false,
+                    })
+                    .collect::<Vec<_>>(),
+            ),
         }]),
         cursor: None,
         title: "Visual fixture".into(),
+        display_modes: Default::default(),
         alternate_screen: false,
         mouse_reporting: false,
     }

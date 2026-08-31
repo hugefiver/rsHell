@@ -42,6 +42,12 @@ pub enum ConnectionSidebarOutput {
     SelectionChanged(Option<ConnectionId>),
 }
 
+impl ConnectionSidebarOutput {
+    pub(crate) fn closes_navigation_drawer(&self) -> bool {
+        matches!(self, Self::Connect(_))
+    }
+}
+
 pub struct ConnectionSidebar {
     view: SidebarViewModel,
     selected: Option<usize>,

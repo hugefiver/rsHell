@@ -194,7 +194,9 @@ impl CommandLoop {
 
     pub(super) fn unbind_session(&mut self, session: SessionId) -> bool {
         self.stop_session_forwarders(session);
-        self.view_model.latest_frames.remove(&session).is_some()
+        let removed_frame = self.view_model.latest_frames.remove(&session).is_some();
+        let removed_recovery = self.view_model.display_recovery.remove(&session).is_some();
+        removed_frame || removed_recovery
     }
 
     pub(super) fn stop_session_forwarders(&mut self, session: SessionId) {

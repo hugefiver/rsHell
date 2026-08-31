@@ -3,7 +3,9 @@ use relm4::{ComponentParts, ComponentSender, SimpleComponent, gtk};
 use rshell_core::{MouseButton, MouseEventKind, UiCommand};
 
 use crate::{
-    PointerEvent, TerminalClipboardAction, TerminalViewError, TerminalViewModel,
+    FontMetricsService, PointerEvent, TerminalClipboardAction, TerminalViewError,
+    TerminalViewModel,
+    terminal_view_metrics::{refresh_geometry, refresh_metrics, refresh_profile},
     terminal_view_widgets::TerminalViewWidgets,
 };
 
@@ -11,6 +13,8 @@ pub use crate::terminal_view_message::{TerminalViewInit, TerminalViewMsg, Termin
 
 pub struct TerminalView {
     model: TerminalViewModel,
+    metrics_service: FontMetricsService,
+    metric_widget: gtk::DrawingArea,
     clipboard: gdk::Clipboard,
     selection_anchor: Option<(f64, f64)>,
     pressed_button: Option<MouseButton>,
@@ -36,6 +40,7 @@ impl SimpleComponent for TerminalView {
         sender: ComponentSender<Self>,
     ) -> ComponentParts<Self> {
         let widgets = TerminalViewWidgets::build(&root, &init, &sender);
+        let metrics_service = FontMetricsService::from_measured(init.metrics.clone());
         let model = Self {
             model: TerminalViewModel::with_profile(
                 init.pane,
@@ -43,6 +48,8 @@ impl SimpleComponent for TerminalView {
                 init.profile,
                 init.metrics,
             ),
+            metrics_service,
+            metric_widget: widgets.canvas.clone(),
             clipboard: root.display().clipboard(),
             selection_anchor: None,
             pressed_button: None,
@@ -55,6 +62,26 @@ impl SimpleComponent for TerminalView {
             TerminalViewMsg::ApplyFrame(frame) => {
                 self.model.apply_frame(frame);
             }
+            TerminalViewMsg::RefreshMetrics(environment) => {
+                output_optional(
+                    refresh_metrics(
+                        &mut self.metrics_service,
+                        &self.metric_widget,
+                        &mut self.model,
+                        environment,
+                    ),
+                    &sender,
+                );
+            }
+            TerminalViewMsg::UpdateProfile(profile) => output_optional(
+                refresh_profile(
+                    &mut self.metrics_service,
+                    &self.metric_widget,
+                    &mut self.model,
+                    profile,
+                ),
+                &sender,
+            ),
             TerminalViewMsg::Key { key, state } => self.handle_key(key, state, &sender),
             TerminalViewMsg::KeyReleased(key) => self.model.key_released(key),
             TerminalViewMsg::FocusLost => self.model.focus_lost(),
@@ -67,9 +94,17 @@ impl SimpleComponent for TerminalView {
                 width,
                 height,
                 scale,
-            } => {
-                output_result(self.model.resize(width, height, scale), &sender);
-            }
+            } => output_optional(
+                refresh_geometry(
+                    &mut self.metrics_service,
+                    &self.metric_widget,
+                    &mut self.model,
+                    width,
+                    height,
+                    scale,
+                ),
+                &sender,
+            ),
             TerminalViewMsg::Selection {
                 start_x,
                 start_y,
@@ -224,22 +259,5 @@ fn map_clipboard_read_result<T: Into<String>, E>(
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn clipboard_read_failure_maps_to_a_structured_error_without_fake_text() {
-        let mapped = map_clipboard_read_result::<String, _>(Err("RAW-GDK-FAILURE"));
-
-        assert_eq!(mapped, Err(TerminalViewError::ClipboardUnavailable));
-        assert!(!format!("{mapped:?}").contains("RAW-GDK-FAILURE"));
-        assert_eq!(
-            map_clipboard_read_result::<String, &str>(Ok(Some("real text".into()))),
-            Ok(Some("real text".into()))
-        );
-        assert_eq!(
-            map_clipboard_read_result::<String, &str>(Ok(None)),
-            Ok(None)
-        );
-    }
-}
+#[path = "terminal_view_tests.rs"]
+mod tests;

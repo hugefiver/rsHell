@@ -3,10 +3,14 @@ use gtk::prelude::*;
 use relm4::gtk;
 
 use crate::icon_registry::{IconRenderError, ProductIcon};
-use crate::icon_vector_data::{VectorOp, operations};
+use crate::icon_vector_data::{VIEWBOX_SIZE, VectorOp, operations};
 
-pub(crate) fn render(icon: ProductIcon) -> Result<gtk::gdk::Texture, IconRenderError> {
-    let mut surface = cairo::ImageSurface::create(cairo::Format::ARgb32, 16, 16)
+pub(crate) fn render(
+    icon: ProductIcon,
+    physical_size: u16,
+) -> Result<gtk::gdk::Texture, IconRenderError> {
+    let target = i32::from(physical_size);
+    let mut surface = cairo::ImageSurface::create(cairo::Format::ARgb32, target, target)
         .map_err(|_| IconRenderError::InternalVector)?;
     let context = cairo::Context::new(&surface).map_err(|_| IconRenderError::InternalVector)?;
     context.set_operator(cairo::Operator::Source);
@@ -15,6 +19,8 @@ pub(crate) fn render(icon: ProductIcon) -> Result<gtk::gdk::Texture, IconRenderE
         .paint()
         .map_err(|_| IconRenderError::InternalVector)?;
     context.set_operator(cairo::Operator::Over);
+    let coordinate_scale = f64::from(physical_size) / VIEWBOX_SIZE;
+    context.scale(coordinate_scale, coordinate_scale);
     context.set_source_rgba(0.831, 0.831, 0.831, 1.0);
     context.set_line_width(1.5);
     context.set_line_cap(cairo::LineCap::Round);
@@ -41,7 +47,14 @@ pub(crate) fn render(icon: ProductIcon) -> Result<gtk::gdk::Texture, IconRenderE
             .as_ref(),
     );
     let bytes = gtk::glib::Bytes::from_owned(rgba);
-    Ok(gtk::gdk::MemoryTexture::new(16, 16, gtk::gdk::MemoryFormat::R8g8b8a8, &bytes, 64).upcast())
+    Ok(gtk::gdk::MemoryTexture::new(
+        target,
+        target,
+        gtk::gdk::MemoryFormat::R8g8b8a8,
+        &bytes,
+        usize::from(physical_size) * 4,
+    )
+    .upcast())
 }
 
 fn cairo_argb32_to_rgba(source: &[u8]) -> Vec<u8> {

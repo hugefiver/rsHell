@@ -37,6 +37,10 @@ impl EventSink {
         self.state().title.clone()
     }
 
+    pub(crate) fn reset_title(&self) {
+        self.state().title = "rsHell".into();
+    }
+
     pub(crate) fn resize(&self, size: TerminalSize) {
         self.state().size = size;
     }

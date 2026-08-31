@@ -136,15 +136,24 @@ impl PaneHostModel {
             SessionUiEvent::Frame(frame) => {
                 self.view_model.latest_frames.insert(session, frame);
             }
+            SessionUiEvent::RecoveryChanged(Some(notice)) => {
+                self.view_model.display_recovery.insert(session, notice);
+            }
+            SessionUiEvent::RecoveryChanged(None) => {
+                self.view_model.display_recovery.remove(&session);
+            }
             SessionUiEvent::Exited(_) => {
+                self.view_model.display_recovery.remove(&session);
                 self.view_model
                     .session_states
                     .insert(session, SessionState::Exited);
             }
             SessionUiEvent::Failed(failure) => {
+                self.view_model.display_recovery.remove(&session);
                 self.record_error(session, failure, "session failed");
             }
             SessionUiEvent::Crashed(_) => {
+                self.view_model.display_recovery.remove(&session);
                 self.record_error(session, SessionFailure::Crashed, "session actor crashed");
             }
             SessionUiEvent::Search(_)

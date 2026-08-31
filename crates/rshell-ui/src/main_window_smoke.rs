@@ -16,6 +16,7 @@ use crate::{
     main_window_smoke_workflow_evidence::{ImportBaseline, PendingImportPreview, PendingReconnect},
     smoke_driver_state::{SmokeDecision, SmokeDriver},
 };
+use std::collections::BTreeMap;
 
 #[derive(Default)]
 pub(crate) struct SmokeUiState {
@@ -58,14 +59,25 @@ pub(crate) struct SmokeUiState {
     pub pending_color: Option<PendingColor>,
     pub tui_session: Option<SessionId>,
     pub pending_reconnect: Option<PendingReconnect>,
+    pub pending_recovery: Option<crate::main_window_smoke_recovery::PendingRecovery>,
     pub import_expectation: Option<SmokeImportExpectation>,
     pub import_source: Option<ImportSourceKind>,
     pub import_baseline: Option<ImportBaseline>,
     pub pending_import_preview: Option<PendingImportPreview>,
     pub evidence_sequence: u64,
     pub visual_checkpoint: VisualCheckpointPhase,
+    pub active_visual_checkpoint: Option<crate::SmokeVisualCheckpoint>,
+    pub visual_focus_trigger: Option<gtk::Widget>,
+    pub modal_escape_verified: bool,
+    pub modal_focus_restore_verified: bool,
     pub visual: Option<crate::SmokeVisualEvidence>,
+    pub visuals: BTreeMap<String, crate::SmokeVisualCheckpointEvidence>,
     pub visual_capture_attempted: bool,
+    pub visual_completion_tick_pending: bool,
+    pub visual_paintable: Option<gtk::WidgetPaintable>,
+    pub visual_accent_paintable: Option<gtk::WidgetPaintable>,
+    pub visual_stage_count: Option<usize>,
+    pub window_resize: Option<crate::SmokeWindowResizeEvidence>,
 }
 
 impl MainWindow {
@@ -118,6 +130,7 @@ impl MainWindow {
     }
 
     pub(crate) fn drive_smoke(&mut self, sender: &ComponentSender<Self>) {
+        self.refresh_smoke_window_allocation();
         let binding = self
             .smoke
             .as_ref()
@@ -158,10 +171,39 @@ impl MainWindow {
         }
         self.smoke_tick_pending = true;
         let sender = sender.input_sender().clone();
-        gtk::glib::timeout_add_local(std::time::Duration::from_millis(25), move || {
-            send_smoke_tick(&sender);
-            gtk::glib::ControlFlow::Break
-        });
+        if std::mem::take(&mut self.smoke_state.visual_completion_tick_pending) {
+            gtk::glib::timeout_add_local_full(
+                std::time::Duration::ZERO,
+                gtk::glib::Priority::HIGH,
+                move || {
+                    send_smoke_tick(&sender);
+                    gtk::glib::ControlFlow::Break
+                },
+            );
+            return;
+        }
+        if self.smoke_state.window_resize.is_some_and(|evidence| {
+            evidence.realized_width == 0
+                || evidence.realized_height == 0
+                || evidence.layout != evidence.expected_layout
+        }) {
+            crate::main_window_smoke_frame::schedule_after_frame(&self.shell.overlay, sender);
+            return;
+        }
+        if self.smoke_state.visual_checkpoint == VisualCheckpointPhase::Opening
+            && self.smoke_state.visual_paintable.is_some()
+        {
+            crate::main_window_smoke_frame::schedule_after_frame(&self.shell.overlay, sender);
+            return;
+        }
+        gtk::glib::timeout_add_local_full(
+            std::time::Duration::from_millis(25),
+            gtk::glib::Priority::DEFAULT,
+            move || {
+                send_smoke_tick(&sender);
+                gtk::glib::ControlFlow::Break
+            },
+        );
     }
 
     pub(crate) fn capture_smoke_png(&mut self) {

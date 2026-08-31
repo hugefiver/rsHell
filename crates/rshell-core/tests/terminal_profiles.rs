@@ -118,6 +118,7 @@ fn default_profile_settings_and_connection_path_are_stable() {
         (120, 36)
     );
     assert_eq!(profile.settings.scrollback_lines, 6_000);
+    assert_eq!(profile.settings.font_family, "Cascadia Mono");
     assert_eq!(profile.settings.font_size, 15.0);
     assert!(profile.settings.left_alt_as_meta);
     assert!(profile.settings.right_alt_as_meta);

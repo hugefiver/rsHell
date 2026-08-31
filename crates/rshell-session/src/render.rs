@@ -37,6 +37,7 @@ pub(crate) fn snapshot(
 
     let cursor = grid.cursor.point;
     let cursor_shape = terminal.cursor_style().shape;
+    let display_modes = adapter.display_modes();
     RenderFrame {
         generation: 0,
         size: adapter.size(),
@@ -48,14 +49,12 @@ pub(crate) fn snapshot(
                 column: cursor.column.0.min(usize::from(u16::MAX)) as u16,
             },
             shape: convert_cursor_shape(cursor_shape),
-            visible: terminal
-                .mode()
-                .contains(alacritty_terminal::term::TermMode::SHOW_CURSOR)
-                && cursor_shape != VteCursorShape::Hidden,
+            visible: !display_modes.cursor_hidden,
         }),
         title: adapter.title(),
-        alternate_screen: adapter.alternate_screen(),
-        mouse_reporting: adapter.mouse_reporting_active(),
+        display_modes,
+        alternate_screen: display_modes.alternate_screen,
+        mouse_reporting: display_modes.mouse_reporting,
     }
 }
 

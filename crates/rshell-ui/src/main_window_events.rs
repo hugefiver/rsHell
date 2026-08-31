@@ -1,9 +1,11 @@
+use gtk::prelude::*;
+use relm4::{ComponentController, gtk};
 use rshell_core::{AppEvent, SessionUiEvent, UiCommand};
 
 use crate::{
     ConnectionEditorMsg, ConnectionEditorOutput, ConnectionSidebarMsg, ConnectionSidebarOutput,
-    ImportDialogMsg, InteractionDialogMsg, MainWindow, PaneHostMsg, PaneHostOutput,
-    SessionTabBarOutput, SettingsWindowMsg,
+    ImportDialogMsg, InteractionDialogMsg, MainWindow, ModalKind, ModalRequest, PaneHostMsg,
+    PaneHostOutput, SessionTabBarOutput, SettingsWindowMsg,
     main_window_commands::CommandSource,
     main_window_dialogs::DialogCommandSource,
     main_window_snapshots::{session_is_bound, update_session_snapshot},
@@ -11,7 +13,12 @@ use crate::{
 };
 
 impl MainWindow {
+    pub(crate) fn new_local_tab(&mut self) {
+        self.dispatch(UiCommand::NewLocalTab, CommandSource::TabBar);
+    }
+
     pub(crate) fn handle_sidebar(&mut self, output: ConnectionSidebarOutput) {
+        let closes_drawer = output.closes_navigation_drawer();
         match output {
             ConnectionSidebarOutput::Command(command) => {
                 self.dispatch(command, CommandSource::Sidebar);
@@ -20,14 +27,18 @@ impl MainWindow {
                 self.send_pane(PaneHostMsg::Connect { connection });
             }
             ConnectionSidebarOutput::OpenCreate(group) => {
-                self.send_editor(ConnectionEditorMsg::OpenCreate(group));
+                self.open_editor(ConnectionEditorMsg::OpenCreate(group));
             }
             ConnectionSidebarOutput::OpenEdit(profile) => {
-                self.send_editor(ConnectionEditorMsg::OpenEdit(Box::new(profile)));
+                self.open_editor(ConnectionEditorMsg::OpenEdit(Box::new(profile)));
             }
             ConnectionSidebarOutput::SelectionChanged(selection) => {
                 self.smoke_state.sidebar_selection = selection;
             }
+        }
+        if closes_drawer {
+            self.shell
+                .close_navigation_drawer(self.sidebar.widget().upcast_ref());
         }
     }
 
@@ -39,7 +50,10 @@ impl MainWindow {
                     self.status = "Saving connection".into();
                 }
             }
-            ConnectionEditorOutput::Closed => self.status = "Ready".into(),
+            ConnectionEditorOutput::Closed => {
+                self.handle_modal(ModalRequest::Close(ModalKind::ConnectionEditor));
+                self.status = "Ready".into();
+            }
             ConnectionEditorOutput::StateChanged(state) => self.observe_smoke_editor(*state),
         }
     }
@@ -65,7 +79,7 @@ impl MainWindow {
             }
             PaneHostOutput::EditConnection(connection) => {
                 if let Some(profile) = self.view_model.catalog.connections.get(&connection) {
-                    self.send_editor(ConnectionEditorMsg::OpenEdit(Box::new(profile.clone())));
+                    self.open_editor(ConnectionEditorMsg::OpenEdit(Box::new(profile.clone())));
                 }
             }
             PaneHostOutput::Error(message) => {
@@ -178,7 +192,7 @@ impl MainWindow {
                 self.status = "Import cancelled".into();
             }
             AppEvent::InteractionRequired { session, request } => {
-                self.send_interaction(InteractionDialogMsg::Open { session, request });
+                self.open_interaction(InteractionDialogMsg::Open { session, request });
                 self.status = "User interaction required".into();
             }
             AppEvent::InteractionResponded {

@@ -1,18 +1,15 @@
 use std::{fmt, sync::Arc};
 
 use rshell_core::{
-    MouseButton, MouseEventKind, PaneId, RenderFrame, ResolvedTerminalProfile, SearchMatch,
-    SearchQuery, SelectionRange, SessionId, SessionUiCommand, SessionUiEvent, TerminalInput,
-    TerminalMouseEvent, TerminalSettingsV1, UiCommand,
+    PaneId, RenderFrame, ResolvedTerminalProfile, SearchMatch, SearchQuery, SelectionRange,
+    SessionId, SessionUiCommand, SessionUiEvent, TerminalInput, TerminalSettingsV1, TerminalSize,
+    UiCommand,
 };
 use rshell_platform::ClipboardPolicy;
 
 use crate::{
-    terminal_geometry::{
-        PointerEvent, ViewRect, checked_pixel, logical_cell, point_to_cell, point_to_view_cell,
-        terminal_size,
-    },
-    terminal_input::{FontMetrics, PhysicalAltState, TerminalViewError},
+    MeasuredFontMetrics,
+    terminal_input::{PhysicalAltState, TerminalViewError},
     terminal_search::TerminalSearchState,
 };
 
@@ -36,19 +33,21 @@ pub struct TerminalViewModel {
     pub(crate) session: SessionId,
     pub(crate) profile: ResolvedTerminalProfile,
     pub(crate) alt: PhysicalAltState,
-    metrics: FontMetrics,
-    frame: Option<Arc<RenderFrame>>,
+    pub(crate) measured: MeasuredFontMetrics,
+    pub(crate) last_logical_allocation: Option<(i32, i32)>,
+    pub(crate) last_emitted_size: Option<TerminalSize>,
+    pub(crate) frame: Option<Arc<RenderFrame>>,
     pub(crate) search: TerminalSearchState,
     clipboard: Option<TerminalClipboardAction>,
 }
 
 impl TerminalViewModel {
-    pub fn new(session: SessionId, metrics: FontMetrics) -> Self {
+    pub fn new(session: SessionId, measured: MeasuredFontMetrics) -> Self {
         Self::with_profile(
             PaneId::new(),
             session,
             TerminalSettingsV1::default().resolve(&Default::default()),
-            metrics,
+            measured,
         )
     }
 
@@ -56,14 +55,16 @@ impl TerminalViewModel {
         pane: PaneId,
         session: SessionId,
         profile: ResolvedTerminalProfile,
-        metrics: FontMetrics,
+        measured: MeasuredFontMetrics,
     ) -> Self {
         Self {
             pane,
             session,
             profile,
             alt: PhysicalAltState::default(),
-            metrics,
+            measured,
+            last_logical_allocation: None,
+            last_emitted_size: None,
             frame: None,
             search: TerminalSearchState::default(),
             clipboard: None,
@@ -87,40 +88,6 @@ impl TerminalViewModel {
         self.frame.as_ref()
     }
 
-    pub fn metrics(&self) -> FontMetrics {
-        self.metrics
-    }
-
-    pub fn cursor_rect(&self) -> Option<ViewRect> {
-        let frame = self.frame.as_ref()?;
-        let cursor = frame.cursor.filter(|cursor| cursor.visible)?;
-        let row_index = frame
-            .rows
-            .iter()
-            .position(|row| row.stable_row == cursor.position.stable_row)?;
-        let (start, width) = logical_cell(frame, cursor.position)?;
-        Some(ViewRect {
-            x: f64::from(start) * self.metrics.cell_width,
-            y: row_index as f64 * self.metrics.cell_height,
-            width: f64::from(width) * self.metrics.cell_width,
-            height: self.metrics.cell_height,
-        })
-    }
-
-    pub fn resize(
-        &self,
-        width: i32,
-        height: i32,
-        scale: f64,
-    ) -> Result<UiCommand, TerminalViewError> {
-        Ok(self.command(SessionUiCommand::Resize(terminal_size(
-            width,
-            height,
-            scale,
-            self.metrics,
-        )?)))
-    }
-
     pub fn committed_text(&self, text: &str) -> Result<UiCommand, TerminalViewError> {
         if text.contains('\0') {
             return Err(TerminalViewError::InvalidText);
@@ -136,59 +103,6 @@ impl TerminalViewModel {
         let text =
             ClipboardPolicy::normalize_text(text).map_err(|_| TerminalViewError::InvalidText)?;
         Ok(self.command(SessionUiCommand::paste(text)))
-    }
-
-    pub fn mouse(&self, event: PointerEvent) -> Result<Option<UiCommand>, TerminalViewError> {
-        let frame = self.frame.as_ref().ok_or(TerminalViewError::OutOfBounds)?;
-        let reports_mouse = self.profile.mouse_reporting && frame.mouse_reporting;
-        if !reports_mouse && event.kind != MouseEventKind::Scroll {
-            return Ok(None);
-        }
-        if !reports_mouse {
-            return Ok((event.scroll_delta != 0)
-                .then(|| self.command(SessionUiCommand::Scroll(event.scroll_delta))));
-        }
-        let (cell, viewport_row) = point_to_view_cell(frame, self.metrics, event.x, event.y)?;
-        let button = if event.kind == MouseEventKind::Scroll {
-            match event.scroll_delta.cmp(&0) {
-                std::cmp::Ordering::Less => Some(MouseButton::WheelUp),
-                std::cmp::Ordering::Greater => Some(MouseButton::WheelDown),
-                std::cmp::Ordering::Equal => return Ok(None),
-            }
-        } else {
-            event.button
-        };
-        let pixel_x = checked_pixel(event.x, event.scale)?;
-        let pixel_y = checked_pixel(event.y, event.scale)?;
-        Ok(Some(self.command(SessionUiCommand::Mouse(
-            TerminalMouseEvent {
-                kind: event.kind,
-                button,
-                cell,
-                viewport_row,
-                pixel_x,
-                pixel_y,
-                modifiers: event.modifiers,
-            },
-        ))))
-    }
-
-    pub fn selection(
-        &self,
-        start_x: f64,
-        start_y: f64,
-        end_x: f64,
-        end_y: f64,
-        rectangular: bool,
-    ) -> Result<UiCommand, TerminalViewError> {
-        let frame = self.frame.as_ref().ok_or(TerminalViewError::OutOfBounds)?;
-        let start = point_to_cell(frame, self.metrics, start_x, start_y)?;
-        let end = point_to_cell(frame, self.metrics, end_x, end_y)?;
-        Ok(self.command(SessionUiCommand::Select(SelectionRange {
-            start,
-            end,
-            rectangular,
-        })))
     }
 
     pub fn search(

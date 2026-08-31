@@ -64,19 +64,6 @@ impl LocalPtyTransport {
             .process_tree_contains(process_id)
     }
 
-    fn connect_inner(&mut self, request: &TransportRequest) -> Result<(), TransportError> {
-        if self.runtime.is_some() {
-            return Err(TransportError::new(SessionFailure::Validation));
-        }
-        let command = self.command(request.terminal_type())?;
-        self.runtime = Some(spawn_pty_runtime(
-            command,
-            request.initial_size(),
-            SessionFailure::Pty,
-        )?);
-        Ok(())
-    }
-
     fn command(&self, terminal_type: &str) -> Result<CommandBuilder, TransportError> {
         let (program, args, cwd, env) = match &self.launch {
             LocalLaunch::DefaultShell => {
@@ -129,7 +116,20 @@ impl SessionTransport for LocalPtyTransport {
         request: &TransportRequest,
         _interactions: InteractionBroker,
     ) -> Result<(), TransportError> {
-        self.connect_inner(request)
+        if self.runtime.is_some() {
+            return Err(TransportError::new(SessionFailure::Validation));
+        }
+        let launch = self.launch.clone();
+        let request = request.clone();
+        let runtime = tokio::task::spawn_blocking(move || {
+            let transport = Self::launch(launch);
+            let command = transport.command(request.terminal_type())?;
+            spawn_pty_runtime(command, request.initial_size(), SessionFailure::Pty)
+        })
+        .await
+        .map_err(|_| TransportError::new(SessionFailure::Pty))??;
+        self.runtime = Some(runtime);
+        Ok(())
     }
 
     async fn next_event(&mut self) -> Result<TransportEvent, TransportError> {

@@ -3,6 +3,7 @@ use rshell_ui::{SmokeActionKind, SmokeReport};
 use crate::{
     p0_smoke_cleanup::P0CleanupEvidence,
     p0_smoke_contract_evidence as evidence,
+    p0_smoke_contract_visual::visual_matrix_is_exact,
     p0_smoke_evidence::{QaEvidence, QaObservation, SmokeSurface},
     p0_smoke_status::SurfaceStatuses,
 };
@@ -28,30 +29,23 @@ pub(crate) fn assess_all(
             report,
             &[
                 (SmokeActionKind::WaitWindowRealized, 1),
-                (SmokeActionKind::VisualCheckpoint, 1),
+                (SmokeActionKind::ResizeWindow, 3),
+                (SmokeActionKind::VisualCheckpoint, 26),
             ],
             SmokeSurface::Gtk,
             &[
                 (snapshot_exists, "window_png_snapshot"),
+                (visual_matrix_is_exact(report), "semantic_visual_contract"),
                 (
-                    report
-                        .and_then(|value| value.counters.visual)
-                        .is_some_and(|visual| visual.facts.contract_passes()),
-                    "semantic_visual_contract",
-                ),
-                (
-                    report
-                        .and_then(|value| value.counters.visual)
-                        .is_some_and(|visual| {
-                            visual.png.is_some_and(|png| {
-                                png.width == visual.facts.realized_width
-                                    && png.height == visual.facts.realized_height
-                                    && png.non_empty
-                                    && png.dark_regions_required == 4
-                                    && png.dark_regions_passed == 4
-                                    && (2..=4).contains(&png.focus_or_selection_thickness_px)
-                            })
-                        }),
+                    report.is_some_and(|report| {
+                        report.counters.visual.values().all(|visual| {
+                            visual.png.width == visual.facts.realized_width
+                                && visual.png.height == visual.facts.realized_height
+                                && visual.png.non_empty
+                                && visual.png.dark_regions_required == 4
+                                && visual.png.dark_regions_passed == 4
+                        })
+                    }),
                     "range_png_visual_contract",
                 ),
             ],
@@ -69,10 +63,13 @@ pub(crate) fn assess_all(
                 (SmokeActionKind::SearchTerminal, 1),
                 (SmokeActionKind::SelectRange, 1),
                 (SmokeActionKind::CopySelection, 1),
+                (SmokeActionKind::InterruptTerminal, 1),
+                (SmokeActionKind::ResetDisplay, 1),
             ],
             SmokeSurface::LocalTerminal,
             &[(
-                evidence::terminal_evidence_is_exact(report),
+                evidence::terminal_evidence_is_exact(report)
+                    && evidence::recovery_evidence_is_exact(report),
                 "typed_terminal_outcome",
             )],
             evidence,
@@ -266,7 +263,7 @@ mod tests {
     #[test]
     fn cleanup_cannot_pass_from_external_observation_json() {
         let report = SmokeReport {
-            version: 1,
+            version: 2,
             run_nonce: "unit".into(),
             state: SmokeScenarioState::Passed,
             elapsed: Duration::ZERO,
@@ -285,6 +282,8 @@ mod tests {
             failure: None,
             requested_png_path: None,
             png_path: None,
+            requested_png_paths: Vec::new(),
+            png_paths: Vec::new(),
             png_error: None,
         };
         let statuses = super::assess_all(Some(&report), false, false, None, &Default::default());
@@ -300,7 +299,7 @@ mod tests {
 
     fn report_with_passed_actions(actions: &[SmokeActionKind]) -> SmokeReport {
         SmokeReport {
-            version: 1,
+            version: 2,
             run_nonce: "unit".into(),
             state: SmokeScenarioState::Passed,
             elapsed: Duration::ZERO,
@@ -323,6 +322,8 @@ mod tests {
             failure: None,
             requested_png_path: None,
             png_path: None,
+            requested_png_paths: Vec::new(),
+            png_paths: Vec::new(),
             png_error: None,
         }
     }

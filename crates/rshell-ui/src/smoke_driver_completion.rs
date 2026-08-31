@@ -1,8 +1,12 @@
 use rshell_core::{ConnectionId, InteractionId};
 
+use crate::smoke_driver_completion_evidence::{
+    commit_complete, host_key_outcome_complete, preview_complete,
+};
+use crate::smoke_driver_recovery::{interrupt_complete, reset_complete};
 use crate::smoke_driver_sequences::{
-    clipboard_sequence, color_sequence, import_preview_sequence, paste_sequence,
-    reconnect_sequence, resize_sequence, search_sequence, selection_sequence,
+    clipboard_sequence, color_sequence, paste_sequence, reconnect_sequence, resize_sequence,
+    search_sequence, selection_sequence,
 };
 use crate::{SmokeAction, SmokeCounters, smoke_driver_observation::SmokeObservation};
 
@@ -64,15 +68,24 @@ pub(crate) fn action_is_complete(
         SmokeAction::SelectConnection(_) => now.sidebar_selection == selection_target,
         SmokeAction::Connect => {
             selected_connection.is_some_and(|id| now.connection_panes.contains(&id))
+                && now.counters.active_session_state.is_some_and(|state| {
+                    !matches!(
+                        state,
+                        rshell_core::SessionState::Created | rshell_core::SessionState::Connecting
+                    )
+                })
         }
-        SmokeAction::RespondHostKey { .. } => auth_interaction.is_some_and(|interaction| {
+        SmokeAction::RespondHostKey { accept } => auth_interaction.is_some_and(|interaction| {
             now.counters.interaction_responses > before.interaction_responses
                 && now.last_interaction_response == Some(interaction)
+                && host_key_outcome_complete(now.counters.active_session_state, *accept)
         }),
         SmokeAction::RespondAuth { prompt, .. } => match auth_interaction {
             Some(interaction) if auth_submits => {
                 now.counters.interaction_responses > before.interaction_responses
                     && now.last_interaction_response == Some(interaction)
+                    && now.counters.active_session_state
+                        == Some(rshell_core::SessionState::Connected)
             }
             Some(interaction) => {
                 now.active_interaction == Some(interaction) && now.answered_prompts.contains(prompt)
@@ -147,13 +160,42 @@ pub(crate) fn action_is_complete(
                 && evidence.new_session.is_some()
                 && evidence.old_session_absent
         }),
-        SmokeAction::VisualCheckpoint => {
+        SmokeAction::VisualCheckpoint(checkpoint) => {
             now.visual_checkpoint_complete
                 && now
                     .counters
                     .visual
-                    .is_some_and(|visual| visual.facts.contract_passes())
+                    .get(&checkpoint.id)
+                    .is_some_and(|visual| {
+                        visual.checkpoint_id == checkpoint.id
+                            && visual.state == checkpoint.state
+                            && visual.layout == checkpoint.expected_mode
+                            && visual.facts.contract_passes()
+                    })
         }
+        SmokeAction::InterruptTerminal => now
+            .counters
+            .terminal
+            .interrupt
+            .is_some_and(|evidence| interrupt_complete(before.terminal.interrupt, evidence)),
+        SmokeAction::ResetDisplay => now
+            .counters
+            .terminal
+            .interrupt
+            .is_some_and(|evidence| reset_complete(before.terminal.interrupt, evidence)),
+        SmokeAction::ResizeWindow {
+            width,
+            height,
+            expected_mode,
+        } => now.counters.window_resize.is_some_and(|evidence| {
+            evidence.sequence > before.window_resize.map_or(0, |prior| prior.sequence)
+                && evidence.requested_width == *width
+                && evidence.requested_height == *height
+                && evidence.realized_width > 0
+                && evidence.realized_height > 0
+                && evidence.expected_layout == *expected_mode
+                && evidence.layout == *expected_mode
+        }),
         SmokeAction::WaitFrameContains(text) => contains(text),
         SmokeAction::SplitHorizontal | SmokeAction::SplitVertical => {
             now.counters.panes > before.panes
@@ -168,45 +210,9 @@ pub(crate) fn action_is_complete(
             source,
             expected: Some(expected),
             ..
-        } => {
-            now.import_preview_ready
-                && now.counters.import_revisions > before.import_revisions
-                && now
-                    .counters
-                    .imports
-                    .preview
-                    .as_ref()
-                    .is_some_and(|evidence| {
-                        evidence.sequence > import_preview_sequence(before)
-                            && evidence.source == *source
-                            && evidence.expected_groups == expected.groups
-                            && evidence.expected_candidates == expected.connections
-                            && evidence.actual_groups == expected.groups
-                            && evidence.actual_candidates == expected.connections
-                            && evidence.exact_group
-                            && evidence.exact_candidate
-                            && evidence.authentication_matches
-                            && evidence.credential_reference_matches
-                            && evidence.terminal_override_matches
-                            && evidence.importable_matches
-                            && evidence.wildcard_matches
-                    })
-        }
+        } => preview_complete(*source, expected, before, now),
         SmokeAction::PreviewImport { .. } => false,
-        SmokeAction::CommitImport => {
-            let evidence = &now.counters.imports;
-            now.counters.import_completions > before.import_completions
-                && evidence.sequence > before.imports.sequence
-                && evidence.completed
-                && evidence.commit_source == Some(rshell_core::ImportSourceKind::LegacyRshellJson)
-                && evidence.imported_groups == evidence.expected_groups
-                && evidence.imported_connections == evidence.expected_connections
-                && evidence.exact_group
-                && evidence.exact_connection
-                && evidence.authentication_matches
-                && evidence.credential_reference_matches
-                && evidence.terminal_override_matches
-        }
+        SmokeAction::CommitImport => commit_complete(before, now),
         SmokeAction::CancelImport => {
             now.counters.import_cancellations > before.import_cancellations
                 && now.counters.imports.cancel_sequence > before.imports.cancel_sequence

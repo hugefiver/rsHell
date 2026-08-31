@@ -60,6 +60,46 @@ pub(crate) fn terminal_evidence_is_exact(report: Option<&SmokeReport>) -> bool {
     })
 }
 
+pub(crate) fn recovery_evidence_is_exact(report: Option<&SmokeReport>) -> bool {
+    report.is_some_and(|report| {
+        let interrupted = report.steps.iter().any(|step| {
+            step.state == SmokeStepState::Passed
+                && step.action == SmokeActionKind::InterruptTerminal
+                && step.evidence.terminal.interrupt.is_some_and(|evidence| {
+                    evidence.sequence > 0
+                        && evidence.command_count == 1
+                        && evidence.wire_byte == 0x03
+                        && evidence.exact_etx
+                        && evidence.enhanced_encoder_bypassed
+                        && evidence.surviving_tui
+                        && evidence.notice_visible
+                        && evidence.reset_generation.is_none()
+                        && !evidence.modes_clean
+                        && evidence.replacement_character_count == 0
+                        && evidence.old_tui_overlap
+                })
+        });
+        let reset = report.steps.iter().any(|step| {
+            step.state == SmokeStepState::Passed
+                && step.action == SmokeActionKind::ResetDisplay
+                && step.evidence.terminal.interrupt.is_some_and(|evidence| {
+                    evidence.sequence > 0
+                        && evidence.command_count == 1
+                        && evidence.wire_byte == 0x03
+                        && evidence.exact_etx
+                        && evidence.enhanced_encoder_bypassed
+                        && evidence.surviving_tui
+                        && !evidence.notice_visible
+                        && evidence.reset_generation.is_some()
+                        && evidence.modes_clean
+                        && evidence.replacement_character_count == 0
+                        && !evidence.old_tui_overlap
+                })
+        });
+        interrupted && reset
+    })
+}
+
 pub(crate) fn import_evidence_is_exact(report: Option<&SmokeReport>) -> bool {
     report.is_some_and(|report| {
         let legacy_commit = report.steps.iter().any(|step| {
@@ -211,7 +251,7 @@ mod tests {
     #[test]
     fn swapped_surface_and_connection_identity_cannot_pass_component_binding() {
         let report = SmokeReport {
-            version: 1,
+            version: 2,
             run_nonce: "unit".into(),
             state: SmokeScenarioState::Passed,
             elapsed: Duration::ZERO,
@@ -237,6 +277,8 @@ mod tests {
             failure: None,
             requested_png_path: None,
             png_path: None,
+            requested_png_paths: Vec::new(),
+            png_paths: Vec::new(),
             png_error: None,
         };
         let status = super::assess(
@@ -262,7 +304,7 @@ mod tests {
         let expected = rshell_core::ConnectionId::new();
         let other = rshell_core::ConnectionId::new();
         let mut report = SmokeReport {
-            version: 1,
+            version: 2,
             run_nonce: "unit".into(),
             state: SmokeScenarioState::Passed,
             elapsed: Duration::ZERO,
@@ -271,6 +313,8 @@ mod tests {
             failure: None,
             requested_png_path: None,
             png_path: None,
+            requested_png_paths: Vec::new(),
+            png_paths: Vec::new(),
             png_error: None,
         };
         for (index, (action, connection_id, actual_label, profile_name)) in [
@@ -350,7 +394,7 @@ mod tests {
         counters.imports.cancel_sequence = 8;
         counters.imports.cancelled_preview_matches = true;
         let report = SmokeReport {
-            version: 1,
+            version: 2,
             run_nonce: "unit".into(),
             state: SmokeScenarioState::Passed,
             elapsed: Duration::ZERO,
@@ -374,6 +418,8 @@ mod tests {
             failure: None,
             requested_png_path: None,
             png_path: None,
+            requested_png_paths: Vec::new(),
+            png_paths: Vec::new(),
             png_error: None,
         };
         assert!(!super::import_evidence_is_exact(Some(&report)));

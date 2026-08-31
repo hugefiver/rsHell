@@ -4,7 +4,7 @@ use std::{
     collections::{BTreeMap, BTreeSet},
     path::Path,
     sync::{Arc, Mutex},
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 use async_trait::async_trait;
@@ -13,16 +13,309 @@ use relm4::{Component, ComponentController};
 use rshell_core::{
     AppBootstrapState, AppDependencies, AppSettings, AppViewModel, ApplicationService,
     CatalogMutation, ConnectionCatalog, ConnectionId, ConnectionProfile, ConnectionRepository,
-    CredentialOperationError, CredentialPort, CredentialRef, ImportCandidateId, ImportCommitResult,
-    ImportError, ImportPort, ImportPreviewId, ImportPreviewView, ImportSourceKind,
-    LatestViewStream, PaneId, PaneLaunchTarget, RenderFrame, RepositoryError,
-    ResolvedTerminalProfile, SecretUpdate, SessionBinding, SessionFailure, SessionId, SessionPort,
-    SessionState, SessionUiCommand, SessionUiEvent, TerminalOverrides, TerminalProfile,
-    TerminalSize, UiCommand,
+    CredentialOperationError, CredentialPort, CredentialRef, DisplayRecoveryNotice,
+    ImportCandidateId, ImportCommitResult, ImportError, ImportPort, ImportPreviewId,
+    ImportPreviewView, ImportSourceKind, LatestViewStream, PaneId, PaneLaunchTarget, PaneTree,
+    RenderFrame, RepositoryError, ResolvedTerminalProfile, SecretUpdate, SessionBinding,
+    SessionFailure, SessionId, SessionPort, SessionState, SessionUiCommand, SessionUiEvent,
+    SplitAxis, TabId, TabState, TerminalDisplayModes, TerminalOverrides, TerminalProfile,
+    TerminalSize, UiCommand, UiCommandPort, UiPortError, WorkspaceState,
 };
-use rshell_ui::{MainWindow, MainWindowInit, PaneAction, PanePageKind, SessionPaneViewModel};
+use rshell_ui::{
+    ConnectionSidebarOutput, MainWindow, MainWindowInit, MainWindowMsg, PaneAction, PanePageKind,
+    SessionPaneViewModel,
+};
 use secrecy::SecretString;
 use tokio::time::timeout;
+
+#[test]
+fn breakpoint_crossing_preserves_controller_and_reducer_identity() {
+    if let Err(error) = gtk::init() {
+        eprintln!("live adaptive shell regression skipped: {error}");
+        return;
+    }
+    let (view, active_tab, active_pane, session) = adaptive_fixture();
+    let window = MainWindow::builder()
+        .launch(MainWindowInit::new(Arc::new(AcceptingPort), view))
+        .detach();
+    window.widget().set_default_size(1_000, 700);
+    window.widget().present();
+    assert!(flush_gtk());
+    window.emit(MainWindowMsg::Allocated { width: 800 });
+    assert!(flush_gtk());
+
+    let sidebar_search = sidebar_search(window.widget());
+    sidebar_search.set_text("Retained");
+    assert!(flush_gtk());
+    let list = descendants(window.widget())
+        .into_iter()
+        .find_map(|widget| widget.downcast::<gtk::ListBox>().ok())
+        .expect("connection list");
+    let row = (0..list.observe_children().n_items() as i32)
+        .filter_map(|index| list.row_at_index(index))
+        .find(|row| {
+            descendants(row).into_iter().any(|widget| {
+                widget
+                    .downcast::<gtk::Label>()
+                    .is_ok_and(|label| label.text().as_str() == "Retained connection")
+            })
+        })
+        .expect("filtered connection row");
+    list.select_row(Some(&row));
+    window.emit(MainWindowMsg::Sidebar(ConnectionSidebarOutput::OpenCreate(
+        None,
+    )));
+    assert!(flush_gtk());
+    let editor = css_child(window.widget(), "editor-dialog");
+    let name = editor_field(&editor, "Name");
+    let host = editor_field(&editor, "Host");
+    name.set_text("Unsaved adaptive draft");
+    host.set_text("draft.example.test");
+    let canvas = active_terminal(window.widget());
+    assert!(press_key(
+        &canvas,
+        gtk::gdk::Key::from_name("f").unwrap(),
+        gtk::gdk::ModifierType::CONTROL_MASK | gtk::gdk::ModifierType::SHIFT_MASK,
+    ));
+    assert!(flush_gtk());
+    let terminal_search = active_terminal_search(window.widget());
+    terminal_search.set_text("needle");
+    list.select_row(Some(&row));
+    canvas.grab_focus();
+    assert!(flush_gtk());
+    assert!(
+        wait_for_gtk(|| list.selected_row().is_some()),
+        "selected connection row must settle before breakpoint assertions"
+    );
+
+    let identities = AdaptiveIdentities::capture(window.widget());
+    assert!(css_child(window.widget(), "shell-compact").is_visible());
+    assert_adaptive_state(
+        window.widget(),
+        &identities,
+        active_tab,
+        active_pane,
+        session,
+    );
+
+    for (width, class) in [
+        (900, "shell-standard"),
+        (1_440, "shell-wide"),
+        (800, "shell-compact"),
+    ] {
+        window.emit(MainWindowMsg::Allocated { width });
+        assert!(flush_gtk(), "allocation {width} must quiesce");
+        assert!(css_child(window.widget(), class).is_visible());
+        assert_adaptive_state(
+            window.widget(),
+            &identities,
+            active_tab,
+            active_pane,
+            session,
+        );
+    }
+
+    window.widget().close();
+    assert!(flush_gtk());
+}
+
+#[derive(Clone, Copy)]
+struct AdaptiveIdentities {
+    sidebar: usize,
+    active_tab: usize,
+    terminal: usize,
+    editor: usize,
+    selected_row: usize,
+    focused: usize,
+}
+
+impl AdaptiveIdentities {
+    fn capture(root: &impl IsA<gtk::Widget>) -> Self {
+        Self {
+            sidebar: css_child(root, "sidebar").as_ptr() as usize,
+            active_tab: css_child(root, "active-tab").as_ptr() as usize,
+            terminal: active_terminal(root).as_ptr() as usize,
+            editor: css_child(root, "editor-dialog").as_ptr() as usize,
+            selected_row: css_child(root, "connection-list")
+                .downcast::<gtk::ListBox>()
+                .ok()
+                .and_then(|list| list.selected_row())
+                .expect("selected connection row")
+                .as_ptr() as usize,
+            focused: root
+                .as_ref()
+                .root()
+                .and_then(|root| gtk::prelude::RootExt::focus(&root))
+                .expect("focused shell widget")
+                .as_ptr() as usize,
+        }
+    }
+}
+
+fn assert_adaptive_state(
+    root: &gtk::ApplicationWindow,
+    identities: &AdaptiveIdentities,
+    active_tab: TabId,
+    active_pane: PaneId,
+    session: SessionId,
+) {
+    let actual = AdaptiveIdentities::capture(root);
+    assert_eq!(actual.sidebar, identities.sidebar);
+    assert_eq!(
+        actual.active_tab, identities.active_tab,
+        "active tab {active_tab}"
+    );
+    assert_eq!(actual.terminal, identities.terminal, "session {session:?}");
+    assert_eq!(
+        active_terminal(root).as_ptr() as usize,
+        identities.terminal,
+        "active pane {active_pane:?}"
+    );
+    assert_eq!(actual.editor, identities.editor);
+    assert_eq!(actual.selected_row, identities.selected_row);
+    assert_eq!(sidebar_search(root).text(), "Retained");
+    let terminal_search = active_terminal_search(root);
+    assert!(terminal_search.is_visible());
+    assert_eq!(terminal_search.text(), "needle");
+    let editor = css_child(root, "editor-dialog");
+    assert!(editor.is_visible());
+    assert_eq!(
+        editor_field(&editor, "Name").text(),
+        "Unsaved adaptive draft"
+    );
+    assert_eq!(editor_field(&editor, "Host").text(), "draft.example.test");
+    assert_eq!(
+        gtk::prelude::GtkWindowExt::focus(root)
+            .as_ref()
+            .map(|widget| widget.as_ptr() as usize),
+        Some(identities.focused)
+    );
+}
+
+fn wait_for_gtk(mut condition: impl FnMut() -> bool) -> bool {
+    let deadline = Instant::now() + Duration::from_secs(2);
+    loop {
+        flush_gtk();
+        if condition() {
+            return true;
+        }
+        if Instant::now() >= deadline {
+            return false;
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+}
+
+fn adaptive_fixture() -> (AppViewModel, TabId, PaneId, SessionId) {
+    let active_tab = TabId::new_v4();
+    let active_pane = PaneId::new();
+    let session = SessionId::new();
+    let sibling_pane = PaneId::new();
+    let sibling_session = SessionId::new();
+    let inactive_tab = TabId::new_v4();
+    let inactive_pane = PaneId::new();
+    let inactive_session = SessionId::new();
+    let retained = ConnectionProfile::new("Retained connection", "retained.example.test");
+    let mut catalog = ConnectionCatalog::default();
+    catalog.connections.insert(retained.id, retained);
+    let mut view = AppViewModel::from(AppBootstrapState {
+        catalog,
+        settings: AppSettings::default(),
+        terminal_profiles: vec![TerminalProfile::default()],
+    });
+    let mut active_tree = PaneTree::with_session(sibling_pane, sibling_session)
+        .split(sibling_pane, SplitAxis::Horizontal, active_pane, 0.5)
+        .unwrap();
+    active_tree
+        .replace_session(active_pane, Some(session))
+        .unwrap();
+    view.workspace = WorkspaceState {
+        tabs: vec![
+            TabState {
+                id: inactive_tab,
+                title: "Inactive tab".into(),
+                pane_tree: PaneTree::with_session(inactive_pane, inactive_session),
+                active_pane: inactive_pane,
+            },
+            TabState {
+                id: active_tab,
+                title: "Retained tab".into(),
+                pane_tree: active_tree,
+                active_pane,
+            },
+        ],
+        active_tab: Some(active_tab),
+    };
+    for (pane, bound) in [
+        (active_pane, session),
+        (sibling_pane, sibling_session),
+        (inactive_pane, inactive_session),
+    ] {
+        view.pane_launches.insert(pane, PaneLaunchTarget::Local);
+        view.session_states.insert(bound, SessionState::Connected);
+        view.latest_frames.insert(bound, frame(37));
+    }
+    (view, active_tab, active_pane, session)
+}
+
+struct AcceptingPort;
+
+impl UiCommandPort for AcceptingPort {
+    fn try_send(&self, _command: UiCommand) -> Result<(), UiPortError> {
+        Ok(())
+    }
+}
+
+fn sidebar_search(root: &impl IsA<gtk::Widget>) -> gtk::SearchEntry {
+    let sidebar = css_child(root, "sidebar");
+    descendants(&sidebar)
+        .into_iter()
+        .filter_map(|widget| widget.downcast::<gtk::SearchEntry>().ok())
+        .find(|entry| !entry.has_css_class("terminal-search"))
+        .expect("connection search")
+}
+
+fn editor_field(root: &impl IsA<gtk::Widget>, label: &str) -> gtk::Entry {
+    descendants(root)
+        .into_iter()
+        .filter_map(|widget| widget.downcast::<gtk::Label>().ok())
+        .find(|candidate| candidate.text().as_str() == label)
+        .and_then(|label| label.next_sibling())
+        .and_then(|widget| widget.downcast::<gtk::Entry>().ok())
+        .unwrap_or_else(|| panic!("missing editor field {label}"))
+}
+
+fn css_child(root: &impl IsA<gtk::Widget>, class: &str) -> gtk::Widget {
+    descendants(root)
+        .into_iter()
+        .find(|widget| widget.has_css_class(class))
+        .unwrap_or_else(|| panic!("missing .{class}"))
+}
+
+fn active_terminal(root: &impl IsA<gtk::Widget>) -> gtk::Widget {
+    let active = css_child(root, "active-pane");
+    css_child(&active, "terminal-canvas")
+}
+
+fn active_terminal_search(root: &impl IsA<gtk::Widget>) -> gtk::SearchEntry {
+    let active = css_child(root, "active-pane");
+    css_child(&active, "terminal-search")
+        .downcast::<gtk::SearchEntry>()
+        .expect("active terminal search")
+}
+
+fn press_key(
+    root: &impl IsA<gtk::Widget>,
+    key: gtk::gdk::Key,
+    state: gtk::gdk::ModifierType,
+) -> bool {
+    let controllers = root.observe_controllers();
+    let controller = (0..controllers.n_items())
+        .filter_map(|index| controllers.item(index))
+        .find_map(|controller| controller.downcast::<gtk::EventControllerKey>().ok())
+        .expect("key controller");
+    controller.emit_by_name::<bool>("key-pressed", &[&key, &0u32, &state])
+}
 
 #[tokio::test(flavor = "current_thread")]
 async fn application_stream_drives_authoritative_connection_retry_and_failure_ui() {
@@ -70,10 +363,81 @@ async fn application_stream_drives_authoritative_connection_retry_and_failure_ui
         .unwrap();
     assert_ne!(connected_session, initial_session);
     assert!(!ports.is_live(initial_session));
+    ports.send_event(
+        connected_session,
+        SessionUiEvent::State(SessionState::Connected),
+    );
+    let connected = wait_view(&mut latest, |view| {
+        view.session_states.get(&connected_session) == Some(&SessionState::Connected)
+    })
+    .await;
     let pane_view = SessionPaneViewModel::from_app(&connected, pane).unwrap();
     let resolved = pane_view.resolved_profile(&connected).unwrap();
     assert_eq!(resolved.cols, 132);
     assert_eq!(resolved.font_size, 19.0);
+
+    let recovery = DisplayRecoveryNotice {
+        interrupted_generation: 76,
+        observed_generation: 77,
+        modes: TerminalDisplayModes {
+            alternate_screen: true,
+            enhanced_keyboard: true,
+            ..TerminalDisplayModes::default()
+        },
+    };
+    ports.send_event(
+        connected_session,
+        SessionUiEvent::RecoveryChanged(Some(recovery)),
+    );
+    let recovering = wait_view(&mut latest, |view| {
+        view.display_recovery.get(&connected_session) == Some(&recovery)
+    })
+    .await;
+    let pane_view = SessionPaneViewModel::from_app(&recovering, pane).unwrap();
+    assert_eq!(pane_view.page(), PanePageKind::Terminal);
+    assert_eq!(pane_view.recovery_notice(), Some(recovery));
+    assert_eq!(
+        pane_view
+            .actions()
+            .iter()
+            .filter(|action| **action == PaneAction::ResetDisplay)
+            .count(),
+        1
+    );
+    assert!(flush_gtk());
+    let recovery_rows = descendants(window.widget())
+        .into_iter()
+        .filter(|widget| widget.has_css_class("display-recovery-notice"))
+        .collect::<Vec<_>>();
+    assert_eq!(recovery_rows.len(), 1);
+    assert_eq!(
+        label_text(&recovery_rows[0])
+            .into_iter()
+            .filter(|label| label == "Display mode not restored")
+            .count(),
+        1
+    );
+    let reset_buttons = descendants(window.widget())
+        .into_iter()
+        .filter_map(|widget| widget.downcast::<gtk::Button>().ok())
+        .filter(|button| button.tooltip_text().as_deref() == Some("Reset display"))
+        .collect::<Vec<_>>();
+    assert_eq!(reset_buttons.len(), 1);
+    assert_eq!(
+        reset_buttons[0].accessible_role(),
+        gtk::AccessibleRole::Button
+    );
+    assert!(
+        descendants(window.widget())
+            .into_iter()
+            .filter(|widget| widget.has_css_class("pane-command-row"))
+            .flat_map(|toolbar| descendants(&toolbar))
+            .filter_map(|widget| widget.downcast::<gtk::Button>().ok())
+            .all(|button| button.tooltip_text().as_deref() != Some("Reset display"))
+    );
+    reset_buttons[0].emit_clicked();
+    assert!(flush_gtk());
+    wait_for_reset_display(&ports).await;
 
     ports.send_event(
         connected_session,
@@ -130,6 +494,7 @@ async fn application_stream_drives_authoritative_connection_retry_and_failure_ui
 
     assert!(!ports.is_live(retry_session));
     assert!(!failed.latest_frames.contains_key(&retry_session));
+    assert!(!failed.display_recovery.contains_key(&connected_session));
     assert!(matches!(
         failed.pane_launches.get(&pane),
         Some(PaneLaunchTarget::Connection { id, host })
@@ -156,6 +521,7 @@ async fn application_stream_drives_authoritative_connection_retry_and_failure_ui
     assert!(flush_gtk());
     let labels = label_text(window.widget());
     assert!(labels.iter().any(|label| label == "Failed"));
+    assert!(labels.iter().all(|label| !label.contains('\u{fffd}')));
     assert!(descendants(window.widget()).into_iter().any(|widget| {
         widget
             .downcast::<gtk::Button>()
@@ -207,6 +573,17 @@ async fn wait_view(
     .expect("authoritative view update timed out")
 }
 
+async fn wait_for_reset_display(ports: &TestPorts) {
+    timeout(Duration::from_secs(2), async {
+        while ports.reset_display_commands() == 0 {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .expect("Reset display command was not dispatched through the application port");
+    assert_eq!(ports.reset_display_commands(), 1);
+}
+
 fn bootstrap() -> (AppBootstrapState, ConnectionId) {
     let mut connection = ConnectionProfile::new("Managed", "safe.example.test");
     connection.terminal_overrides = TerminalOverrides {
@@ -241,6 +618,7 @@ fn frame(generation: u64) -> Arc<RenderFrame> {
         rows: Arc::from([]),
         cursor: None,
         title: "stream fixture".into(),
+        display_modes: Default::default(),
         alternate_screen: false,
         mouse_reporting: false,
     })
@@ -256,6 +634,7 @@ struct TestState {
     sessions: BTreeMap<SessionId, TestSession>,
     live: BTreeSet<SessionId>,
     fail_launch: bool,
+    reset_display_commands: usize,
 }
 
 struct TestSession {
@@ -300,6 +679,10 @@ impl TestPorts {
 
     fn is_live(&self, session: SessionId) -> bool {
         self.state.lock().unwrap().live.contains(&session)
+    }
+
+    fn reset_display_commands(&self) -> usize {
+        self.state.lock().unwrap().reset_display_commands
     }
 
     fn send_event(&self, session: SessionId, event: SessionUiEvent) {
@@ -350,8 +733,11 @@ impl SessionPort for TestPorts {
     async fn command(
         &self,
         _session: SessionId,
-        _command: SessionUiCommand,
+        command: SessionUiCommand,
     ) -> Result<(), SessionFailure> {
+        if matches!(command, SessionUiCommand::ResetDisplay) {
+            self.state.lock().unwrap().reset_display_commands += 1;
+        }
         Ok(())
     }
 

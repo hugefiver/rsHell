@@ -3,7 +3,7 @@ use relm4::{ComponentSender, gtk};
 use rshell_core::{AuthPrompt, InteractionRequest};
 
 use crate::{
-    InteractionAction, InteractionDialog, InteractionDialogMsg, ProductIcon,
+    IconRenderRequest, InteractionAction, InteractionDialog, InteractionDialogMsg, ProductIcon,
     interaction_dialog_widgets::InteractionDialogWidgets,
 };
 
@@ -66,7 +66,31 @@ pub fn render_interaction(
             });
             widgets.actions.append(&button);
         }
+        let first = widgets
+            .inputs
+            .first()
+            .cloned()
+            .or_else(|| widgets.actions.first_child());
+        if let Some(first) = first.as_ref() {
+            first.add_css_class("modal-focus-first");
+        }
+        if let Some(last) = widgets.actions.last_child() {
+            last.add_css_class("modal-focus-last");
+        }
         widgets.rendered = Some(view.interaction_id());
+        if model.visible
+            && let Some(first) = first
+        {
+            first.grab_focus();
+            let frame_focus = first.clone();
+            root.add_tick_callback(move |_, _| {
+                frame_focus.grab_focus();
+                gtk::glib::ControlFlow::Break
+            });
+            gtk::glib::idle_add_local_once(move || {
+                first.grab_focus();
+            });
+        }
     }
     widgets
         .error
@@ -124,9 +148,14 @@ fn action_button(action: InteractionAction) -> gtk::Button {
     };
     let button = gtk::Button::new();
     let content = gtk::Box::new(gtk::Orientation::Horizontal, 6);
-    content.append(&icon.image().expect("embedded interaction icon"));
+    content.append(
+        &icon
+            .image(IconRenderRequest::for_widget(16, &button))
+            .expect("embedded interaction icon"),
+    );
     content.append(&gtk::Label::new(Some(label)));
     button.set_child(Some(&content));
+    button.set_tooltip_text(Some(label));
     button.update_property(&[gtk::accessible::Property::Label(label)]);
     if matches!(
         action,

@@ -1,10 +1,10 @@
 use std::sync::Arc;
 
 use rshell_core::{
-    AppBootstrapState, AppViewModel, ErrorPaneView, KeyBinding, KeyCode, KeyModifiers, PaneId,
-    PaneLaunchTarget, PaneTree, RenderFrame, SessionFailure, SessionId, SessionState,
-    SessionUiEvent, SplitAxis, TabId, TabState, TerminalProfile, TerminalSize, UiCommand,
-    UiPortError, WorkspaceState,
+    AppBootstrapState, AppViewModel, DisplayRecoveryNotice, ErrorPaneView, KeyBinding, KeyCode,
+    KeyModifiers, PaneId, PaneLaunchTarget, PaneTree, RenderFrame, SessionFailure, SessionId,
+    SessionState, SessionUiCommand, SessionUiEvent, SplitAxis, TabId, TabState,
+    TerminalDisplayModes, TerminalProfile, TerminalSize, UiCommand, UiPortError, WorkspaceState,
 };
 use rshell_ui::{
     PaneAction, PaneHostModel, PanePageKind, PaneProjection, SessionPaneViewModel,
@@ -65,6 +65,7 @@ fn reconnect_and_retry_use_application_retry_pane() {
         PaneAction::Close.command(pane, None),
         Some(UiCommand::ClosePane(target)) if target == pane
     ));
+    assert!(PaneAction::ResetDisplay.command(pane, None).is_none());
 }
 
 #[test]
@@ -111,6 +112,125 @@ fn every_session_state_has_an_explicit_page_and_status() {
 }
 
 #[test]
+fn recovery_notice_and_terminal_pages_are_mutually_exclusive() {
+    let fixture = workspace_fixture();
+    let pane = fixture.connection_pane;
+    let session = fixture.connection_session;
+    let mut view = fixture.view;
+    let notice = DisplayRecoveryNotice {
+        interrupted_generation: 41,
+        observed_generation: 42,
+        modes: TerminalDisplayModes {
+            alternate_screen: true,
+            enhanced_keyboard: true,
+            ..TerminalDisplayModes::default()
+        },
+    };
+
+    let connected = SessionPaneViewModel::from_app(&view, pane).unwrap();
+    assert_eq!(connected.page(), PanePageKind::Terminal);
+    assert_eq!(connected.recovery_notice(), None);
+    assert_eq!(
+        connected.actions(),
+        vec![
+            PaneAction::SplitHorizontal,
+            PaneAction::SplitVertical,
+            PaneAction::Reconnect,
+            PaneAction::Close,
+        ]
+    );
+
+    view.display_recovery.insert(session, notice);
+    let connected = SessionPaneViewModel::from_app(&view, pane).unwrap();
+    assert_eq!(connected.page(), PanePageKind::Terminal);
+    assert_eq!(connected.recovery_notice(), Some(notice));
+    assert_eq!(
+        connected.actions(),
+        vec![
+            PaneAction::ResetDisplay,
+            PaneAction::SplitHorizontal,
+            PaneAction::SplitVertical,
+            PaneAction::Reconnect,
+            PaneAction::Close,
+        ]
+    );
+    assert_eq!(
+        connected
+            .actions()
+            .iter()
+            .filter(|action| **action == PaneAction::ResetDisplay)
+            .count(),
+        1
+    );
+    assert!(matches!(
+        PaneAction::ResetDisplay.command(pane, Some(session)),
+        Some(UiCommand::Session {
+            session: target,
+            command: SessionUiCommand::ResetDisplay,
+        }) if target == session
+    ));
+
+    for (state, page) in [
+        (SessionState::Exited, PanePageKind::Status),
+        (SessionState::Failed, PanePageKind::Error),
+        (SessionState::Crashed, PanePageKind::Error),
+    ] {
+        view.session_states.insert(session, state);
+        view.display_recovery.remove(&session);
+        let pane_view = SessionPaneViewModel::from_app(&view, pane).unwrap();
+        assert_eq!(pane_view.page(), page, "state {state:?}");
+        assert_ne!(pane_view.page(), PanePageKind::Terminal, "state {state:?}");
+        assert_eq!(
+            pane_view.actions(),
+            vec![
+                PaneAction::Retry,
+                PaneAction::EditConnection,
+                PaneAction::CopyDiagnostics,
+                PaneAction::Close,
+            ],
+            "state {state:?} without residue"
+        );
+
+        view.display_recovery.insert(session, notice);
+        let pane_view = SessionPaneViewModel::from_app(&view, pane).unwrap();
+        assert_eq!(pane_view.page(), page, "state {state:?}");
+        assert_ne!(pane_view.page(), PanePageKind::Terminal, "state {state:?}");
+        assert_eq!(
+            pane_view.actions(),
+            vec![
+                PaneAction::Retry,
+                PaneAction::EditConnection,
+                PaneAction::CopyDiagnostics,
+                PaneAction::ResetDisplay,
+                PaneAction::Close,
+            ],
+            "state {state:?} with residue"
+        );
+    }
+
+    view.workspace.tabs[0]
+        .pane_tree
+        .replace_session(pane, None)
+        .unwrap();
+    let disconnected = SessionPaneViewModel::from_app(&view, pane).unwrap();
+    assert_eq!(disconnected.page(), PanePageKind::Status);
+    assert_eq!(disconnected.status_label(), "Disconnected");
+    assert_eq!(disconnected.recovery_notice(), None);
+    assert_eq!(
+        disconnected.actions(),
+        vec![
+            PaneAction::Retry,
+            PaneAction::EditConnection,
+            PaneAction::CopyDiagnostics,
+            PaneAction::Close,
+        ]
+    );
+    let diagnostics = disconnected.diagnostics().unwrap();
+    assert!(diagnostics.contains("category: disconnected"));
+    assert!(diagnostics.contains("error: session disconnected"));
+}
+
+#[test]
 fn frames_route_only_to_the_bound_session_and_stale_retry_events_are_ignored() {
     let fixture = workspace_fixture();
     let pane = fixture.h_pane;
@@ -137,6 +257,20 @@ fn frames_route_only_to_the_bound_session_and_stale_retry_events_are_ignored() {
     assert!(!model.apply_session_event(old, SessionUiEvent::Frame(frame(8, "stale"))));
     assert!(model.apply_session_event(new, SessionUiEvent::Frame(frame(9, "fresh"))));
     assert_eq!(model.pane(pane).unwrap().frame().unwrap().generation, 9);
+
+    let notice = DisplayRecoveryNotice {
+        interrupted_generation: 9,
+        observed_generation: 10,
+        modes: TerminalDisplayModes {
+            alternate_screen: true,
+            ..TerminalDisplayModes::default()
+        },
+    };
+    assert!(!model.apply_session_event(old, SessionUiEvent::RecoveryChanged(Some(notice))));
+    assert!(model.apply_session_event(new, SessionUiEvent::RecoveryChanged(Some(notice))));
+    assert_eq!(model.pane(pane).unwrap().recovery_notice(), Some(notice));
+    assert!(model.apply_session_event(new, SessionUiEvent::Failed(SessionFailure::Network)));
+    assert_eq!(model.pane(pane).unwrap().recovery_notice(), None);
 }
 
 #[test]
@@ -307,6 +441,7 @@ fn frame(generation: u64, title: &str) -> Arc<RenderFrame> {
         rows: Arc::from([]),
         cursor: None,
         title: title.into(),
+        display_modes: Default::default(),
         alternate_screen: false,
         mouse_reporting: false,
     })

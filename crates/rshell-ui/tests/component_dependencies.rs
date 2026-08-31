@@ -170,6 +170,27 @@ fn product_commands_leave_ui_through_one_command_port_adapter() {
 }
 
 #[test]
+fn production_shell_forbids_generic_widget_unparent() {
+    let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+    let required = ["main_window_shell.rs", "main_window_layout.rs"];
+    let future = ["navigation_drawer.rs"];
+
+    for name in required {
+        let path = src.join(name);
+        let source = fs::read_to_string(&path).unwrap_or_else(|error| {
+            panic!("read required shell owner {}: {error}", path.display())
+        });
+        assert_typed_shell_ownership(&path, &source);
+    }
+    for name in future {
+        let path = src.join(name);
+        if let Ok(source) = fs::read_to_string(&path) {
+            assert_typed_shell_ownership(&path, &source);
+        }
+    }
+}
+
+#[test]
 fn production_ui_has_no_blocking_or_unbounded_runtime_primitives() {
     let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
     let mut files = Vec::new();
@@ -197,6 +218,37 @@ fn terminal_child_delivery_handles_disconnected_controllers() {
             file.display()
         );
     }
+}
+
+#[test]
+fn product_icons_and_terminal_metrics_have_one_explicit_invalidation_path() {
+    let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+    let mut files = Vec::new();
+    rust_files(&src, &mut files);
+    for file in &files {
+        let source = fs::read_to_string(file).expect("read production source");
+        for forbidden in [".image()", ".button()", ".decode_texture()"] {
+            assert!(
+                !source.contains(forbidden),
+                "{} contains implicit product icon call {forbidden}",
+                file.display()
+            );
+        }
+    }
+
+    let icon_cache = fs::read_to_string(src.join("icon_cache.rs")).unwrap();
+    assert!(icon_cache.contains("BTreeMap<IconCacheKey"));
+    assert!(!icon_cache.contains("BTreeMap<ProductIcon"));
+    let icon_render = fs::read_to_string(src.join("icon_render.rs")).unwrap();
+    assert!(icon_render.contains("physical_size = request.physical_size()?"));
+    assert!(icon_render.contains("connect_notify_local(Some(\"scale-factor\")"));
+
+    let terminal_view = fs::read_to_string(src.join("terminal_view.rs")).unwrap();
+    assert!(terminal_view.contains("FontMetricsService"));
+    let metric_refresh = fs::read_to_string(src.join("terminal_view_metrics.rs")).unwrap();
+    assert!(metric_refresh.contains("MetricsChange::Unchanged(_) => Ok(None)"));
+    let pane_terminals = fs::read_to_string(src.join("pane_host_terminals.rs")).unwrap();
+    assert!(pane_terminals.contains("TerminalViewMsg::UpdateProfile(profile.clone())"));
 }
 
 fn dependency_names(manifest: &str) -> Vec<&str> {
@@ -231,5 +283,15 @@ fn rust_files(directory: &Path, files: &mut Vec<PathBuf>) {
         } else if path.extension().is_some_and(|extension| extension == "rs") {
             files.push(path);
         }
+    }
+}
+
+fn assert_typed_shell_ownership(path: &Path, source: &str) {
+    for forbidden in [".unparent(", "WidgetExt::unparent"] {
+        assert!(
+            !source.contains(forbidden),
+            "{} contains forbidden generic ownership escape {forbidden}",
+            path.display()
+        );
     }
 }

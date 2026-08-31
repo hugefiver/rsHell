@@ -3,6 +3,7 @@ use std::sync::Arc;
 use rshell_core::{
     RenderFrame, ResolvedTerminalProfile, SearchMatch, SearchQuery, SelectionRange, TerminalInput,
     TerminalMouseEvent, TerminalSize, Viewport,
+    render::{DisplayRecovery, TerminalDisplayModes},
 };
 
 use crate::{EngineError, ViewportBounds, alacritty_adapter::AlacrittyAdapter, render, text};
@@ -14,6 +15,8 @@ pub struct EngineDelta {
 }
 
 pub trait TerminalEngine: Send {
+    fn display_modes(&self) -> TerminalDisplayModes;
+    fn recover_display(&mut self) -> Result<DisplayRecovery, EngineError>;
     fn advance(&mut self, bytes: &[u8]) -> Result<EngineDelta, EngineError>;
     fn resize(&mut self, size: TerminalSize) -> Result<(), EngineError>;
     fn render(
@@ -89,6 +92,14 @@ impl DefaultTerminalEngine {
 }
 
 impl TerminalEngine for DefaultTerminalEngine {
+    fn display_modes(&self) -> TerminalDisplayModes {
+        self.adapter.display_modes()
+    }
+
+    fn recover_display(&mut self) -> Result<DisplayRecovery, EngineError> {
+        Ok(self.adapter.recover_display())
+    }
+
     fn advance(&mut self, bytes: &[u8]) -> Result<EngineDelta, EngineError> {
         let outbound = self.adapter.input(bytes);
         Ok(EngineDelta {

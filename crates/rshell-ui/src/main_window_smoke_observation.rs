@@ -97,7 +97,8 @@ impl MainWindow {
                 import_revisions: self.smoke_state.import_revision,
                 terminal: self.smoke_state.terminal.clone(),
                 imports: self.smoke_state.imports.clone(),
-                visual: self.smoke_state.visual,
+                visual: self.smoke_state.visuals.clone(),
+                window_resize: self.smoke_state.window_resize,
             },
         }
     }

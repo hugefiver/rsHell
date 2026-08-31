@@ -1,7 +1,10 @@
 mod actor;
+mod actor_commands;
 mod actor_io;
 mod actor_process;
+mod actor_termination;
 mod alacritty_adapter;
+mod alacritty_display;
 mod alacritty_event;
 mod alacritty_feed;
 mod alacritty_key;
@@ -12,6 +15,7 @@ mod alacritty_tracker;
 mod alacritty_tracker_presentation;
 mod alacritty_tracker_utf8;
 mod auth;
+mod display_recovery;
 mod engine;
 mod error;
 mod frame_clock;
@@ -31,6 +35,7 @@ pub use auth::{
     AuthPlan, AuthPlanError, KeyboardInteractiveResponseError, keyboard_interactive_request,
     validate_keyboard_interactive_response,
 };
+pub use display_recovery::{DisplayRecoveryTracker, InterruptionObservation, RecoveryTransition};
 pub use engine::{DefaultTerminalEngine, EngineDelta, TerminalEngine};
 pub use error::{EngineError, SessionError, TransportError};
 pub use host_keys::{HostKeyError, HostKeyStorageStep, KnownHostsVerifier};

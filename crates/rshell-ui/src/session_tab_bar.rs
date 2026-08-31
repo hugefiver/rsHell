@@ -2,7 +2,7 @@ use gtk::prelude::*;
 use relm4::{ComponentParts, ComponentSender, SimpleComponent, gtk};
 use rshell_core::{TabId, UiCommand, UiPortError, WorkspaceState};
 
-use crate::ProductIcon;
+use crate::{TabOverflowModel, session_tab_bar_widgets::SessionTabBarWidgets};
 
 #[derive(Debug, Clone)]
 pub struct SessionTabBarInit {
@@ -13,6 +13,9 @@ pub struct SessionTabBarInit {
 pub enum SessionTabBarMsg {
     SetWorkspace(WorkspaceState),
     Activate(TabId),
+    ActivateFromOverflow(TabId),
+    Cycle(i32),
+    RevealActive,
     NewLocalTab,
     Close(TabId),
     CommandRejected(UiPortError),
@@ -45,11 +48,6 @@ pub struct SessionTabBar {
     error: Option<String>,
 }
 
-pub struct SessionTabBarWidgets {
-    tabs: gtk::Box,
-    error: gtk::Label,
-}
-
 impl SimpleComponent for SessionTabBar {
     type Init = SessionTabBarInit;
     type Input = SessionTabBarMsg;
@@ -68,21 +66,19 @@ impl SimpleComponent for SessionTabBar {
         root: Self::Root,
         sender: ComponentSender<Self>,
     ) -> ComponentParts<Self> {
-        let tabs = gtk::Box::new(gtk::Orientation::Horizontal, 0);
-        let error = gtk::Label::new(None);
-        error.add_css_class("pane-state-label");
-        error.set_halign(gtk::Align::Start);
-        error.set_visible(false);
-        root.append(&tabs);
-        root.append(&error);
         let active = init.workspace.active_tab;
         let model = Self {
             workspace: init.workspace,
             active,
             error: None,
         };
-        let mut widgets = SessionTabBarWidgets { tabs, error };
-        model.render(&mut widgets, &sender);
+        let mut widgets = SessionTabBarWidgets::build(&root, &sender);
+        widgets.render(
+            &model.workspace,
+            model.active,
+            model.error.as_deref(),
+            &sender,
+        );
         ComponentParts { model, widgets }
     }
 
@@ -100,12 +96,19 @@ impl SimpleComponent for SessionTabBar {
                 self.workspace = workspace;
                 self.error = None;
             }
-            SessionTabBarMsg::Activate(tab) => {
-                if self.workspace.tab(tab).is_ok() {
-                    self.active = Some(tab);
-                    let _ = sender.output(SessionTabBarOutput::ActivateTab(tab));
+            SessionTabBarMsg::Activate(tab) | SessionTabBarMsg::ActivateFromOverflow(tab) => {
+                self.activate(tab, &sender)
+            }
+            SessionTabBarMsg::Cycle(delta) => {
+                let active_index = self
+                    .active
+                    .and_then(|active| self.workspace.tabs.iter().position(|tab| tab.id == active));
+                let model = TabOverflowModel::new(self.workspace.tabs.len(), active_index, &[]);
+                if let Some(index) = model.cycle(delta) {
+                    self.activate(self.workspace.tabs[index].id, &sender);
                 }
             }
+            SessionTabBarMsg::RevealActive => {}
             SessionTabBarMsg::NewLocalTab => {
                 let _ = sender.output(SessionTabBarOutput::Command(Box::new(
                     SessionTabBarAction::NewLocalTab.command(),
@@ -123,66 +126,15 @@ impl SimpleComponent for SessionTabBar {
     }
 
     fn update_view(&self, widgets: &mut Self::Widgets, sender: ComponentSender<Self>) {
-        self.render(widgets, &sender);
+        widgets.render(&self.workspace, self.active, self.error.as_deref(), &sender);
     }
 }
 
 impl SessionTabBar {
-    fn render(&self, widgets: &mut SessionTabBarWidgets, sender: &ComponentSender<Self>) {
-        clear_box(&widgets.tabs);
-        for tab in &self.workspace.tabs {
-            let group = gtk::Box::new(gtk::Orientation::Horizontal, 0);
-            group.add_css_class("terminal-tab");
-            let activate = gtk::Button::with_label(&tab.title);
-            activate.add_css_class("tab-button");
-            activate.set_tooltip_text(Some(&format!("Activate {} tab", tab.title)));
-            set_accessible_label(&activate, &format!("Activate {} tab", tab.title));
-            if self.active == Some(tab.id) {
-                activate.add_css_class("active-tab");
-            }
-            let tab_id = tab.id;
-            let input = sender.input_sender().clone();
-            activate.connect_clicked(move |_| {
-                let _ = input.send(SessionTabBarMsg::Activate(tab_id));
-            });
-            group.append(&activate);
-
-            let close_label = format!("Close {} tab", tab.title);
-            let close = ProductIcon::CloseTab
-                .button(Some(&close_label))
-                .expect("embedded close-tab icon");
-            close.add_css_class("tab-close");
-            set_accessible_label(&close, &close_label);
-            let input = sender.input_sender().clone();
-            close.connect_clicked(move |_| {
-                let _ = input.send(SessionTabBarMsg::Close(tab_id));
-            });
-            group.append(&close);
-            widgets.tabs.append(&group);
+    fn activate(&mut self, tab: TabId, sender: &ComponentSender<Self>) {
+        if self.workspace.tab(tab).is_ok() {
+            self.active = Some(tab);
+            let _ = sender.output(SessionTabBarOutput::ActivateTab(tab));
         }
-
-        let add = ProductIcon::NewTab
-            .button(Some("New local terminal tab"))
-            .expect("embedded new-tab icon");
-        add.add_css_class("tab-add");
-        add.set_tooltip_text(Some("New local terminal tab"));
-        set_accessible_label(&add, "New local terminal tab");
-        let input = sender.input_sender().clone();
-        add.connect_clicked(move |_| {
-            let _ = input.send(SessionTabBarMsg::NewLocalTab);
-        });
-        widgets.tabs.append(&add);
-        widgets.error.set_label(self.error.as_deref().unwrap_or(""));
-        widgets.error.set_visible(self.error.is_some());
     }
-}
-
-fn clear_box(container: &gtk::Box) {
-    while let Some(child) = container.first_child() {
-        container.remove(&child);
-    }
-}
-
-fn set_accessible_label(widget: &impl IsA<gtk::Accessible>, label: &str) {
-    widget.update_property(&[gtk::accessible::Property::Label(label)]);
 }

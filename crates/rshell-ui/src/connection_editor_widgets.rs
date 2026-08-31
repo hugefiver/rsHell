@@ -3,7 +3,8 @@ use relm4::{ComponentSender, gtk};
 use std::{cell::Cell, rc::Rc};
 
 use crate::{
-    ConnectionEditor, ProductIcon, connection_editor_bindings::connect_editor_widgets,
+    ConnectionEditor, IconRenderRequest, ProductIcon,
+    connection_editor_bindings::connect_editor_widgets,
     connection_editor_override_widgets::TerminalOverrideWidgets,
 };
 
@@ -30,37 +31,43 @@ pub struct ConnectionEditorWidgets {
     pub(crate) error: gtk::Label,
     pub(crate) save: gtk::Button,
     pub(crate) profile_labels: Vec<String>,
-    pub(crate) open: bool,
 }
 
 impl ConnectionEditorWidgets {
+    pub(crate) fn park_focus(&self) {
+        if let Some(root) = self.root.root()
+            && let Ok(window) = root.downcast::<gtk::Window>()
+        {
+            gtk::prelude::GtkWindowExt::set_focus(&window, gtk::Widget::NONE);
+        }
+        self.title.set_focusable(true);
+        self.title.grab_focus();
+    }
+
     pub(crate) fn build(root: &gtk::Box, sender: &ComponentSender<ConnectionEditor>) -> Self {
-        let header = gtk::Box::new(gtk::Orientation::Horizontal, 6);
+        let header = gtk::Box::new(gtk::Orientation::Horizontal, 8);
         header.add_css_class("dialog-header");
-        header.set_margin_start(10);
-        header.set_margin_end(10);
-        header.set_margin_top(8);
-        header.set_margin_bottom(4);
         let title = gtk::Label::new(Some("Connection editor"));
         title.set_hexpand(true);
         title.set_halign(gtk::Align::Start);
         title.add_css_class("connection-name");
-        let close = icon_text_button(ProductIcon::CloseTab, "Close");
+        let close = icon_text_button(
+            ProductIcon::CloseTab,
+            "Close",
+            IconRenderRequest::for_widget(16, root),
+        );
         header.append(&title);
         header.append(&close);
         root.append(&header);
 
         let grid = gtk::Grid::builder()
-            .row_spacing(6)
-            .column_spacing(10)
-            .margin_start(10)
-            .margin_end(10)
-            .margin_top(6)
-            .margin_bottom(10)
+            .row_spacing(8)
+            .column_spacing(12)
             .build();
         grid.add_css_class("editor-group");
         grid.add_css_class("dialog-body");
         let name = entry("Connection name");
+        name.add_css_class("modal-focus-first");
         let host = entry("Host name or address");
         let port = gtk::SpinButton::with_range(1.0, 65_535.0, 1.0);
         port.set_tooltip_text(Some("TCP port from 1 to 65535"));
@@ -73,7 +80,7 @@ impl ConnectionEditorWidgets {
         public_key_auth.set_group(Some(&password_auth));
         agent_auth.set_group(Some(&password_auth));
         keyboard_auth.set_group(Some(&password_auth));
-        let auth = gtk::Box::new(gtk::Orientation::Vertical, 2);
+        let auth = gtk::Box::new(gtk::Orientation::Vertical, 4);
         for button in [
             &password_auth,
             &public_key_auth,
@@ -101,48 +108,67 @@ impl ConnectionEditorWidgets {
         let terminal_profile = gtk::DropDown::from_strings(&["Inherit default"]);
 
         let mut row = 0;
+        attach_section(&grid, &mut row, "Identity");
         for (label, widget) in [
             ("Name", name.upcast_ref::<gtk::Widget>()),
             ("Host", host.upcast_ref()),
             ("Port", port.upcast_ref()),
             ("Username", username.upcast_ref()),
-            ("Transport", transport.upcast_ref()),
-            ("Authentication", auth.upcast_ref()),
-            ("Identity file", identity.upcast_ref()),
-            ("Secret", secret.upcast_ref()),
-            ("Remote command", remote_command.upcast_ref()),
             ("Note", note_scroll.upcast_ref()),
             ("Tags", tags.upcast_ref()),
-            ("Terminal profile", terminal_profile.upcast_ref()),
         ] {
             attach_row(&grid, row, label, widget);
             row += 1;
         }
-        let overrides = TerminalOverrideWidgets::build(&grid, &mut row, sender);
-
-        let error = gtk::Label::new(None);
-        error.add_css_class("dialog-error");
-        error.set_halign(gtk::Align::Start);
-        error.set_wrap(true);
-        error.set_selectable(true);
-        grid.attach(&error, 0, row, 3, 1);
+        attach_section(&grid, &mut row, "Transport");
+        for (label, widget) in [
+            ("Transport", transport.upcast_ref()),
+            ("Remote command", remote_command.upcast_ref()),
+        ] {
+            attach_row(&grid, row, label, widget);
+            row += 1;
+        }
+        attach_section(&grid, &mut row, "Authentication");
+        for (label, widget) in [
+            ("Authentication", auth.upcast_ref()),
+            ("Identity file", identity.upcast_ref()),
+            ("Secret", secret.upcast_ref()),
+        ] {
+            attach_row(&grid, row, label, widget);
+            row += 1;
+        }
+        attach_section(&grid, &mut row, "Terminal overrides");
+        attach_row(
+            &grid,
+            row,
+            "Terminal profile",
+            terminal_profile.upcast_ref(),
+        );
         row += 1;
-        let actions = gtk::Box::new(gtk::Orientation::Horizontal, 6);
-        actions.add_css_class("dialog-footer");
-        actions.set_halign(gtk::Align::End);
-        let cancel = gtk::Button::with_label("Cancel");
-        let save = gtk::Button::with_label("Save connection");
-        save.add_css_class("suggested-action");
-        save.add_css_class("connect-button");
-        actions.append(&cancel);
-        actions.append(&save);
-        grid.attach(&actions, 0, row, 3, 1);
+        let overrides = TerminalOverrideWidgets::build(&grid, &mut row, sender);
         let scroll = gtk::ScrolledWindow::builder()
             .hscrollbar_policy(gtk::PolicyType::Never)
             .vexpand(true)
             .child(&grid)
             .build();
         root.append(&scroll);
+        let error = gtk::Label::new(None);
+        error.add_css_class("dialog-error");
+        error.set_halign(gtk::Align::Start);
+        error.set_wrap(true);
+        error.set_selectable(true);
+        root.append(&error);
+        let actions = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+        actions.add_css_class("dialog-footer");
+        actions.set_halign(gtk::Align::End);
+        let cancel = gtk::Button::with_label("Cancel");
+        cancel.add_css_class("modal-focus-last");
+        let save = gtk::Button::with_label("Save connection");
+        save.add_css_class("suggested-action");
+        save.add_css_class("connect-button");
+        actions.append(&save);
+        actions.append(&cancel);
+        root.append(&actions);
 
         let widgets = Self {
             root: root.clone(),
@@ -167,7 +193,6 @@ impl ConnectionEditorWidgets {
             error,
             save,
             profile_labels: Vec::new(),
-            open: false,
         };
         connect_editor_widgets(&widgets, root, &close, &cancel, sender);
         widgets
@@ -194,11 +219,20 @@ fn attach_row(grid: &gtk::Grid, row: i32, text: &str, widget: &gtk::Widget) {
     grid.attach(widget, 1, row, 2, 1);
 }
 
-fn icon_text_button(icon: ProductIcon, text: &str) -> gtk::Button {
+fn attach_section(grid: &gtk::Grid, row: &mut i32, text: &str) {
+    let label = gtk::Label::new(Some(text));
+    label.add_css_class("dialog-section");
+    label.set_halign(gtk::Align::Start);
+    grid.attach(&label, 0, *row, 3, 1);
+    *row += 1;
+}
+
+fn icon_text_button(icon: ProductIcon, text: &str, request: IconRenderRequest) -> gtk::Button {
     let content = gtk::Box::new(gtk::Orientation::Horizontal, 4);
-    content.append(&icon.image().expect("embedded dialog icon"));
+    content.append(&icon.image(request).expect("embedded dialog icon"));
     content.append(&gtk::Label::new(Some(text)));
     let button = gtk::Button::builder().child(&content).build();
+    button.set_tooltip_text(Some(text));
     button.update_property(&[gtk::accessible::Property::Label(text)]);
     button
 }

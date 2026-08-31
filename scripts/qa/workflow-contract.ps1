@@ -7,7 +7,7 @@ param(
     [AllowEmptyString()][string]$ReleaseText = "",
     [AllowEmptyString()][string]$P0Text = "",
     [AllowEmptyString()][string]$PackageText = "",
-    [ValidateSet("", "dead-workspace-gate", "dead-terminal-engine-gate", "conditional-terminal-engine-gate", "continue-terminal-engine-gate", "missing-terminal-engine-gate", "duplicate-terminal-engine-gate", "misplaced-terminal-engine-gate")]
+    [ValidateSet("", "dead-workspace-gate", "dead-terminal-engine-gate", "conditional-terminal-engine-gate", "continue-terminal-engine-gate", "missing-terminal-engine-gate", "duplicate-terminal-engine-gate", "misplaced-terminal-engine-gate", "skipped-p0-gate", "conditional-p0-gate", "continued-p0-gate", "missing-fatal-gtk-warnings", "missing-package-startup-field", "missing-platform-matrix-member", "weakened-cleanup-secret-ordering")]
     [string]$RegressionProbe = ""
 )
 
@@ -207,6 +207,22 @@ function Get-NamedStepBlock {
     return @(Get-NamedStepBlocks -Text $Text | Where-Object { $_.Groups["name"].Value -ceq $Name })
 }
 
+function Assert-P0CleanupAndSecretOrder {
+    param(
+        [Parameter(Mandatory)][string]$Text,
+        [Parameter(Mandatory)][AllowEmptyCollection()][System.Collections.Generic.List[string]]$Failures
+    )
+
+    $ownedCleanup = $Text.LastIndexOf('Add-Phase "owned_process_cleanup"', [System.StringComparison]::Ordinal)
+    $secretScan = $Text.LastIndexOf('-Name "assert-no-secrets"', [System.StringComparison]::Ordinal)
+    $temporaryCleanup = $Text.LastIndexOf('Remove-Item -LiteralPath $tempRoot -Recurse -Force', [System.StringComparison]::Ordinal)
+    $finalization = $Text.LastIndexOf('$finalizeRoot = Join-Path', [System.StringComparison]::Ordinal)
+    if ($ownedCleanup -lt 0 -or $secretScan -lt 0 -or $temporaryCleanup -lt 0 -or $finalization -lt 0 -or
+        -not ($ownedCleanup -lt $secretScan -and $secretScan -lt $temporaryCleanup -and $temporaryCleanup -lt $finalization)) {
+        Add-ContractFailure -Failures $Failures -Message "P0 cleanup, secret scan, and artifact finalization must remain fail-closed and ordered."
+    }
+}
+
 $ci = if ($CiText.Length -gt 0) { $CiText } else { Read-WorkflowText -Path $CiPath -Label "CI" }
 $release = if ($ReleaseText.Length -gt 0) { $ReleaseText } else { Read-WorkflowText -Path $ReleasePath -Label "Release" }
 $p0 = if ($P0Text.Length -gt 0) { $P0Text } else { Read-WorkflowText -Path $P0Path -Label "P0 smoke" }
@@ -214,6 +230,8 @@ $package = if ($PackageText.Length -gt 0) { $PackageText } else { Read-WorkflowT
 
 if ($RegressionProbe.Length -gt 0) {
     $probeCi = $ci
+    $probeP0 = $p0
+    $probePackage = $package
     switch ($RegressionProbe) {
         "dead-workspace-gate" {
             $stepHeader = "      - name: Run required workspace gates"
@@ -249,23 +267,57 @@ if ($RegressionProbe.Length -gt 0) {
             if ($workspaceMatches.Count -ne 1) { throw "Workflow regression probe could not locate workspace gates." }
             $probeCi = $withoutGate.Insert($workspaceMatches[0].Index, $gateMatches[0].Value)
         }
+        "skipped-p0-gate" {
+            $command = "pwsh -NoProfile -File scripts/qa/p0-smoke.ps1 -Mode All"
+            $probeCi = $ci.Replace($command, 'Write-Output "P0 All gate skipped"')
+        }
+        "conditional-p0-gate" {
+            $command = "pwsh -NoProfile -File scripts/qa/p0-smoke.ps1 -Mode All"
+            $probeCi = $ci.Replace($command, "if (`$true) { $command }")
+        }
+        "continued-p0-gate" {
+            $stepHeader = "      - name: Run Secret Service vault probe and P0 All smoke (Linux)"
+            $probeCi = $ci.Replace($stepHeader, "$stepHeader`n        continue-on-error: true")
+        }
+        "missing-fatal-gtk-warnings" {
+            $probeP0 = $p0.Replace('G_DEBUG = "fatal-warnings"', 'G_DEBUG = "warnings"')
+        }
+        "missing-package-startup-field" {
+            $probePackage = $package.Replace('"measured_terminal_geometry_ready",', '"missing_startup_field",')
+        }
+        "missing-platform-matrix-member" {
+            $probeCi = [regex]::Replace(
+                $ci,
+                '(?m)^          - name: macOS arm64\r?\n            os: macos-26\r?\n?',
+                '',
+                1
+            )
+        }
+        "weakened-cleanup-secret-ordering" {
+            $probeP0 = "$p0`nAdd-Phase `"owned_process_cleanup`""
+        }
     }
-    if ($probeCi -ceq $ci) {
-        throw "Workflow regression probe could not mutate its CI workflow."
+    if ($probeCi -ceq $ci -and $probeP0 -ceq $p0 -and $probePackage -ceq $package) {
+        throw "Workflow regression probe could not mutate its contract input."
     }
     $temporaryRoot = [System.IO.Path]::GetTempPath()
     if (-not (Test-Path -LiteralPath $temporaryRoot -PathType Container)) {
         throw "Workflow regression probe temporary directory is unavailable."
     }
-    $probeCiPath = Join-Path $temporaryRoot "rshell-workflow-contract-$([Guid]::NewGuid().ToString('N')).yml"
+    $probeToken = [Guid]::NewGuid().ToString('N')
+    $probeCiPath = Join-Path $temporaryRoot "rshell-workflow-contract-$probeToken.yml"
+    $probeP0Path = Join-Path $temporaryRoot "rshell-workflow-contract-$probeToken.ps1"
+    $probePackagePath = Join-Path $temporaryRoot "rshell-workflow-contract-$probeToken-package.ps1"
     [System.IO.File]::WriteAllText($probeCiPath, $probeCi, [System.Text.UTF8Encoding]::new($false))
+    [System.IO.File]::WriteAllText($probeP0Path, $probeP0, [System.Text.UTF8Encoding]::new($false))
+    [System.IO.File]::WriteAllText($probePackagePath, $probePackage, [System.Text.UTF8Encoding]::new($false))
     $pwsh = (Get-Command -Name "pwsh" -ErrorAction Stop).Source
     $startInfo = [System.Diagnostics.ProcessStartInfo]::new()
     $startInfo.FileName = $pwsh
     $startInfo.UseShellExecute = $false
     $startInfo.RedirectStandardOutput = $true
     $startInfo.RedirectStandardError = $true
-    foreach ($argument in @("-NoProfile", "-File", $PSCommandPath, "-CiPath", $probeCiPath, "-ReleasePath", $ReleasePath, "-P0Path", $P0Path, "-PackagePath", $PackagePath)) {
+    foreach ($argument in @("-NoProfile", "-File", $PSCommandPath, "-CiPath", $probeCiPath, "-ReleasePath", $ReleasePath, "-P0Path", $probeP0Path, "-PackagePath", $probePackagePath)) {
         $startInfo.ArgumentList.Add($argument)
     }
     $process = [System.Diagnostics.Process]::new()
@@ -299,11 +351,13 @@ if ($RegressionProbe.Length -gt 0) {
             catch {}
         }
         $process.Dispose()
-        if (Test-Path -LiteralPath $probeCiPath -PathType Leaf) {
-            [System.IO.File]::Delete($probeCiPath)
-        }
-        if (Test-Path -LiteralPath $probeCiPath) {
-            throw "Workflow regression probe cleanup failed."
+        foreach ($probePath in @($probeCiPath, $probeP0Path, $probePackagePath)) {
+            if (Test-Path -LiteralPath $probePath -PathType Leaf) {
+                [System.IO.File]::Delete($probePath)
+            }
+            if (Test-Path -LiteralPath $probePath) {
+                throw "Workflow regression probe cleanup failed."
+            }
         }
     }
     exit 0
@@ -338,14 +392,15 @@ $failureCheck = 'if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }'
 $workspaceStep = Assert-NamedStep -Text $ci -Name "Run required workspace gates" -Failures $failures
 Assert-StepHasNoYamlCondition -Step $workspaceStep -Name "Run required workspace gates" -Failures $failures
 foreach ($gate in @(
-        "cargo fmt -- --check",
+        "cargo fmt --all -- --check",
         "cargo check --workspace --all-targets --all-features --locked",
         "cargo test --workspace --all-features --locked",
+        "cargo test --locked --test production_module_limits",
         "cargo clippy --workspace --all-targets --all-features --locked -- -D warnings"
     )) {
     Assert-StepLine -Step $workspaceStep -Line $gate -Name "Run required workspace gates" -Failures $failures
 }
-Assert-StepLineCount -Step $workspaceStep -Line $failureCheck -Expected 3 -Name "Run required workspace gates" -Failures $failures
+Assert-StepLineCount -Step $workspaceStep -Line $failureCheck -Expected 4 -Name "Run required workspace gates" -Failures $failures
 Assert-StepLine -Step $workspaceStep -Line 'if ($workspaceTestExitCode -ne 0) { exit $workspaceTestExitCode }' -Name "Run required workspace gates" -Failures $failures
 foreach ($pattern in @(
         "\$env:DISPLAY = ':98'", 'Start-Process -FilePath Xvfb',
@@ -448,6 +503,8 @@ foreach ($required in @(
     )) {
     Assert-Contains -Text $p0 -Pattern $required -Label "P0 cross-platform requirement '$required'" -Failures $failures
 }
+Assert-Contains -Text $p0 -Pattern '(?m)^\$baseEnvironment = @\{ G_DEBUG = "fatal-warnings"; RSHELL_SHELL = \$pwsh \}\s*$' -Label "P0 fatal GTK warnings" -Failures $failures
+Assert-P0CleanupAndSecretOrder -Text $p0 -Failures $failures
 
 Assert-Contains -Text $release -Pattern "(?ms)^permissions:\s*\r?\n\s*contents:\s*read\s*$" -Label "Release build least-privilege permissions" -Failures $failures
 Assert-Absent -Text $release -Pattern "(?im)^ {8}if:\s*false\s*(?:#.*)?$" -Label "Release disabled step" -Failures $failures
@@ -495,13 +552,21 @@ Assert-Contains -Text $terminalRecord -Pattern '(?m)^Decision: \*\*GO\*\*\s*$' -
 Assert-Contains -Text $terminalRecord -Pattern '(?m)^- Selected sole adapter: `alacritty-terminal@0\.26\.0`\s*$' -Label "Terminal-engine recorded Alacritty 0.26 backend" -Failures $failures
 Assert-Absent -Text $terminalEngine -Pattern '(?i)wezterm' -Label "Terminal-engine WezTerm runtime" -Failures $failures
 Assert-Absent -Text $terminalRecord -Pattern '(?i)wezterm' -Label "Terminal-engine record WezTerm runtime" -Failures $failures
+$packageStartupReport = [regex]::Match($package, '(?ms)^function Assert-StartupReport \{.*?^}\r?$').Value
+if ([string]::IsNullOrWhiteSpace($packageStartupReport)) {
+    Add-ContractFailure -Failures $failures -Message "Package startup report assertion is missing."
+}
 foreach ($marker in @(
         "embedded_css_loaded", "embedded_icons_renderable", "embedded_icon_backend",
+        "measured_terminal_geometry_ready", "scale_aware_icons_ready", "icon_backend", "icon_count", "adaptive_layout_modes",
         "Assert-NoProductAssetPayload", "external-icon-payload", "runtime-icon-backends",
         'Get-Command -Name "pwsh" -ErrorAction Stop', '\$startInfo\.Environment\["RSHELL_SHELL"\] = \$pwsh\.Source',
         '\$startupAttempts = 2', 'if \(\$timedOut -and \$attempt -lt \$startupAttempts\)'
     )) {
-    Assert-Contains -Text $package -Pattern $marker -Label "Package embedded-resource contract '$marker'" -Failures $failures
+    $contractText = if ($marker -in @(
+            "measured_terminal_geometry_ready", "scale_aware_icons_ready", "icon_backend", "icon_count", "adaptive_layout_modes"
+        )) { $packageStartupReport } else { $package }
+    Assert-Contains -Text $contractText -Pattern $marker -Label "Package embedded-resource contract '$marker'" -Failures $failures
 }
 Assert-Absent -Text $release -Pattern "(?im)(Copy-Item|\bcp\b|Compress-Archive|\btar\b).*?(resources([\\/]icons)?|icons|\*\.svg)" -Label "Release external product icon payload" -Failures $failures
 foreach ($required in @(

@@ -1,17 +1,13 @@
 use std::{
     path::PathBuf,
-    sync::{
-        Arc,
-        atomic::{AtomicBool, Ordering},
-    },
+    sync::{Arc, atomic::Ordering},
 };
 
 use crate::{
-    ConnectionEditor, ConnectionEditorInit, ConnectionEditorOutput, ConnectionSidebar,
-    ConnectionSidebarInit, ConnectionSidebarOutput, ImportDialog, ImportDialogInit,
-    ImportDialogOutput, InteractionDialog, InteractionDialogInit, InteractionDialogOutput,
-    MainWindowInit, PaneHost, PaneHostInit, PaneHostOutput, SessionTabBar, SessionTabBarInit,
-    SessionTabBarOutput, SettingsWindow, SettingsWindowInit, SettingsWindowOutput,
+    ConnectionEditor, ConnectionEditorInit, ConnectionSidebar, ConnectionSidebarInit, ImportDialog,
+    ImportDialogInit, InteractionDialog, InteractionDialogInit, MainWindowInit, MainWindowMsg,
+    MainWindowShell, ModalHost, PaneHost, PaneHostInit, SessionTabBar, SessionTabBarInit,
+    SettingsWindow, SettingsWindowInit,
     main_window_dialogs::{DialogCommandSource, MainWindowDialogs},
     main_window_layout::{
         MainWindowContent, MainWindowWidgets, build_command_bar, install_content,
@@ -25,33 +21,7 @@ use relm4::{
     Component, ComponentController, ComponentParts, ComponentSender, Controller, SimpleComponent,
     gtk,
 };
-use rshell_core::{AppEvent, AppViewModel, InteractionId, SessionId, UiCommandPort};
-
-#[derive(Debug)]
-pub enum MainWindowMsg {
-    Sidebar(ConnectionSidebarOutput),
-    Editor(ConnectionEditorOutput),
-    TabBar(SessionTabBarOutput),
-    PaneHost(PaneHostOutput),
-    Settings(SettingsWindowOutput),
-    Import(ImportDialogOutput),
-    Interaction(InteractionDialogOutput),
-    OpenSettings,
-    OpenImport,
-    AppEvent(AppEvent),
-    ReplaceViewModel(AppViewModel),
-    LiveEvent {
-        view: Box<AppViewModel>,
-        event: Box<AppEvent>,
-        pending: Arc<AtomicBool>,
-    },
-    LiveView {
-        view: Box<AppViewModel>,
-        pending: Arc<AtomicBool>,
-    },
-    SmokeTick,
-    SmokeWindowRealized,
-}
+use rshell_core::{AppViewModel, InteractionId, SessionId, UiCommandPort};
 
 pub struct MainWindow {
     pub(crate) command_port: Arc<dyn UiCommandPort>,
@@ -61,6 +31,8 @@ pub struct MainWindow {
     pub(crate) tab_bar: Controller<SessionTabBar>,
     pub(crate) pane_host: Controller<PaneHost>,
     pub(crate) dialogs: MainWindowDialogs,
+    pub(crate) shell: MainWindowShell,
+    pub(crate) modal: ModalHost,
     pub(crate) status: String,
     pub(crate) editor_command_pending: bool,
     pub(crate) authoritative_view: bool,
@@ -72,7 +44,7 @@ pub struct MainWindow {
     pub(crate) smoke_tick_pending: bool,
     pub(crate) smoke_paintable: Option<gtk::WidgetPaintable>,
     pub(crate) smoke_png_path: Option<PathBuf>,
-    live_forwarders: Vec<gtk::glib::JoinHandle<()>>,
+    pub(crate) live_forwarders: Vec<gtk::glib::JoinHandle<()>>,
 }
 
 impl SimpleComponent for MainWindow {
@@ -149,10 +121,10 @@ impl SimpleComponent for MainWindow {
             .launch(InteractionDialogInit)
             .forward(sender.input_sender(), MainWindowMsg::Interaction);
 
-        let status = install_content(
+        let (shell, modal) = install_content(
             &root,
             MainWindowContent {
-                command_bar: command_bar.upcast_ref(),
+                command_bar: &command_bar,
                 sidebar: sidebar.widget().upcast_ref(),
                 editor: editor.widget().upcast_ref(),
                 tab_bar: tab_bar.widget().upcast_ref(),
@@ -161,6 +133,7 @@ impl SimpleComponent for MainWindow {
                 import: import.widget().upcast_ref(),
                 interaction: interaction.widget().upcast_ref(),
             },
+            &sender,
         );
 
         let live_forwarders = live_sources
@@ -169,7 +142,7 @@ impl SimpleComponent for MainWindow {
         let smoke_png_path = smoke.as_ref().and_then(|(init, _)| init.png_path.clone());
         let smoke_paintable = smoke_png_path
             .as_ref()
-            .map(|_| gtk::WidgetPaintable::new(Some(&root)));
+            .map(|_| gtk::WidgetPaintable::new(Some(&shell.overlay)));
         let smoke = smoke.map(|(init, report)| SmokeDriver::new(init, report));
         let model = Self {
             command_port,
@@ -183,6 +156,8 @@ impl SimpleComponent for MainWindow {
                 import,
                 interaction,
             },
+            shell,
+            modal,
             status: "Ready".into(),
             editor_command_pending: false,
             authoritative_view,
@@ -199,15 +174,20 @@ impl SimpleComponent for MainWindow {
         if model.smoke.is_some() {
             sender.input(MainWindowMsg::SmokeTick);
         }
-        let widgets = MainWindowWidgets { status };
+        let widgets = MainWindowWidgets;
         ComponentParts { model, widgets }
     }
 
     fn update(&mut self, message: Self::Input, sender: ComponentSender<Self>) {
-        if matches!(&message, MainWindowMsg::SmokeTick) {
+        let drive_smoke = matches!(&message, MainWindowMsg::SmokeTick);
+        if drive_smoke {
             self.smoke_tick_pending = false;
         }
         match message {
+            MainWindowMsg::Allocated { width } => self.resize_window(width),
+            MainWindowMsg::NewLocalTab => self.new_local_tab(),
+            MainWindowMsg::CycleTabs(delta) => self.send_tab(crate::SessionTabBarMsg::Cycle(delta)),
+            MainWindowMsg::Navigation(action) => self.handle_navigation(action),
             MainWindowMsg::Sidebar(output) => self.handle_sidebar(output),
             MainWindowMsg::Editor(output) => self.handle_editor(output),
             MainWindowMsg::TabBar(output) => self.handle_tab_bar(output),
@@ -215,6 +195,7 @@ impl SimpleComponent for MainWindow {
             MainWindowMsg::Settings(output) => self.handle_settings(output),
             MainWindowMsg::Import(output) => self.handle_import(output),
             MainWindowMsg::Interaction(output) => self.handle_interaction(output),
+            MainWindowMsg::Modal(request) => self.handle_modal(request),
             MainWindowMsg::OpenSettings => self.open_settings(),
             MainWindowMsg::OpenImport => self.open_import(),
             MainWindowMsg::AppEvent(event) => self.handle_event(event),
@@ -224,7 +205,13 @@ impl SimpleComponent for MainWindow {
                 event,
                 pending,
             } => {
-                self.replace_view_model(*view);
+                if !matches!(
+                    event.as_ref(),
+                    rshell_core::AppEvent::Session { .. }
+                        | rshell_core::AppEvent::WorkspaceChanged(_)
+                ) {
+                    self.replace_view_model(*view);
+                }
                 self.handle_event(*event);
                 pending.store(false, Ordering::Release);
             }
@@ -235,18 +222,12 @@ impl SimpleComponent for MainWindow {
             MainWindowMsg::SmokeTick => {}
             MainWindowMsg::SmokeWindowRealized => self.smoke_state.window_realized = true,
         }
-        self.drive_smoke(&sender);
-    }
-
-    fn update_view(&self, widgets: &mut Self::Widgets, _sender: ComponentSender<Self>) {
-        widgets.status.set_label(&self.status);
-    }
-}
-
-impl Drop for MainWindow {
-    fn drop(&mut self) {
-        for forwarder in &self.live_forwarders {
-            forwarder.abort();
+        if drive_smoke {
+            self.drive_smoke(&sender);
         }
+    }
+
+    fn update_view(&self, _widgets: &mut Self::Widgets, _sender: ComponentSender<Self>) {
+        self.shell.set_status(&self.status);
     }
 }

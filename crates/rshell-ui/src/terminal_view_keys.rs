@@ -49,6 +49,14 @@ impl TerminalViewModel {
         key_modifiers: KeyModifiers,
     ) -> Result<Option<UiCommand>, TerminalViewError> {
         let character = key.to_unicode().map(|value| value.to_ascii_lowercase());
+        if character == Some('c')
+            && key_modifiers.control
+            && !key_modifiers.shift
+            && !key_modifiers.alt
+            && !key_modifiers.super_key
+        {
+            return Ok(Some(self.command(SessionUiCommand::Interrupt)));
+        }
         if key_modifiers.control && key_modifiers.shift {
             match character {
                 Some('f') => {

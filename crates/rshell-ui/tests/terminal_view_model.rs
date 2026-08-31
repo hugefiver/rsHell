@@ -7,7 +7,10 @@ use rshell_core::{
     SearchMatch, SessionId, SessionUiCommand, SessionUiEvent, SplitAxis, TerminalInput,
     TerminalOverrides, TerminalSendSequence, TerminalSettingsV1, TerminalSize, UiCommand,
 };
-use rshell_ui::{FontMetrics, PointerEvent, TerminalClipboardAction, TerminalViewModel, ViewRect};
+use rshell_ui::{
+    FontMetricEnvironment, FontMetricKey, FontMetrics, MeasuredFontMetrics, PointerEvent,
+    TerminalClipboardAction, TerminalGeometryInput, TerminalViewModel, ViewRect,
+};
 
 #[test]
 fn stale_and_equal_frames_are_dropped_and_dirty_rows_track_stable_content() {
@@ -91,8 +94,16 @@ fn cursor_width_uses_the_wide_cell_under_the_cursor() {
 
 #[test]
 fn hidpi_resize_emits_one_exact_cells_pixels_and_dpi_command() {
-    let model = model();
-    let command = model.resize(901, 541, 2.0).unwrap();
+    let mut model = model();
+    let command = model
+        .apply_geometry(TerminalGeometryInput {
+            logical_width: 901,
+            logical_height: 541,
+            metrics: model.metrics(),
+            environment: environment(2.0, 192.0),
+        })
+        .unwrap()
+        .expect("changed resize");
 
     assert!(matches!(
         command,
@@ -108,17 +119,52 @@ fn hidpi_resize_emits_one_exact_cells_pixels_and_dpi_command() {
         }
     ));
     for scale in [0.0, -1.0, f64::NAN, f64::INFINITY] {
-        assert!(model.resize(901, 541, scale).is_err());
+        assert!(
+            model
+                .apply_geometry(TerminalGeometryInput {
+                    logical_width: 901,
+                    logical_height: 541,
+                    metrics: model.metrics(),
+                    environment: environment(scale, 192.0),
+                })
+                .is_err()
+        );
     }
-    assert!(model.resize(0, 541, 1.0).is_err());
-    assert!(model.resize(i32::MAX, i32::MAX, f64::MAX).is_err());
+    assert!(
+        model
+            .apply_geometry(TerminalGeometryInput {
+                logical_width: 0,
+                logical_height: 541,
+                metrics: model.metrics(),
+                environment: environment(1.0, 96.0),
+            })
+            .is_err()
+    );
+    assert!(
+        model
+            .apply_geometry(TerminalGeometryInput {
+                logical_width: i32::MAX,
+                logical_height: i32::MAX,
+                metrics: model.metrics(),
+                environment: environment(f64::MAX, 96.0),
+            })
+            .is_err()
+    );
 }
 
 #[test]
 fn resize_extremes_emit_real_1x1_and_999x999_commands() {
-    let model = model();
+    let mut model = model();
     for (width, height, cols, rows) in [(1, 1, 1, 1), (999, 999, 111, 55)] {
-        let command = model.resize(width, height, 1.0).expect("valid resize");
+        let command = model
+            .apply_geometry(TerminalGeometryInput {
+                logical_width: width,
+                logical_height: height,
+                metrics: model.metrics(),
+                environment: environment(1.0, 96.0),
+            })
+            .expect("valid resize")
+            .expect("changed resize");
         assert!(matches!(
             command,
             UiCommand::Session {
@@ -136,6 +182,79 @@ fn resize_extremes_emit_real_1x1_and_999x999_commands() {
                 && pixel_height == height as u32
         ));
     }
+}
+
+#[test]
+fn geometry_matrix_uses_one_measured_source() {
+    let first = measured(FontMetrics::new(11.0, 23.0).unwrap(), 1.25, 120.0);
+    let mut model = TerminalViewModel::new(SessionId::new(), first.clone());
+    model.apply_frame(wide_frame(1));
+
+    let input = TerminalGeometryInput {
+        logical_width: 1100,
+        logical_height: 690,
+        metrics: model.metrics(),
+        environment: first.environment,
+    };
+    let command = model
+        .apply_geometry(input)
+        .unwrap()
+        .expect("first complete size");
+    assert!(matches!(
+        command,
+        UiCommand::Session {
+            command: SessionUiCommand::Resize(TerminalSize {
+                cols: 100,
+                rows: 30,
+                pixel_width: 1375,
+                pixel_height: 862,
+                dpi: 120,
+            }),
+            ..
+        }
+    ));
+    assert!(model.apply_geometry(input).unwrap().is_none());
+    assert_eq!(
+        model.cursor_rect(),
+        Some(ViewRect {
+            x: 0.0,
+            y: 0.0,
+            width: 22.0,
+            height: 23.0,
+        })
+    );
+
+    let pointer = model
+        .selection(22.1, 1.0, 43.9, 1.0, false)
+        .expect("measured hit test");
+    assert!(matches!(
+        pointer,
+        UiCommand::Session {
+            command: SessionUiCommand::Select(range),
+            ..
+        } if range.start.column == 2 && range.end.column == 3
+    ));
+
+    let second = measured(FontMetrics::new(20.0, 30.0).unwrap(), 2.0, 192.0);
+    let changed = model
+        .apply_metrics(second.clone(), None)
+        .unwrap()
+        .expect("metric change alters complete size");
+    assert_eq!(model.metrics(), second.metrics);
+    assert!(matches!(
+        changed,
+        UiCommand::Session {
+            command: SessionUiCommand::Resize(TerminalSize {
+                cols: 55,
+                rows: 23,
+                pixel_width: 2200,
+                pixel_height: 1380,
+                dpi: 192,
+            }),
+            ..
+        }
+    ));
+    assert!(model.apply_metrics(second, None).unwrap().is_none());
 }
 
 #[test]
@@ -291,7 +410,7 @@ fn configured_binding_routes_through_ui_command() {
         pane,
         session,
         profile,
-        FontMetrics::new(9.0, 18.0).unwrap(),
+        measured(FontMetrics::new(9.0, 18.0).unwrap(), 1.0, 96.0),
     );
 
     let send = model.key(Key::F2, ModifierType::empty()).unwrap().unwrap();
@@ -335,6 +454,53 @@ fn configured_binding_routes_through_ui_command() {
 }
 
 #[test]
+fn safety_ctrl_c_bypasses_configured_and_negotiated_encoding() {
+    let session = SessionId::new();
+    let profile = TerminalSettingsV1 {
+        enable_csi_u: true,
+        enable_kitty_keyboard: true,
+        key_bindings: vec![KeyBinding {
+            code: KeyCode::Character('c'),
+            modifiers: KeyModifiers {
+                control: true,
+                ..KeyModifiers::default()
+            },
+            action: "send:\u{1b}[99;5u".to_owned(),
+        }],
+        ..TerminalSettingsV1::default()
+    }
+    .resolve(&TerminalOverrides::default());
+    let mut model = TerminalViewModel::with_profile(
+        PaneId::new(),
+        session,
+        profile,
+        measured(FontMetrics::new(9.0, 18.0).unwrap(), 1.0, 96.0),
+    );
+
+    let command = model
+        .key(Key::from_name("c").unwrap(), ModifierType::CONTROL_MASK)
+        .unwrap()
+        .unwrap();
+    assert!(matches!(
+        command,
+        UiCommand::Session {
+            session: target,
+            command: SessionUiCommand::Interrupt,
+        } if target == session
+    ));
+    assert!(
+        model
+            .key(
+                Key::from_name("c").unwrap(),
+                ModifierType::CONTROL_MASK | ModifierType::SHIFT_MASK,
+            )
+            .unwrap()
+            .is_none(),
+        "Ctrl+Shift+C remains the copy shortcut"
+    );
+}
+
+#[test]
 fn reserved_builtins_precede_configured_bindings() {
     let reserved = [
         ('c', KeyCode::Character('c')),
@@ -362,7 +528,7 @@ fn reserved_builtins_precede_configured_bindings() {
         PaneId::new(),
         SessionId::new(),
         profile,
-        FontMetrics::new(9.0, 18.0).unwrap(),
+        measured(FontMetrics::new(9.0, 18.0).unwrap(), 1.0, 96.0),
     );
     let state = ModifierType::CONTROL_MASK | ModifierType::SHIFT_MASK;
 
@@ -389,7 +555,7 @@ fn disabled_profile_mouse_policy_keeps_wheel_local() {
         PaneId::new(),
         SessionId::new(),
         profile,
-        FontMetrics::new(9.0, 18.0).unwrap(),
+        measured(FontMetrics::new(9.0, 18.0).unwrap(), 1.0, 96.0),
     );
     model.apply_frame(frame(1, true, &["row"], None));
 
@@ -406,7 +572,37 @@ fn disabled_profile_mouse_policy_keeps_wheel_local() {
 }
 
 fn model() -> TerminalViewModel {
-    TerminalViewModel::new(SessionId::new(), FontMetrics::new(9.0, 18.0).unwrap())
+    TerminalViewModel::new(
+        SessionId::new(),
+        measured(FontMetrics::new(9.0, 18.0).unwrap(), 1.0, 96.0),
+    )
+}
+
+fn environment(effective_scale: f64, effective_dpi: f64) -> FontMetricEnvironment {
+    FontMetricEnvironment {
+        effective_scale,
+        effective_dpi,
+        dpi_fallback_used: false,
+    }
+}
+
+fn measured(metrics: FontMetrics, effective_scale: f64, effective_dpi: f64) -> MeasuredFontMetrics {
+    let environment = environment(effective_scale, effective_dpi);
+    MeasuredFontMetrics {
+        metrics,
+        key: FontMetricKey {
+            family: "test monospace".into(),
+            font_size_bits: 15.0_f32.to_bits(),
+            effective_scale_bits: effective_scale.to_bits(),
+            effective_dpi_bits: effective_dpi.to_bits(),
+            dpi_fallback_used: false,
+            color_scheme: Default::default(),
+        },
+        environment,
+        fallback_used: false,
+        font_description: rshell_ui::logical_font_description("test monospace", 15.0),
+        minimum_line_separation: 2.0,
+    }
 }
 
 fn frame(
@@ -441,6 +637,10 @@ fn frame(
             visible: true,
         }),
         title: "fixture".into(),
+        display_modes: rshell_core::render::TerminalDisplayModes {
+            mouse_reporting,
+            ..Default::default()
+        },
         alternate_screen: false,
         mouse_reporting,
     })

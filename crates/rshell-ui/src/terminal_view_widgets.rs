@@ -5,14 +5,19 @@ use relm4::ComponentSender;
 use rshell_core::RenderFrame;
 
 use crate::{
-    TerminalDecorations, TerminalRenderCache, TerminalRenderer, TerminalView, TerminalViewInit,
-    TerminalViewModel, TerminalViewMsg, terminal_view_keyboard::connect_keyboard,
+    FontMetricKey, TerminalDecorations, TerminalRenderCache, TerminalRenderer, TerminalView,
+    TerminalViewInit, TerminalViewModel, TerminalViewMsg,
+    terminal_view_keyboard::connect_keyboard,
+    terminal_view_metrics::connect_metric_refresh,
     terminal_view_pointer::connect_pointer,
+    visual_contract::{record_terminal_metrics, record_terminal_render_quality},
 };
 
 struct DrawSnapshot {
     frame: Option<Arc<RenderFrame>>,
     decorations: TerminalDecorations,
+    metric_key: FontMetricKey,
+    fallback_used: bool,
     renderer: TerminalRenderer,
     cache: TerminalRenderCache,
 }
@@ -55,9 +60,12 @@ impl TerminalViewWidgets {
         let draw = Rc::new(RefCell::new(DrawSnapshot {
             frame: None,
             decorations: TerminalDecorations::default(),
-            renderer: TerminalRenderer::new(&init.profile, init.metrics),
+            metric_key: init.metrics.key.clone(),
+            fallback_used: init.metrics.fallback_used,
+            renderer: TerminalRenderer::from_measured(&init.profile, &init.metrics),
             cache: TerminalRenderCache::new(),
         }));
+        record_terminal_metrics(&canvas, &init.metrics);
         let draw_callback = Rc::clone(&draw);
         canvas.set_draw_func(move |canvas, context, width, height| {
             let mut snapshot = draw_callback.borrow_mut();
@@ -66,19 +74,19 @@ impl TerminalViewWidgets {
                 decorations,
                 renderer,
                 cache,
+                ..
             } = &mut *snapshot;
             if let Some(frame) = frame
-                && cache
-                    .update(
-                        renderer,
-                        Arc::clone(frame),
-                        decorations,
-                        width,
-                        height,
-                        canvas.scale_factor(),
-                    )
-                    .is_ok()
+                && let Ok(stats) = cache.update(
+                    renderer,
+                    Arc::clone(frame),
+                    decorations,
+                    width,
+                    height,
+                    canvas.scale_factor(),
+                )
             {
+                record_terminal_render_quality(canvas, &stats);
                 let _ = cache.paint(context);
             }
         });
@@ -100,6 +108,7 @@ impl TerminalViewWidgets {
         connect_pointer(&canvas, sender);
         connect_search(&search, sender);
         connect_resize(&canvas, sender);
+        connect_metric_refresh(&canvas, sender);
 
         Self {
             root: root.clone(),
@@ -117,8 +126,20 @@ impl TerminalViewWidgets {
         );
         let frame = model.frame().cloned();
         let mut draw = self.draw.borrow_mut();
-        let changed = draw.frame.as_ref().map(|value| value.generation)
-            != frame.as_ref().map(|value| value.generation)
+        let measured = model.measured_metrics();
+        record_terminal_metrics(&self.canvas, measured);
+        let metrics_changed = draw.metric_key != measured.key
+            || draw.fallback_used != measured.fallback_used
+            || draw.renderer.metrics() != measured.metrics;
+        if metrics_changed {
+            draw.metric_key = measured.key.clone();
+            draw.fallback_used = measured.fallback_used;
+            draw.renderer = TerminalRenderer::from_measured(&model.profile, measured);
+            draw.cache.invalidate_metrics();
+        }
+        let changed = metrics_changed
+            || draw.frame.as_ref().map(|value| value.generation)
+                != frame.as_ref().map(|value| value.generation)
             || draw.decorations != decorations;
         if changed {
             draw.frame = frame;

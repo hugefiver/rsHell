@@ -12,6 +12,11 @@ pub struct StartupReport {
     pub embedded_css_loaded: bool,
     pub embedded_icons_renderable: bool,
     pub embedded_icon_backend: &'static str,
+    pub measured_terminal_geometry_ready: bool,
+    pub scale_aware_icons_ready: bool,
+    pub icon_backend: &'static str,
+    pub icon_count: usize,
+    pub adaptive_layout_modes: usize,
 }
 
 impl StartupReport {
@@ -23,6 +28,12 @@ impl StartupReport {
             && self.embedded_css_loaded
             && self.embedded_icons_renderable
             && matches!(self.embedded_icon_backend, "gtk_svg" | "internal_vector")
+            && self.measured_terminal_geometry_ready
+            && self.scale_aware_icons_ready
+            && matches!(self.icon_backend, "gtk_svg" | "internal_vector")
+            && self.icon_backend == self.embedded_icon_backend
+            && self.icon_count == crate::ProductIcon::ALL.len()
+            && self.adaptive_layout_modes == adaptive_layout_modes()
     }
 }
 
@@ -31,6 +42,7 @@ struct ProbeState {
     window_realized: bool,
     local_session_connected: bool,
     non_empty_render_frame: bool,
+    measured_terminal_geometry_ready: bool,
     completion_notified: bool,
 }
 
@@ -88,26 +100,41 @@ impl StartupProbe {
     }
 
     pub fn observe_render_frame(&self, frame: &RenderFrame) {
-        if frame
+        let non_empty_render_frame = frame
             .rows
             .iter()
             .flat_map(|row| row.cells.iter())
-            .any(|cell| !cell.text.is_empty())
-        {
-            self.update(|state| state.non_empty_render_frame = true);
-        }
+            .any(|cell| !cell.text.is_empty());
+        let measured_terminal_geometry_ready = frame.size.cols > 0
+            && frame.size.rows > 0
+            && frame.size.pixel_width > 0
+            && frame.size.pixel_height > 0
+            && frame.size.dpi > 0;
+        self.update(|state| {
+            state.non_empty_render_frame |= non_empty_render_frame;
+            state.measured_terminal_geometry_ready |= measured_terminal_geometry_ready;
+        });
     }
 
     pub fn report(&self, shutdown_clean: bool) -> StartupReport {
         let state = self.state.borrow();
+        let icon_backend = crate::ProductIcon::backend().as_str();
         StartupReport {
             window_realized: state.window_realized,
             local_session_connected: state.local_session_connected,
             non_empty_render_frame: state.non_empty_render_frame,
             shutdown_clean,
             embedded_css_loaded: !crate::embedded_theme_css().trim().is_empty(),
-            embedded_icons_renderable: crate::embedded_icons_ready(),
-            embedded_icon_backend: crate::ProductIcon::backend().as_str(),
+            embedded_icons_renderable: crate::embedded_icons_ready(crate::IconRenderRequest {
+                logical_size: 16,
+                effective_scale: 1.0,
+            }),
+            embedded_icon_backend: icon_backend,
+            measured_terminal_geometry_ready: state.measured_terminal_geometry_ready,
+            scale_aware_icons_ready: scale_aware_icons_ready(),
+            icon_backend,
+            icon_count: crate::ProductIcon::ALL.len(),
+            adaptive_layout_modes: adaptive_layout_modes(),
         }
     }
 
@@ -117,7 +144,8 @@ impl StartupProbe {
             update(&mut state);
             let complete = state.window_realized
                 && state.local_session_connected
-                && state.non_empty_render_frame;
+                && state.non_empty_render_frame
+                && state.measured_terminal_geometry_ready;
             if complete && !state.completion_notified {
                 state.completion_notified = true;
                 true
@@ -139,4 +167,22 @@ impl Default for StartupProbe {
 
 fn quit_gtk_application() {
     relm4::main_application().quit();
+}
+
+fn scale_aware_icons_ready() -> bool {
+    [1.0, 1.25, 1.5, 2.0].into_iter().all(|effective_scale| {
+        crate::embedded_icons_ready(crate::IconRenderRequest {
+            logical_size: 16,
+            effective_scale,
+        })
+    })
+}
+
+const fn adaptive_layout_modes() -> usize {
+    [
+        crate::ShellLayoutMode::Compact,
+        crate::ShellLayoutMode::Standard,
+        crate::ShellLayoutMode::Wide,
+    ]
+    .len()
 }

@@ -1,6 +1,7 @@
 param(
     [ValidateSet("Unit", "Ssh", "Gtk", "Vault", "All")]
     [string]$Mode = "All",
+    [string]$ArtifactRoot = (Join-Path $PSScriptRoot "..\..\artifacts\p0-smoke"),
     [AllowEmptyString()][string]$RegressionParserProbe = "",
     [AllowEmptyString()][string]$RegressionCaseProbe = ""
 )
@@ -457,32 +458,93 @@ function Assert-Png {
 }
 
 function Assert-VisualContract {
-    param([Parameter(Mandatory)]$Report, [Parameter(Mandatory)]$PngInfo)
+    param([Parameter(Mandatory)]$Report, [Parameter(Mandatory)][hashtable]$PngInfo)
 
-    if ($null -eq $Report.visual -or $null -eq $Report.visual.facts -or $null -eq $Report.visual.png) {
-        throw "P0 visual evidence is missing."
+    $required = @(
+        @("compact-empty", "empty", 800, 600, "compact"),
+        @("compact-twenty-tabs", "twenty_tabs", 800, 600, "compact"),
+        @("compact-grid", "grid", 800, 600, "compact"),
+        @("compact-editor", "editor", 800, 600, "compact"),
+        @("compact-settings", "settings", 800, 600, "compact"),
+        @("compact-import", "import", 800, 600, "compact"),
+        @("compact-recovery", "recovery", 800, 600, "compact"),
+        @("standard-connected", "connected", 1360, 860, "standard"),
+        @("standard-single", "single", 1360, 860, "standard"),
+        @("standard-h-split", "h_split", 1360, 860, "standard"),
+        @("standard-v-split", "v_split", 1360, 860, "standard"),
+        @("standard-top-bottom-3", "top_bottom_3", 1360, 860, "standard"),
+        @("standard-grid", "grid", 1360, 860, "standard"),
+        @("standard-editor", "editor", 1360, 860, "standard"),
+        @("standard-settings", "settings", 1360, 860, "standard"),
+        @("standard-import", "import", 1360, 860, "standard"),
+        @("standard-host-key", "host_key", 1360, 860, "standard"),
+        @("standard-authentication", "authentication", 1360, 860, "standard"),
+        @("standard-failure", "failure", 1360, 860, "standard"),
+        @("standard-recovery", "recovery", 1360, 860, "standard"),
+        @("wide-connected", "connected", 1920, 1080, "wide"),
+        @("wide-twenty-tabs", "twenty_tabs", 1920, 1080, "wide"),
+        @("wide-grid", "grid", 1920, 1080, "wide"),
+        @("wide-editor", "editor", 1920, 1080, "wide"),
+        @("wide-settings", "settings", 1920, 1080, "wide"),
+        @("wide-import", "import", 1920, 1080, "wide")
+    )
+    if ($null -eq $Report.visual -or @($Report.visual.PSObject.Properties).Count -ne $required.Count) {
+        throw "P0 visual matrix evidence is incomplete."
     }
-    $facts = $Report.visual.facts
-    $png = $Report.visual.png
-    foreach ($name in @("command_bar", "dense_sidebar", "tab_strip", "pane_command_row", "terminal_canvas", "content_dialog", "focus_or_selection_treatment")) {
-        if ($facts.$name -isnot [bool] -or -not $facts.$name) {
-            throw "P0 semantic visual fact failed."
+    if (@($Report.png_paths).Count -ne $required.Count -or
+        @($Report.requested_png_paths).Count -ne $required.Count -or
+        @($Report.png_paths | Select-Object -Unique).Count -ne $required.Count) {
+        throw "P0 visual matrix PNG paths are incomplete or duplicated."
+    }
+    foreach ($entry in $required) {
+        $id, $state, $width, $height, $layout = $entry
+        $property = $Report.visual.PSObject.Properties[$id]
+        if ($null -eq $property) { throw "P0 visual checkpoint evidence is missing." }
+        $evidence = $property.Value
+        $facts = $evidence.facts
+        $png = $evidence.png
+        $dpi = $evidence.dpi
+        $accessibility = $evidence.accessibility
+        $matchingPngs = @($Report.png_paths | Where-Object { [string]$_ -like "*-$id.png" })
+        if ($matchingPngs.Count -ne 1) {
+            throw "P0 visual checkpoint PNG binding is ambiguous."
         }
-    }
-    if ($facts.requested_width -ne 1360 -or $facts.requested_height -ne 860) {
-        throw "P0 requested viewport changed."
-    }
-    if ($facts.realized_width -ne $PngInfo.Width -or $facts.realized_height -ne $PngInfo.Height) {
-        throw "P0 PNG/report dimensions differ."
-    }
-    if ($png.width -ne $PngInfo.Width -or $png.height -ne $PngInfo.Height -or -not $png.non_empty) {
-        throw "P0 PNG evidence is inconsistent."
-    }
-    if ($png.dark_regions_required -ne 4 -or $png.dark_regions_passed -ne 4) {
-        throw "P0 dark-shell region contract failed."
-    }
-    if ($png.focus_or_selection_thickness_px -lt 2 -or $png.focus_or_selection_thickness_px -gt 4) {
-        throw "P0 focus/selection thickness contract failed."
+        $pngLeaf = [string]$matchingPngs[0]
+        if (-not $PngInfo.ContainsKey($pngLeaf)) {
+            throw "P0 visual checkpoint PNG is missing."
+        }
+        $dimensions = $PngInfo[$pngLeaf]
+        if ($evidence.checkpoint_id -ne $id -or $evidence.state -ne $state -or $evidence.layout -ne $layout) {
+            throw "P0 visual checkpoint identity is inconsistent."
+        }
+        if ($facts.requested_width -ne $width -or $facts.requested_height -ne $height -or
+            $facts.realized_width -ne $dimensions.width -or $facts.realized_height -ne $dimensions.height -or
+            $png.width -ne $dimensions.width -or $png.height -ne $dimensions.height -or -not $png.non_empty) {
+            throw "P0 visual checkpoint dimensions are inconsistent."
+        }
+        if ($png.dark_regions_required -ne 4 -or $png.dark_regions_passed -ne 4 -or
+            ($png.focus_or_selection_thickness_px -ne 0 -and
+                ($png.focus_or_selection_thickness_px -lt 2 -or $png.focus_or_selection_thickness_px -gt 4))) {
+            throw "P0 native PNG range evidence failed."
+        }
+        if ($dpi.logical_width -le 0 -or $dpi.logical_height -le 0 -or
+            $dpi.effective_scale -le 0 -or $dpi.effective_dpi -le 0 -or
+            $dpi.icon_logical_size -le 0 -or $dpi.icon_texture_width -le 0 -or $dpi.icon_texture_height -le 0) {
+            throw "P0 DPI/icon evidence is incomplete."
+        }
+        if ($accessibility.unnamed_icon_controls -ne 0 -or $accessibility.hidden_primary_actions -ne 0 -or
+            $accessibility.zero_size_panes -ne 0 -or $accessibility.horizontal_clipping -or
+            -not $facts.focus_or_selection_treatment) {
+            throw "P0 accessibility or contrast evidence failed."
+        }
+        if ($facts.terminal_glyph_clipped_cells -ne 0 -or
+            $facts.terminal_min_line_separation -lt 2.0) {
+            throw "P0 terminal glyph ink or line separation evidence failed."
+        }
+        if ($state -in @("editor", "settings", "import", "host_key", "authentication") -and
+            (-not $accessibility.background_insensitive -or -not $accessibility.focus_contained -or -not $accessibility.focus_restored)) {
+            throw "P0 modal focus evidence failed."
+        }
     }
 }
 
@@ -580,6 +642,33 @@ function Add-Action {
     $List.Add([pscustomobject]$Action)
 }
 
+function Add-WindowResize {
+    param(
+        [Parameter(Mandatory)][System.Collections.Generic.List[object]]$List,
+        [Parameter(Mandatory)][int]$Width,
+        [Parameter(Mandatory)][int]$Height,
+        [Parameter(Mandatory)][string]$Mode
+    )
+    Add-Action $List ([ordered]@{
+            action = "resize_window"; width = $Width; height = $Height; expected_mode = $Mode
+        })
+}
+
+function Add-VisualCheckpoint {
+    param(
+        [Parameter(Mandatory)][System.Collections.Generic.List[object]]$List,
+        [Parameter(Mandatory)][string]$Id,
+        [Parameter(Mandatory)][string]$State,
+        [Parameter(Mandatory)][int]$Width,
+        [Parameter(Mandatory)][int]$Height,
+        [Parameter(Mandatory)][string]$Mode
+    )
+    Add-Action $List ([ordered]@{
+            action = "visual_checkpoint"; id = $Id; state = $State
+            width = $Width; height = $Height; expected_mode = $Mode
+        })
+}
+
 function Set-ActionBinding {
     param(
         [Parameter(Mandatory)][string]$Surface,
@@ -645,6 +734,7 @@ if ($RegressionParserProbe) {
 }
 
 $repoRoot = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot "..\..")).Path
+$artifactRootWasExplicit = $PSBoundParameters.ContainsKey("ArtifactRoot")
 $temporaryBase = [System.IO.Path]::GetTempPath()
 if (-not (Test-Path -LiteralPath $temporaryBase -PathType Container)) {
     throw "P0 smoke temporary directory is unavailable."
@@ -713,10 +803,17 @@ if ($platformIsWindows) {
     }
 }
 
-$artifactRoot = Join-Path (Join-Path $repoRoot "artifacts") "p0-smoke"
+$artifactRoot = [System.IO.Path]::GetFullPath($ArtifactRoot)
+$repositoryArtifacts = [System.IO.Path]::GetFullPath((Join-Path $repoRoot "artifacts"))
+if ($artifactRootWasExplicit -and
+    ($artifactRoot.Equals($repositoryArtifacts, [System.StringComparison]::OrdinalIgnoreCase) -or
+        $artifactRoot.StartsWith($repositoryArtifacts + [System.IO.Path]::DirectorySeparatorChar, [System.StringComparison]::OrdinalIgnoreCase))) {
+    throw "An explicit ArtifactRoot must be outside the repository artifacts directory."
+}
 if (-not (Test-Path -LiteralPath $artifactRoot)) {
     [void](New-Item -ItemType Directory -Path $artifactRoot)
 }
+$artifactRoot = (Resolve-Path -LiteralPath $artifactRoot).Path
 $platformSlug = (($platform.ToLowerInvariant() -replace "[^a-z0-9]+", "-").Trim("-"))
 $stem = "$platformSlug-$($mode.ToLowerInvariant())"
 $artifactReport = Join-Path $artifactRoot "$stem.json"
@@ -786,6 +883,7 @@ $failure = $null
 $secretScanRan = $false
 $pendingReport = $null
 $pendingPngBytes = $null
+$pendingPngs = [System.Collections.Generic.List[object]]::new()
 $pendingDimensions = $null
 $script:actionSurface = $null
 $script:actionConnection = $null
@@ -954,17 +1052,17 @@ try {
         foreach ($entry in $baseEnvironment.GetEnumerator()) { $agentEnvironment[$entry.Key] = $entry.Value }
         $agentEnvironment.RSHELL_QA_OBSERVATION_SYSTEM_AGENT_PATH = $directObservation.system_agent
         [void](Invoke-CapturedChild `
-                -Name "ssh-system-agent" `
-                -FilePath $cargo `
-                -Arguments @(
-                    "test", "--locked", "-p", "rshell-session", "--test", "ssh_smoke",
-                    "system_openssh_agent_authenticates_against_local_server", "--", "--ignored", "--exact", "--nocapture"
-                ) `
-                -Environment $agentEnvironment `
-                -WorkingDirectory $repoRoot `
-                -StdoutPath (Join-Path $artifactRoot "$stem-ssh-agent.stdout.log") `
-                -StderrPath (Join-Path $artifactRoot "$stem-ssh-agent.stderr.log") `
-                -TimeoutSeconds 180)
+            -Name "ssh-system-agent" `
+            -FilePath $cargo `
+            -Arguments @(
+                "test", "--locked", "-p", "rshell-session", "--test", "ssh_smoke",
+                "system_openssh_agent_authenticates_against_local_server", "--", "--ignored", "--exact", "--nocapture"
+            ) `
+            -Environment $agentEnvironment `
+            -WorkingDirectory $repoRoot `
+            -StdoutPath (Join-Path $artifactRoot "$stem-ssh-agent.stdout.log") `
+            -StderrPath (Join-Path $artifactRoot "$stem-ssh-agent.stderr.log") `
+            -TimeoutSeconds 180)
         Assert-Observation $directObservation.system_agent "system_agent" @("server_authentication", "server_channel")
         if (Compare-Object $agentExpectedWithQa (Get-AgentIdentitySnapshot $sshAdd)) {
             throw "The direct system OpenSSH smoke changed the parent-owned agent identity set."
@@ -1046,7 +1144,8 @@ try {
                 -FilePath $cargo `
                 -Arguments @(
                     "build", "--locked", "-p", "rshell-session",
-                    "--bin", "rshell-qa-askpass", "--bin", "rshell-p0-tui"
+                    "--bin", "rshell-qa-askpass", "--bin", "rshell-p0-tui",
+                    "--bin", "rshell-interrupt-tui", "--bin", "rshell-p0-shell"
                 ) `
                 -Environment $baseEnvironment `
                 -WorkingDirectory $repoRoot `
@@ -1056,11 +1155,19 @@ try {
         $debugRoot = Join-Path (Join-Path $repoRoot "target") "debug"
         $askpass = Join-Path $debugRoot "rshell-qa-askpass$binarySuffix"
         $tuiFixture = Join-Path $debugRoot "rshell-p0-tui$binarySuffix"
+        $recoveryFixture = Join-Path $debugRoot "rshell-interrupt-tui$binarySuffix"
+        $shellFixture = Join-Path $debugRoot "rshell-p0-shell$binarySuffix"
         if (-not (Test-Path -LiteralPath $askpass -PathType Leaf)) {
             throw "The QA askpass helper was not built."
         }
         if (-not (Test-Path -LiteralPath $tuiFixture -PathType Leaf)) {
             throw "The local TUI fixture was not built."
+        }
+        if (-not (Test-Path -LiteralPath $recoveryFixture -PathType Leaf)) {
+            throw "The local recovery fixture was not built."
+        }
+        if (-not (Test-Path -LiteralPath $shellFixture -PathType Leaf)) {
+            throw "The local P0 shell fixture was not built."
         }
         $keygenEnvironment = @{}
         foreach ($entry in $childEnvironment.GetEnumerator()) { $keygenEnvironment[$entry.Key] = $entry.Value }
@@ -1173,12 +1280,15 @@ try {
         Write-Utf8File $openSshImport "Host p0-cancel`n  HostName cancel.example.test`n  User operator`n"
         $legacyImport = Join-Path (Join-Path (Join-Path (Join-Path $repoRoot "tests") "fixtures") "smoke") "legacy.json"
         $quotedTuiFixture = $tuiFixture.Replace("'", "''")
+        $quotedRecoveryFixture = $recoveryFixture.Replace("'", "''")
         $pastePromptCommand = if ($platformIsWindows) {
             "`$p0Marker = -join [char[]](112,48,45,112,97,115,116,101,45,101,102,102,101,99,116); `$null = Read-Host -AsSecureString -Prompt 'p0-paste-prompt'; Write-Output `$p0Marker`r"
         }
         else {
             "RSHELL_P0_SECURE_PASTE`r"
         }
+        $selectionStartX = if ($platformIsWindows) { 32.5 } else { 22.5 }
+        $selectionEndX = if ($platformIsWindows) { 39.1 } else { 27.1 }
         $actions = [System.Collections.Generic.List[object]]::new()
         Set-ActionBinding -Surface "gtk"
         Add-Action $actions ([ordered]@{ action = "wait_window_realized" })
@@ -1196,60 +1306,96 @@ try {
         Add-Action $actions ([ordered]@{ action = "paste_text_from_env"; env_var = $pasteName; effect_marker = "p0-paste-effect" })
         Add-Action $actions ([ordered]@{ action = "resize_terminal"; width = 960; height = 640; scale = 1.0 })
         Add-Action $actions ([ordered]@{ action = "wait_frame_contains"; text = "p0-wide-界" })
+        Set-ActionBinding -Surface "gtk"
+        Add-WindowResize $actions 800 600 "compact"
+        Add-VisualCheckpoint $actions "compact-empty" "empty" 800 600 "compact"
+        Add-WindowResize $actions 1360 860 "standard"
+        Set-ActionBinding -Surface "local_terminal" -Connection "local"
         Add-Action $actions ([ordered]@{ action = "send_terminal_text"; text = "& '$quotedTuiFixture'`r" })
         Add-Action $actions ([ordered]@{ action = "wait_frame_contains"; text = "P0-TUI-ENTERED" })
         Add-Action $actions ([ordered]@{ action = "search_terminal"; text = "P0-TUI"; case_sensitive = $true; regex = $false })
         Add-Action $actions ([ordered]@{
-                action = "select_range"; start_x = 22.5; start_y = 9.0; end_x = 27.1; end_y = 9.0
+                action = "select_range"; start_x = $selectionStartX; start_y = 9.0; end_x = $selectionEndX; end_y = 9.0
                 rectangular = $false; expected_text = "界"; expect_wide_midpoint = $true
             })
         Add-Action $actions ([ordered]@{ action = "copy_selection" })
-        # The fixture intentionally leaves the console in cooked mode, so Enter commits the quit key.
+        # Preserve the original TUI surface before running the recovery-specific fixture.
         Add-Action $actions ([ordered]@{ action = "send_terminal_text"; text = "q`r" })
         Add-Action $actions ([ordered]@{ action = "wait_frame_contains"; text = "P0-TUI-EXITED" })
         Add-Action $actions ([ordered]@{ action = "send_terminal_text"; text = "Write-Output P0-TUI-POST-EXIT-FRAME`r" })
         Add-Action $actions ([ordered]@{ action = "wait_frame_contains"; text = "P0-TUI-POST-EXIT-FRAME" })
 
-        Set-ActionBinding -Surface "tabs_splits" -Connection "local"
-        Add-Action $actions ([ordered]@{ action = "new_tab" })
-        Add-Action $actions ([ordered]@{ action = "new_tab" })
-        Add-Action $actions ([ordered]@{ action = "split_horizontal" })
-        Add-Action $actions ([ordered]@{ action = "split_vertical" })
-        Add-Action $actions ([ordered]@{ action = "switch_tab"; tab = 0 })
+        Add-Action $actions ([ordered]@{ action = "send_terminal_text"; text = "& '$quotedRecoveryFixture' survive`r" })
+        Add-Action $actions ([ordered]@{ action = "wait_frame_contains"; text = "fixture-界-e" })
+        Add-Action $actions ([ordered]@{ action = "interrupt_terminal" })
+        Add-Action $actions ([ordered]@{ action = "wait_frame_contains"; text = "interrupt=03;survived=true" })
+        Set-ActionBinding -Surface "gtk"
+        Add-VisualCheckpoint $actions "standard-recovery" "recovery" 1360 860 "standard"
+        Set-ActionBinding -Surface "local_terminal" -Connection "local"
+        Add-Action $actions ([ordered]@{ action = "reset_display" })
+        Add-Action $actions ([ordered]@{ action = "send_terminal_text"; text = "q" })
+        Add-Action $actions ([ordered]@{ action = "wait_frame_contains"; text = "fixture-clean-exit" })
+
+        Set-ActionBinding -Surface "gtk"
+        Add-WindowResize $actions 800 600 "compact"
+        Set-ActionBinding -Surface "local_terminal" -Connection "local"
+        Add-Action $actions ([ordered]@{ action = "send_terminal_text"; text = "& '$quotedRecoveryFixture' survive`r" })
+        Add-Action $actions ([ordered]@{ action = "wait_frame_contains"; text = "fixture-界-e" })
+        Add-Action $actions ([ordered]@{ action = "interrupt_terminal" })
+        Add-Action $actions ([ordered]@{ action = "wait_frame_contains"; text = "interrupt=03;survived=true" })
+        Set-ActionBinding -Surface "gtk"
+        Add-VisualCheckpoint $actions "compact-recovery" "recovery" 800 600 "compact"
+        Set-ActionBinding -Surface "local_terminal" -Connection "local"
+        Add-Action $actions ([ordered]@{ action = "reset_display" })
+        Add-Action $actions ([ordered]@{ action = "send_terminal_text"; text = "q" })
+        Add-Action $actions ([ordered]@{ action = "wait_frame_contains"; text = "fixture-clean-exit" })
+
+        Set-ActionBinding -Surface "gtk"
+        Add-WindowResize $actions 1360 860 "standard"
+        Add-VisualCheckpoint $actions "standard-editor" "editor" 1360 860 "standard"
 
         Add-ConnectionPrefix $actions "native_password" $ready.endpoints.native_password "native_ssh" "password" "native_password"
         Add-Action $actions ([ordered]@{ action = "set_connection_field"; field = [ordered]@{ kind = "secret_from_env"; env_var = $passwordName } })
         Add-SubmitConnect $actions "native_password"
+        Set-ActionBinding -Surface "gtk"
+        Add-VisualCheckpoint $actions "standard-host-key" "host_key" 1360 860 "standard"
+        Set-ActionBinding -Surface "native_password" -Connection "native_password"
         Add-Action $actions ([ordered]@{ action = "respond_host_key"; accept = $true })
+        Add-Action $actions ([ordered]@{ action = "wait_frame_contains"; text = "READY" })
         Add-Action $actions ([ordered]@{ action = "send_terminal_text"; text = "gui-native-password-$runId`r" })
         Add-Action $actions ([ordered]@{ action = "wait_frame_contains"; text = "gui-native-password-$runId" })
         Set-ActionBinding -Surface "tabs_splits" -Connection "native_password"
         Add-Action $actions ([ordered]@{ action = "reconnect" })
+        Add-Action $actions ([ordered]@{ action = "wait_frame_contains"; text = "READY" })
         Add-Action $actions ([ordered]@{ action = "send_terminal_text"; text = "gui-native-reconnect-$runId`r" })
         Add-Action $actions ([ordered]@{ action = "wait_frame_contains"; text = "gui-native-reconnect-$runId" })
-
-        Set-ActionBinding -Surface "gtk"
-        Add-Action $actions ([ordered]@{ action = "visual_checkpoint" })
 
         Add-ConnectionPrefix $actions "native_key" $ready.endpoints.native_key "native_ssh" "public_key" "native_key"
         Add-TextFieldAction $actions "identity_file" $encryptedKey
         Add-Action $actions ([ordered]@{ action = "set_connection_field"; field = [ordered]@{ kind = "secret_from_env"; env_var = $passphraseName } })
         Add-SubmitConnect $actions "native_key"
         Add-Action $actions ([ordered]@{ action = "respond_host_key"; accept = $true })
+        Add-Action $actions ([ordered]@{ action = "wait_frame_contains"; text = "READY" })
         Add-Action $actions ([ordered]@{ action = "send_terminal_text"; text = "gui-native-key-$runId`r" })
         Add-Action $actions ([ordered]@{ action = "wait_frame_contains"; text = "gui-native-key-$runId" })
 
         Add-ConnectionPrefix $actions "native_keyboard_interactive" $ready.endpoints.native_keyboard_interactive "native_ssh" "keyboard_interactive" "native_keyboard_interactive"
         Add-SubmitConnect $actions "native_keyboard_interactive"
         Add-Action $actions ([ordered]@{ action = "respond_host_key"; accept = $true })
+        Set-ActionBinding -Surface "gtk"
+        Add-VisualCheckpoint $actions "standard-authentication" "authentication" 1360 860 "standard"
+        Set-ActionBinding -Surface "native_keyboard_interactive" -Connection "native_keyboard_interactive"
         Add-Action $actions ([ordered]@{ action = "respond_auth"; prompt = 0; env_var = $kbiVisibleName })
         Add-Action $actions ([ordered]@{ action = "respond_auth"; prompt = 1; env_var = $kbiCodeName })
+        Add-Action $actions ([ordered]@{ action = "wait_frame_contains"; text = "READY" })
         Add-Action $actions ([ordered]@{ action = "send_terminal_text"; text = "gui-native-kbi-$runId`r" })
         Add-Action $actions ([ordered]@{ action = "wait_frame_contains"; text = "gui-native-kbi-$runId" })
 
         Add-ConnectionPrefix $actions "system_agent" $ready.endpoints.system_agent "system_open_ssh" "agent" "system_agent"
         Add-SubmitConnect $actions "system_agent"
+        Add-Action $actions ([ordered]@{ action = "wait_frame_contains"; text = "yes/no" })
         Add-Action $actions ([ordered]@{ action = "send_terminal_text"; text = "yes`r" })
+        Add-Action $actions ([ordered]@{ action = "wait_frame_contains"; text = "READY" })
         Add-Action $actions ([ordered]@{ action = "send_terminal_text"; text = "gui-system-agent-$runId`r" })
         Add-Action $actions ([ordered]@{ action = "wait_frame_contains"; text = "gui-system-agent-$runId" })
 
@@ -1257,6 +1403,56 @@ try {
         Add-Action $actions ([ordered]@{ action = "set_connection_field"; field = [ordered]@{ kind = "secret_from_env"; env_var = $passwordName } })
         Add-SubmitConnect $actions "host_key"
         Add-Action $actions ([ordered]@{ action = "respond_host_key"; accept = $false })
+        Set-ActionBinding -Surface "gtk"
+        Add-VisualCheckpoint $actions "standard-failure" "failure" 1360 860 "standard"
+
+        Set-ActionBinding -Surface "local_terminal" -Connection "local"
+        Add-Action $actions ([ordered]@{ action = "switch_tab"; tab = 0 })
+        Set-ActionBinding -Surface "gtk"
+        Add-WindowResize $actions 800 600 "compact"
+
+        Set-ActionBinding -Surface "local_terminal" -Connection "local"
+        for ($tabIndex = 0; $tabIndex -lt 16; $tabIndex++) {
+            Add-Action $actions ([ordered]@{ action = "new_tab" })
+        }
+        Set-ActionBinding -Surface "tabs_splits" -Connection "local"
+        Add-Action $actions ([ordered]@{ action = "new_tab" })
+        Add-Action $actions ([ordered]@{ action = "new_tab" })
+        Set-ActionBinding -Surface "local_terminal" -Connection "local"
+        Add-Action $actions ([ordered]@{ action = "switch_tab"; tab = 0 })
+        Set-ActionBinding -Surface "gtk"
+        Add-VisualCheckpoint $actions "compact-twenty-tabs" "twenty_tabs" 800 600 "compact"
+        Set-ActionBinding -Surface "local_terminal" -Connection "local"
+        Add-Action $actions ([ordered]@{ action = "switch_tab"; tab = 19 })
+        Add-Action $actions ([ordered]@{ action = "switch_tab"; tab = 0 })
+        Set-ActionBinding -Surface "gtk"
+        Add-VisualCheckpoint $actions "compact-grid" "grid" 800 600 "compact"
+        Add-VisualCheckpoint $actions "compact-editor" "editor" 800 600 "compact"
+        Add-VisualCheckpoint $actions "compact-settings" "settings" 800 600 "compact"
+        Add-VisualCheckpoint $actions "compact-import" "import" 800 600 "compact"
+        Add-WindowResize $actions 1360 860 "standard"
+        Add-VisualCheckpoint $actions "standard-connected" "connected" 1360 860 "standard"
+        Add-VisualCheckpoint $actions "standard-single" "single" 1360 860 "standard"
+        Add-VisualCheckpoint $actions "standard-h-split" "h_split" 1360 860 "standard"
+        Add-VisualCheckpoint $actions "standard-v-split" "v_split" 1360 860 "standard"
+        Add-VisualCheckpoint $actions "standard-top-bottom-3" "top_bottom_3" 1360 860 "standard"
+        Add-VisualCheckpoint $actions "standard-grid" "grid" 1360 860 "standard"
+        Add-VisualCheckpoint $actions "standard-settings" "settings" 1360 860 "standard"
+        Add-VisualCheckpoint $actions "standard-import" "import" 1360 860 "standard"
+
+        Set-ActionBinding -Surface "tabs_splits" -Connection "local"
+        Add-Action $actions ([ordered]@{ action = "split_horizontal" })
+        Add-Action $actions ([ordered]@{ action = "split_vertical" })
+        Add-Action $actions ([ordered]@{ action = "switch_tab"; tab = 0 })
+
+        Set-ActionBinding -Surface "gtk"
+        Add-WindowResize $actions 1920 1080 "wide"
+        Add-VisualCheckpoint $actions "wide-connected" "connected" 1920 1080 "wide"
+        Add-VisualCheckpoint $actions "wide-twenty-tabs" "twenty_tabs" 1920 1080 "wide"
+        Add-VisualCheckpoint $actions "wide-grid" "grid" 1920 1080 "wide"
+        Add-VisualCheckpoint $actions "wide-editor" "editor" 1920 1080 "wide"
+        Add-VisualCheckpoint $actions "wide-settings" "settings" 1920 1080 "wide"
+        Add-VisualCheckpoint $actions "wide-import" "import" 1920 1080 "wide"
 
         Add-ConnectionPrefix $actions "vault" $ready.endpoints.native_password "native_ssh" "password" "vault"
         Add-Action $actions ([ordered]@{ action = "set_connection_field"; field = [ordered]@{ kind = "secret_from_env"; env_var = $passwordName } })
@@ -1287,7 +1483,7 @@ try {
 
         $scenarioPath = Join-Path $tempRoot "p0-scenario.json"
         $scenario = [ordered]@{
-            version = 1
+            version = 2
             run_nonce = $runId
             step_timeout_ms = 10000
             scenario_timeout_ms = 120000
@@ -1346,6 +1542,9 @@ try {
             $promptFunction = "function global:prompt { 'P0-LOCAL-READY' + [Environment]::NewLine + 'P0> ' }"
             [void](New-Item -ItemType Directory -Path (Split-Path -Parent $shellProfilePath) -Force)
             Write-Utf8File $shellProfilePath $promptFunction
+            $guiEnvironment.RSHELL_SHELL = $shellFixture
+            $guiEnvironment.RSHELL_PWSH_BIN = $pwsh
+            $guiEnvironment.RSHELL_P0_SHELL_COUNTER_PREFIX = Join-Path $tempRoot "local-shell-launch"
         }
         else {
             $unixShellWrapper = Join-Path $tempRoot "rshell-pwsh"
@@ -1400,7 +1599,6 @@ try {
             }
         }
         $guiReportTemp = Join-Path $tempRoot "production-p0-report.json"
-        $guiPngTemp = [System.IO.Path]::ChangeExtension($guiReportTemp, ".png")
         $guiExit = Invoke-CapturedChild `
                 -Name "gtk-production" `
                 -FilePath $cargo `
@@ -1415,14 +1613,29 @@ try {
         if (Test-Path -LiteralPath $guiReportTemp -PathType Leaf) {
             $pendingReport = Get-Content -LiteralPath $guiReportTemp -Raw | ConvertFrom-Json
         }
-        if (Test-Path -LiteralPath $guiPngTemp -PathType Leaf) {
-            $pendingDimensions = Assert-Png $guiPngTemp
-            $pendingPngBytes = [System.IO.File]::ReadAllBytes($guiPngTemp)
+        $pendingPngInfo = @{}
+        if ($null -ne $pendingReport -and $null -ne $pendingReport.PSObject.Properties["png_paths"]) {
+            foreach ($pngLeafValue in @($pendingReport.png_paths)) {
+                $pngLeaf = [string]$pngLeafValue
+                if ([string]::IsNullOrWhiteSpace($pngLeaf) -or $pngLeaf -in @(".", "..") -or
+                    [System.IO.Path]::IsPathRooted($pngLeaf) -or $pngLeaf -match '[:\\/]') {
+                    throw "The P0 visual matrix emitted an invalid PNG leaf name."
+                }
+                $guiPngTemp = Join-Path $tempRoot $pngLeaf
+                $dimensions = Assert-Png $guiPngTemp
+                $bytes = [System.IO.File]::ReadAllBytes($guiPngTemp)
+                $pendingPngInfo[$pngLeaf] = $dimensions
+                $pendingPngs.Add([pscustomobject]@{ Name = $pngLeaf; Bytes = $bytes; Dimensions = $dimensions })
+            }
+            if ($pendingPngs.Count -gt 0) {
+                $pendingDimensions = $pendingPngs[0].Dimensions
+                $pendingPngBytes = $pendingPngs[0].Bytes
+            }
         }
         if ($guiExit -ne 0) {
             throw "P0 smoke phase 'gtk-production' failed with exit $guiExit; inspect the retained failed report and redacted artifact logs."
         }
-        Assert-VisualContract -Report $pendingReport -PngInfo $pendingDimensions
+        Assert-VisualContract -Report $pendingReport -PngInfo $pendingPngInfo
         Add-Phase "gtk_production"
 
         Write-Utf8File $fixtureStop "stop`n"
@@ -1472,7 +1685,7 @@ try {
     }
     else {
         $pendingReport = [pscustomobject]([ordered]@{
-            version = 1
+            version = 2
             platform = $platform
             mode = $mode
             state = "passed"
@@ -1610,7 +1823,7 @@ exit 91
         foreach ($entry in $baseEnvironment.GetEnumerator()) { $scanEnvironment[$entry.Key] = $entry.Value }
         foreach ($entry in $secretEnvironment.GetEnumerator()) { $scanEnvironment[$entry.Key] = $entry.Value }
         $scanEnvironment.RSHELL_QA_SECRET_ENV_VARS = $secretNames -join ","
-        foreach ($scanRoot in @($artifactRoot, $tempRoot)) {
+        foreach ($scanRoot in @($tempRoot, $artifactRoot)) {
             [void](Invoke-CapturedChild `
                     -Name "assert-no-secrets" `
                     -FilePath $pwsh `
@@ -1662,7 +1875,7 @@ $finalizationException = $null
 try {
     if ($null -ne $failure -and $null -eq $pendingReport) {
         $failed = [ordered]@{
-            version = 1; platform = $platform; mode = $mode; state = "failed"
+            version = 2; platform = $platform; mode = $mode; state = "failed"
             error = "p0_smoke_failed"; phases = $phases
         }
         foreach ($surface in $surfaceNames) {
@@ -1699,26 +1912,38 @@ try {
     if ($null -ne $pendingPngBytes) {
         [System.IO.File]::WriteAllBytes((Join-Path $finalizeRoot "report.png"), $pendingPngBytes)
     }
+    foreach ($pendingPng in $pendingPngs) {
+        [System.IO.File]::WriteAllBytes((Join-Path $finalizeRoot $pendingPng.Name), $pendingPng.Bytes)
+    }
+    $stagedJunit = Join-Path $finalizeRoot "report.junit.xml"
+    Write-Junit $stagedJunit $pendingReport $pendingDimensions $failure
 
-    $finalScanEnvironment = @{}
-    foreach ($entry in $baseEnvironment.GetEnumerator()) { $finalScanEnvironment[$entry.Key] = $entry.Value }
-    foreach ($entry in $secretEnvironment.GetEnumerator()) { $finalScanEnvironment[$entry.Key] = $entry.Value }
-    $finalScanEnvironment.RSHELL_QA_SECRET_ENV_VARS = $secretNames -join ","
-    [void](Invoke-CapturedChild `
-            -Name "assert-no-secrets-final" `
-            -FilePath $pwsh `
-            -Arguments @("-NoProfile", "-File", (Join-Path $PSScriptRoot "assert-no-secrets.ps1"), "-ArtifactRoot", $finalizeRoot) `
-            -Environment $finalScanEnvironment `
-            -WorkingDirectory $repoRoot `
-            -StdoutPath (Join-Path $artifactRoot "$stem-final-secret-scan.stdout.log") `
-            -StderrPath (Join-Path $artifactRoot "$stem-final-secret-scan.stderr.log") `
-            -TimeoutSeconds 120)
+    $savedSecretNames = $env:RSHELL_QA_SECRET_ENV_VARS
+    $savedSecretValues = @{}
+    try {
+        $env:RSHELL_QA_SECRET_ENV_VARS = $secretNames -join ","
+        foreach ($secretName in $secretNames) {
+            $savedSecretValues[$secretName] = [Environment]::GetEnvironmentVariable($secretName, "Process")
+            [Environment]::SetEnvironmentVariable($secretName, $secretEnvironment[$secretName], "Process")
+        }
+        & $pwsh -NoProfile -File (Join-Path $PSScriptRoot "assert-no-secrets.ps1") -ArtifactRoot $finalizeRoot
+        if ($LASTEXITCODE -ne 0) { throw "The finalized artifact secret scan failed." }
+    }
+    finally {
+        $env:RSHELL_QA_SECRET_ENV_VARS = $savedSecretNames
+        foreach ($secretName in $secretNames) {
+            [Environment]::SetEnvironmentVariable($secretName, $savedSecretValues[$secretName], "Process")
+        }
+    }
 
     Write-Utf8File $artifactReport $finalJson
     if ($null -ne $pendingPngBytes) {
         [System.IO.File]::WriteAllBytes($artifactPng, $pendingPngBytes)
     }
-    Write-Junit $artifactJunit $pendingReport $pendingDimensions $failure
+    foreach ($pendingPng in $pendingPngs) {
+        [System.IO.File]::WriteAllBytes((Join-Path $artifactRoot $pendingPng.Name), $pendingPng.Bytes)
+    }
+    [System.IO.File]::WriteAllBytes($artifactJunit, [System.IO.File]::ReadAllBytes($stagedJunit))
 }
 catch {
     $finalizationException = $_.Exception.Message
@@ -1732,7 +1957,7 @@ finally {
 if ($null -ne $finalizationException) {
     $failure = "P0 artifact finalization failed after cleanup."
     $safeFailed = [ordered]@{
-        version = 1
+        version = 2
         platform = $platform
         mode = $mode
         state = "failed"

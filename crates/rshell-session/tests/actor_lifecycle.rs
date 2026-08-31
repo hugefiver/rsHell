@@ -5,8 +5,8 @@ use std::{sync::Arc, time::Duration};
 use rshell_core::{
     AuthPrompt, CellPosition, ExitStatus, HostKeyDecision, HostKeyPrompt, InteractionId,
     InteractionRequest, InteractionResponse, KeyModifiers, MouseButton, MouseEventKind,
-    SelectionRange, SessionFailure, SessionState, TerminalInput, TerminalMouseEvent,
-    TerminalOverrides, TerminalSettingsV1,
+    SelectionRange, SessionFailure, SessionState, TerminalDisplayModes, TerminalInput,
+    TerminalMouseEvent, TerminalOverrides, TerminalSettingsV1,
 };
 use rshell_session::{
     DefaultTerminalEngine, PresentationPolicy, SessionCommand, SessionError, SessionEvent,
@@ -19,7 +19,7 @@ fn copy_ready_debug_redacts_clipboard_text() {
     assert!(!format!("{event:?}").contains("COPY-READY-SENSITIVE"));
 }
 use secrecy::SecretString;
-use support::{FakeFactory, NextBehavior, TransportScript, WriteBlocker};
+use support::{FakeFactory, ShutdownBlocker, TransportScript, WriteBlocker};
 use tokio::sync::broadcast;
 
 const WAIT: Duration = Duration::from_secs(2);
@@ -163,6 +163,163 @@ async fn mouse_command_is_encoded_by_the_engine_before_transport_write() {
     wait_until(|| !probe.writes().is_empty()).await;
     assert_eq!(probe.writes(), vec![(1, b"mouse:press:4:101:1".to_vec())]);
 
+    manager.shutdown_all().await.expect("shutdown");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn interrupt_writes_exactly_one_etx() {
+    let (script, stream) = TransportScript::controlled();
+    let (factory, probe) = FakeFactory::new([script]);
+    let manager = SessionManager::new(factory);
+    let mut settings = TerminalSettingsV1 {
+        enable_kitty_keyboard: true,
+        ..TerminalSettingsV1::default()
+    };
+    settings.enable_csi_u = true;
+    let terminal = settings.resolve(&TerminalOverrides::default());
+    let engine = DefaultTerminalEngine::new(&terminal, support::size()).unwrap();
+    let launch = SessionLaunch::new(TransportRequest::new(support::size()), Box::new(engine));
+    let mut client = manager.launch(launch).expect("launch");
+    stream.send(TransportEvent::Connected);
+    collect_through_state(&mut client.events, SessionState::Connected).await;
+    stream.send(TransportEvent::Output(b"\x1b[>1u".to_vec()));
+    let negotiated = next_frame(&mut client).await;
+    assert!(negotiated.display_modes.enhanced_keyboard);
+
+    client
+        .try_command(SessionCommand::Interrupt)
+        .expect("interrupt accepted");
+    wait_until(|| !probe.writes().is_empty()).await;
+
+    assert_eq!(probe.writes(), vec![(1, vec![0x03])]);
+    assert!(
+        !probe
+            .writes()
+            .iter()
+            .any(|(_, bytes)| bytes == b"\x1b[99;5u")
+    );
+    manager.shutdown_all().await.expect("shutdown");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn interruption_notice_waits_for_a_new_authoritative_frame() {
+    let (script, stream) = TransportScript::controlled();
+    let (factory, probe) = FakeFactory::new([script]);
+    let manager = SessionManager::new(factory);
+    let mut client = manager
+        .launch(real_launch(PresentationPolicy::default()))
+        .expect("launch");
+    collect_through_state(&mut client.events, SessionState::Connected).await;
+
+    stream.send(TransportEvent::Output(dirty_tui_output()));
+    let interrupted = next_frame(&mut client).await;
+    assert!(interrupted.display_modes.has_residue());
+
+    client
+        .try_command(SessionCommand::Interrupt)
+        .expect("interrupt accepted");
+    wait_until(|| probe.writes() == vec![(1, vec![0x03])]).await;
+    assert_eq!(
+        client
+            .frames
+            .borrow()
+            .as_ref()
+            .expect("interrupted frame")
+            .generation,
+        interrupted.generation,
+        "the pre-interrupt authoritative frame cannot publish a notice"
+    );
+    assert_no_recovery_changed(&mut client.events).await;
+
+    stream.send(TransportEvent::Output(
+        b"\r\ninterrupt-survived\r\n".to_vec(),
+    ));
+    let survived = next_frame(&mut client).await;
+    let notice = recv_recovery_changed(&mut client.events)
+        .await
+        .expect("dirty authoritative frame must create a notice");
+
+    assert!(survived.generation > interrupted.generation);
+    assert!(survived.display_modes.has_residue());
+    assert!(survived.alternate_screen, "surviving TUI must not be reset");
+    assert_eq!(notice.interrupted_generation, interrupted.generation);
+    assert_eq!(notice.observed_generation, survived.generation);
+    assert_eq!(notice.modes, survived.display_modes);
+
+    stream.send(TransportEvent::Output(b"still-running\r\n".to_vec()));
+    let later = next_frame(&mut client).await;
+    assert!(later.generation > survived.generation);
+    assert!(later.display_modes.has_residue());
+    assert_no_recovery_changed(&mut client.events).await;
+
+    manager.shutdown_all().await.expect("shutdown");
+
+    let (failed_factory, failed_probe) =
+        FakeFactory::new([TransportScript::events([TransportEvent::Connected])
+            .with_write_failure(SessionFailure::Network)]);
+    let failed_manager = SessionManager::new(failed_factory);
+    let (failed_launch, _) =
+        support::launch_with_display_modes(&failed_probe, dirty_display_modes());
+    let mut failed = failed_manager.launch(failed_launch).expect("failed launch");
+    collect_through_state(&mut failed.events, SessionState::Connected).await;
+    failed
+        .try_command(SessionCommand::Interrupt)
+        .expect("failed interrupt accepted");
+    let failed_events = recv_until_closed(&mut failed.events).await;
+
+    assert!(
+        failed_probe.writes().is_empty(),
+        "failed ETX must not be recorded"
+    );
+    assert!(
+        failed_events
+            .iter()
+            .any(|event| { matches!(event, SessionEvent::Failed(SessionFailure::Network)) })
+    );
+    assert!(
+        failed_events
+            .iter()
+            .all(|event| { !matches!(event, SessionEvent::RecoveryChanged(Some(_))) })
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn reset_display_publishes_newer_clean_primary_frame_without_transport_write() {
+    let (script, stream) = TransportScript::controlled();
+    let (factory, probe) = FakeFactory::new([script]);
+    let manager = SessionManager::new(factory);
+    let mut settings = TerminalSettingsV1 {
+        enable_kitty_keyboard: true,
+        ..TerminalSettingsV1::default()
+    };
+    settings.scrollback_lines = 1_000;
+    let terminal = settings.resolve(&TerminalOverrides::default());
+    let engine = DefaultTerminalEngine::new(&terminal, support::size()).unwrap();
+    let launch = SessionLaunch::new(TransportRequest::new(support::size()), Box::new(engine));
+    let mut client = manager.launch(launch).expect("launch");
+    stream.send(TransportEvent::Connected);
+    collect_through_state(&mut client.events, SessionState::Connected).await;
+    stream.send(TransportEvent::Output(
+        b"primary-history\r\nprimary-tail\x1b]0;stale\x07\x1b[?1049h\x1b[>1u\x1b[?1000h\x1b[?1h\x1b[?25lalt"
+            .to_vec(),
+    ));
+    let dirty = next_frame(&mut client).await;
+    assert!(dirty.display_modes.has_residue());
+
+    client
+        .try_command(SessionCommand::ResetDisplay)
+        .expect("reset accepted");
+    let recovered = next_frame(&mut client).await;
+
+    assert!(recovered.generation > dirty.generation);
+    assert_eq!(recovered.display_modes, Default::default());
+    assert_eq!(recovered.title, "rsHell");
+    assert!(frame_contains(&recovered, "primary-tail"));
+    assert!(!frame_contains(&recovered, "alt"));
+    assert!(
+        probe.writes().is_empty(),
+        "display recovery must not write escapes"
+    );
     manager.shutdown_all().await.expect("shutdown");
 }
 
@@ -507,6 +664,103 @@ async fn reconnects_are_serial_and_duplicate_shutdown_is_idempotent() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn dirty_reconnect_recovers_before_old_shutdown_and_new_connect() {
+    let shutdown_blocker = ShutdownBlocker::new();
+    let (first, first_stream) = TransportScript::controlled();
+    let (factory, probe) = FakeFactory::new([
+        first.with_shutdown_blocker(shutdown_blocker.clone()),
+        TransportScript::events([TransportEvent::Connected]),
+    ]);
+    let manager = SessionManager::new(factory);
+    let (launch, engine) = support::launch_with_display_modes(&probe, dirty_display_modes());
+    let mut client = manager.launch(launch).expect("launch");
+    let session_id = client.id;
+    collect_through_state(&mut client.events, SessionState::Connected).await;
+
+    first_stream.send(TransportEvent::Output(
+        b"primary-before-reconnect\r\n".to_vec(),
+    ));
+    let dirty = next_frame(&mut client).await;
+    assert!(dirty.display_modes.has_residue());
+
+    client
+        .try_command(SessionCommand::Reconnect)
+        .expect("reconnect accepted");
+    let clean = next_frame(&mut client).await;
+    let notice = recv_recovery_changed(&mut client.events).await;
+
+    assert!(clean.generation > dirty.generation);
+    assert_clean_final_frame(&clean, "primary-before-reconnect");
+    assert_eq!(notice, None);
+    assert_eq!(
+        client.id, session_id,
+        "reconnect keeps the same actor client"
+    );
+    assert_eq!(engine.recover_display_count(), 1);
+    assert_eq!(engine.bytes(), b"primary-before-reconnect\r\n");
+
+    shutdown_blocker.wait_started().await;
+    let before_replacement = probe.log();
+    assert_eq!(count(&before_replacement, "create:1"), 1);
+    assert_eq!(count(&before_replacement, "shutdown:1"), 1);
+    assert_eq!(count(&before_replacement, "create:2"), 0);
+    assert_eq!(count(&before_replacement, "connect:2"), 0);
+
+    shutdown_blocker.release();
+    wait_until(|| probe.log().iter().any(|entry| entry == "connect:2")).await;
+    let log = probe.log();
+    assert!(position(&log, "shutdown:1") < position(&log, "create:2"));
+    assert!(position(&log, "create:2") < position(&log, "connect:2"));
+
+    client
+        .try_command(SessionCommand::Input(TerminalInput::CommittedText(
+            "same-actor".to_owned(),
+        )))
+        .expect("replacement input accepted through original client");
+    wait_until(|| probe.writes() == vec![(2, b"same-actor".to_vec())]).await;
+    manager.shutdown_all().await.expect("shutdown");
+
+    let failing_shutdown_blocker = ShutdownBlocker::new();
+    let (failing_first, failing_stream) = TransportScript::controlled();
+    let (failing_factory, failing_probe) = FakeFactory::new([
+        failing_first.with_shutdown_blocker(failing_shutdown_blocker.clone()),
+        TransportScript::events([TransportEvent::Connected]),
+    ]);
+    let failing_manager = SessionManager::new(failing_factory);
+    let (failing_launch, _) =
+        support::launch_with_recovery_failure(&failing_probe, dirty_display_modes());
+    let mut failing = failing_manager
+        .launch(failing_launch)
+        .expect("failing launch");
+    collect_through_state(&mut failing.events, SessionState::Connected).await;
+    failing_stream.send(TransportEvent::Output(
+        b"dirty-before-failed-reconnect\r\n".to_vec(),
+    ));
+    let dirty = next_frame(&mut failing).await;
+    assert!(dirty.display_modes.has_residue());
+
+    failing
+        .try_command(SessionCommand::Reconnect)
+        .expect("failing reconnect accepted");
+    assert_eq!(
+        recv_failure(&mut failing.events).await,
+        SessionFailure::Platform
+    );
+    failing_shutdown_blocker.wait_started().await;
+    wait_until(|| {
+        failing_probe
+            .log()
+            .iter()
+            .any(|entry| entry == "shutdown:1")
+    })
+    .await;
+    let failed_log = failing_probe.log();
+    assert_eq!(count(&failed_log, "create:2"), 0);
+    assert_eq!(count(&failed_log, "connect:2"), 0);
+    failing_shutdown_blocker.release();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn terminal_outcomes_clean_registry_and_manager_remains_usable() {
     let (factory, probe) = FakeFactory::new([
         TransportScript::events([TransportEvent::Eof]),
@@ -562,6 +816,119 @@ async fn terminal_outcomes_clean_registry_and_manager_remains_usable() {
         .await
         .expect("shutdown timeout")
         .expect("shutdown");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn every_terminal_completion_recovers_before_event() {
+    #[derive(Clone, Copy)]
+    enum Completion {
+        Eof,
+        Exit(ExitStatus),
+        TransportFailure(SessionFailure),
+        Shutdown,
+        ShutdownFailure(SessionFailure),
+        IllegalTransition,
+    }
+
+    let cases = [
+        Completion::Eof,
+        Completion::Exit(ExitStatus {
+            code: Some(17),
+            success: false,
+        }),
+        Completion::TransportFailure(SessionFailure::Network),
+        Completion::Shutdown,
+        Completion::ShutdownFailure(SessionFailure::Subprocess),
+        Completion::IllegalTransition,
+    ];
+
+    for completion in cases {
+        let (script, stream) = TransportScript::controlled();
+        let script = match completion {
+            Completion::ShutdownFailure(failure) => script.with_shutdown_failure(failure),
+            _ => script,
+        };
+        let (factory, _probe) = FakeFactory::new([script]);
+        let manager = SessionManager::new(factory);
+        let mut client = manager
+            .launch(real_launch(PresentationPolicy::default()))
+            .expect("launch");
+        collect_through_state(&mut client.events, SessionState::Connected).await;
+
+        stream.send(TransportEvent::Output(dirty_tui_output()));
+        let dirty = next_frame(&mut client).await;
+        assert!(dirty.display_modes.has_residue());
+
+        match completion {
+            Completion::Eof => stream.send(TransportEvent::Eof),
+            Completion::Exit(status) => stream.send(TransportEvent::Exit(status)),
+            Completion::TransportFailure(failure) => {
+                stream.send(TransportEvent::Failure(TransportError::new(failure)));
+            }
+            Completion::Shutdown | Completion::ShutdownFailure(_) => client
+                .try_command(SessionCommand::Shutdown)
+                .expect("shutdown accepted"),
+            Completion::IllegalTransition => {
+                stream.send(TransportEvent::AwaitingHostKey);
+                stream.send(TransportEvent::AwaitingHostKey);
+            }
+        }
+
+        let clean = next_frame(&mut client).await;
+        assert!(clean.generation > dirty.generation);
+        assert_clean_final_frame(&clean, "primary-before-terminal");
+        let events = recv_until_closed(&mut client.events).await;
+
+        let recovery = events
+            .iter()
+            .position(|event| matches!(event, SessionEvent::RecoveryChanged(None)))
+            .expect("terminal completion must clear recovery state");
+        assert_eq!(
+            events
+                .iter()
+                .filter(|event| matches!(event, SessionEvent::RecoveryChanged(None)))
+                .count(),
+            1,
+            "terminal completion must publish one recovery clear"
+        );
+        let terminal = events
+            .iter()
+            .position(|event| match (completion, event) {
+                (Completion::Eof | Completion::Shutdown, SessionEvent::Exited(status)) => {
+                    *status
+                        == ExitStatus {
+                            code: None,
+                            success: true,
+                        }
+                }
+                (Completion::Exit(expected), SessionEvent::Exited(actual)) => *actual == expected,
+                (
+                    Completion::TransportFailure(expected) | Completion::ShutdownFailure(expected),
+                    SessionEvent::Failed(actual),
+                ) => *actual == expected,
+                (Completion::IllegalTransition, SessionEvent::Failed(SessionFailure::Crashed)) => {
+                    true
+                }
+                _ => false,
+            })
+            .unwrap_or_else(|| panic!("missing expected terminal event: {events:?}"));
+        assert!(
+            recovery < terminal,
+            "recovery must precede the terminal lifecycle event: {events:?}"
+        );
+        if matches!(completion, Completion::Shutdown) {
+            let closing = events
+                .iter()
+                .position(|event| {
+                    matches!(event, SessionEvent::StateChanged(SessionState::Closing))
+                })
+                .expect("shutdown must enter Closing");
+            assert!(
+                recovery < closing,
+                "recovery must precede shutdown Closing: {events:?}"
+            );
+        }
+    }
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -738,42 +1105,51 @@ async fn interaction_round_trip_is_routed_without_secret_debug_output() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn actor_panic_is_generic_once_and_manager_launches_again() {
-    let (factory, probe) = FakeFactory::new([
-        TransportScript::panic(),
-        TransportScript {
-            next: NextBehavior::Pending,
-            interactions: std::collections::VecDeque::new(),
-            write_blocker: None,
-            shutdown_failure: None,
-        },
-    ]);
+    let (factory, probe) = FakeFactory::new([TransportScript::panic(), TransportScript::pending()]);
     let manager = SessionManager::new(factory);
     let (launch, _) = support::launch(&probe);
     let mut crashed = manager.launch(launch).expect("panic launch");
 
-    let mut crash_events = 0;
-    let mut crash_states = 0;
-    loop {
-        match recv(&mut crashed.events).await {
-            SessionEvent::StateChanged(SessionState::Crashed) => crash_states += 1,
-            SessionEvent::Crashed(message) => {
-                crash_events += 1;
-                assert_eq!(message, "session actor crashed");
-                break;
-            }
-            _ => {}
-        }
-    }
-    for event in recv_until_closed(&mut crashed.events).await {
-        if matches!(event, SessionEvent::Crashed(_)) {
-            crash_events += 1;
-        }
-        if matches!(event, SessionEvent::StateChanged(SessionState::Crashed)) {
-            crash_states += 1;
-        }
-    }
-    assert_eq!(crash_events, 1);
-    assert_eq!(crash_states, 1);
+    let events = recv_until_closed(&mut crashed.events).await;
+    let recovery = events
+        .iter()
+        .position(|event| matches!(event, SessionEvent::RecoveryChanged(None)))
+        .expect("panic supervisor must clear recovery state");
+    assert_eq!(
+        events
+            .iter()
+            .filter(|event| matches!(event, SessionEvent::RecoveryChanged(None)))
+            .count(),
+        1
+    );
+    let crash_state = events
+        .iter()
+        .position(|event| matches!(event, SessionEvent::StateChanged(SessionState::Crashed)))
+        .expect("panic supervisor must publish Crashed state");
+    let crash = events
+        .iter()
+        .position(|event| matches!(event, SessionEvent::Crashed(message) if message == "session actor crashed"))
+        .expect("panic supervisor must publish generic crash");
+    assert!(recovery < crash_state);
+    assert!(recovery < crash);
+    assert_eq!(
+        events
+            .iter()
+            .filter(|event| matches!(event, SessionEvent::Crashed(_)))
+            .count(),
+        1
+    );
+    assert_eq!(
+        events
+            .iter()
+            .filter(|event| matches!(event, SessionEvent::StateChanged(SessionState::Crashed)))
+            .count(),
+        1
+    );
+    assert!(
+        crashed.frames.borrow().is_none(),
+        "panic supervisor must not fabricate a terminal frame"
+    );
     assert_unknown_session(&manager, crashed.id);
 
     let (launch, _) = support::launch(&probe);
@@ -876,6 +1252,38 @@ async fn recv_failure(receiver: &mut broadcast::Receiver<SessionEvent>) -> Sessi
     }
 }
 
+async fn recv_recovery_changed(
+    receiver: &mut broadcast::Receiver<SessionEvent>,
+) -> Option<rshell_core::DisplayRecoveryNotice> {
+    loop {
+        if let SessionEvent::RecoveryChanged(notice) = recv(receiver).await {
+            return notice;
+        }
+    }
+}
+
+async fn assert_no_recovery_changed(receiver: &mut broadcast::Receiver<SessionEvent>) {
+    let result = tokio::time::timeout(Duration::from_millis(50), async {
+        loop {
+            match receiver.recv().await {
+                Ok(SessionEvent::RecoveryChanged(notice)) => {
+                    panic!("unexpected recovery transition: {notice:?}")
+                }
+                Ok(_) => {}
+                Err(broadcast::error::RecvError::Lagged(skipped)) => {
+                    panic!("event receiver lagged by {skipped}")
+                }
+                Err(broadcast::error::RecvError::Closed) => return,
+            }
+        }
+    })
+    .await;
+    assert!(
+        result.is_err(),
+        "event stream closed before observation window"
+    );
+}
+
 async fn wait_until(mut condition: impl FnMut() -> bool) {
     tokio::time::timeout(WAIT, async {
         while !condition() {
@@ -918,6 +1326,39 @@ fn frame_contains(frame: &rshell_core::RenderFrame, expected: &str) -> bool {
             .collect::<String>()
             .contains(expected)
     })
+}
+
+fn dirty_tui_output() -> Vec<u8> {
+    let mut output = b"primary-before-terminal\r\n".to_vec();
+    output.extend_from_slice(support::display_recovery::MODE_SEQUENCE);
+    output
+}
+
+fn dirty_display_modes() -> TerminalDisplayModes {
+    TerminalDisplayModes {
+        alternate_screen: true,
+        enhanced_keyboard: true,
+        mouse_reporting: true,
+        application_cursor: true,
+        cursor_hidden: true,
+        stale_title: true,
+    }
+}
+
+fn assert_clean_final_frame(frame: &rshell_core::RenderFrame, primary_text: &str) {
+    assert_eq!(frame.display_modes, TerminalDisplayModes::default());
+    assert!(!frame.alternate_screen);
+    assert!(!frame.mouse_reporting);
+    assert_eq!(frame.title, "rsHell");
+    assert!(frame_contains(frame, primary_text));
+    assert!(!frame_contains(frame, "fixture-界-e"));
+    assert!(
+        !frame
+            .rows
+            .iter()
+            .flat_map(|row| row.cells.iter())
+            .any(|cell| { cell.text.contains('\u{fffd}') })
+    );
 }
 
 fn assert_unknown_session(manager: &SessionManager, id: rshell_core::SessionId) {

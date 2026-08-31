@@ -1,4 +1,4 @@
-use std::path::Path;
+use std::{collections::BTreeMap, path::Path};
 
 use rshell_ui::{SmokeReport, SmokeScenarioState, SmokeStepState};
 use serde::Serialize;
@@ -7,7 +7,7 @@ use crate::{
     RootError,
     p0_smoke_cleanup::P0CleanupEvidence,
     p0_smoke_report_steps::{P0StepReport, convert_steps},
-    p0_smoke_report_visual::{P0VisualEvidence, visual_evidence},
+    p0_smoke_report_visual::{P0VisualCheckpointEvidence, visual_evidence},
     p0_smoke_status::{SurfaceStatus, SurfaceStatuses},
 };
 
@@ -21,9 +21,11 @@ pub(crate) struct P0SmokeReport {
     elapsed_ms: u128,
     requested_png_path: Option<String>,
     png_path: Option<String>,
+    requested_png_paths: Vec<String>,
+    png_paths: Vec<String>,
     png_error: Option<&'static str>,
     cleanup_evidence: Option<P0CleanupEvidence>,
-    visual: Option<P0VisualEvidence>,
+    visual: BTreeMap<String, P0VisualCheckpointEvidence>,
     steps: Vec<P0StepReport>,
     gtk: SurfaceStatus,
     local_terminal: SurfaceStatus,
@@ -58,8 +60,8 @@ impl P0SmokeReport {
         } else {
             "failed"
         };
-        let (requested_png_path, png_path, png_error) =
-            report.map_or((None, None, None), |value| {
+        let (requested_png_path, png_path, requested_png_paths, png_paths, png_error) = report
+            .map_or((None, None, Vec::new(), Vec::new(), None), |value| {
                 match (
                     value
                         .requested_png_path
@@ -67,18 +69,30 @@ impl P0SmokeReport {
                         .map(artifact_name)
                         .transpose(),
                     value.png_path.as_deref().map(artifact_name).transpose(),
+                    artifact_names(&value.requested_png_paths),
+                    artifact_names(&value.png_paths),
                 ) {
-                    (Ok(requested_png_path), Ok(png_path)) => {
-                        (requested_png_path, png_path, value.png_error)
-                    }
-                    _ => (None, None, Some("artifact_path_invalid")),
+                    (Ok(requested_png_path), Ok(png_path), Ok(requested), Ok(captured)) => (
+                        requested_png_path,
+                        png_path,
+                        requested,
+                        captured,
+                        value.png_error,
+                    ),
+                    _ => (
+                        None,
+                        None,
+                        Vec::new(),
+                        Vec::new(),
+                        Some("artifact_path_invalid"),
+                    ),
                 }
             });
         if png_error == Some("artifact_path_invalid") {
             state = "failed";
         }
         Self {
-            version: report.map_or(1, |value| value.version),
+            version: report.map_or(2, |value| value.version),
             run_nonce: report.map(|value| value.run_nonce.clone()),
             state,
             ui_state: report.map(|value| scenario_state(value.state)),
@@ -86,11 +100,13 @@ impl P0SmokeReport {
             elapsed_ms: report.map_or(0, |value| value.elapsed.as_millis()),
             requested_png_path,
             png_path,
+            requested_png_paths,
+            png_paths,
             png_error,
             cleanup_evidence: cleanup_evidence.cloned(),
-            visual: report
-                .and_then(|value| value.counters.visual.as_ref())
-                .map(visual_evidence),
+            visual: report.map_or_else(BTreeMap::new, |value| {
+                visual_evidence(&value.counters.visual)
+            }),
             steps: report.map_or_else(Vec::new, convert_steps),
             gtk: statuses.gtk,
             local_terminal: statuses.local_terminal,
@@ -109,7 +125,7 @@ impl P0SmokeReport {
     pub(crate) fn scenario_failure() -> Self {
         let status = || SurfaceStatus::missing("scenario_parse_failed");
         Self {
-            version: 1,
+            version: 2,
             run_nonce: None,
             state: "failed",
             ui_state: None,
@@ -117,9 +133,11 @@ impl P0SmokeReport {
             elapsed_ms: 0,
             requested_png_path: None,
             png_path: None,
+            requested_png_paths: Vec::new(),
+            png_paths: Vec::new(),
             png_error: None,
             cleanup_evidence: None,
-            visual: None,
+            visual: BTreeMap::new(),
             steps: Vec::new(),
             gtk: status(),
             local_terminal: status(),
@@ -138,6 +156,17 @@ impl P0SmokeReport {
     pub(crate) fn is_complete(&self) -> bool {
         self.state == "passed"
     }
+}
+
+fn artifact_names(paths: &[std::path::PathBuf]) -> Result<Vec<String>, &'static str> {
+    let names = paths
+        .iter()
+        .map(|path| artifact_name(path))
+        .collect::<Result<Vec<_>, _>>()?;
+    let unique = names.iter().collect::<std::collections::BTreeSet<_>>();
+    (unique.len() == names.len())
+        .then_some(names)
+        .ok_or("artifact_path_invalid")
 }
 
 const fn scenario_state(value: SmokeScenarioState) -> &'static str {
@@ -202,7 +231,7 @@ mod tests {
         png_path: PathBuf,
     ) -> super::P0SmokeReport {
         let ui = SmokeReport {
-            version: 1,
+            version: 2,
             run_nonce: "unit".into(),
             state: SmokeScenarioState::Passed,
             elapsed: Duration::ZERO,
@@ -221,6 +250,8 @@ mod tests {
             failure: None,
             requested_png_path: Some(requested_png_path),
             png_path: Some(png_path),
+            requested_png_paths: Vec::new(),
+            png_paths: Vec::new(),
             png_error: None,
         };
         super::P0SmokeReport::from_run(Some(&ui), None, None, passed_statuses())
@@ -328,7 +359,7 @@ mod tests {
             cleanup: status(),
         };
         let ui = SmokeReport {
-            version: 1,
+            version: 2,
             run_nonce: "unit".into(),
             state: SmokeScenarioState::Passed,
             elapsed: Duration::ZERO,
@@ -347,6 +378,8 @@ mod tests {
             failure: None,
             requested_png_path: None,
             png_path: None,
+            requested_png_paths: Vec::new(),
+            png_paths: Vec::new(),
             png_error: None,
         };
         let report = super::P0SmokeReport::from_run(Some(&ui), None, None, statuses);
@@ -357,9 +390,11 @@ mod tests {
     }
 
     #[test]
-    fn visual_facts_are_serialized_once_at_the_report_root() {
+    fn visual_facts_are_serialized_once_per_checkpoint_at_the_report_root() {
         use rshell_ui::{
-            SmokeCounters, SmokeReport, SmokeScenarioState, SmokeVisualEvidence, SmokeVisualFacts,
+            ShellLayoutMode, SmokeAccessibilityEvidence, SmokeCounters, SmokeDpiEvidence,
+            SmokePngEvidence, SmokeReport, SmokeScenarioState, SmokeVisualCheckpointEvidence,
+            SmokeVisualFacts, SmokeVisualState,
         };
 
         let status = || super::SurfaceStatus::from_evidence(Vec::new(), Vec::new());
@@ -388,21 +423,58 @@ mod tests {
             terminal_canvas: true,
             content_dialog: true,
             embedded_icon_count: 13,
+            icon_logical_size: 16,
+            icon_texture_width: 16,
+            icon_texture_height: 16,
+            icon_backend: Some(rshell_ui::IconBackend::InternalVector),
+            effective_scale_bits: 1.0_f64.to_bits(),
+            effective_dpi_bits: 96.0_f64.to_bits(),
+            measured_cell_width_bits: 9.0_f64.to_bits(),
+            measured_cell_height_bits: 18.0_f64.to_bits(),
+            dpi_fallback_used: true,
             focus_or_selection_treatment: true,
+            terminal_glyph_clipped_cells: 0,
+            terminal_min_line_separation_bits: 2.0_f64.to_bits(),
         };
         let ui = SmokeReport {
-            version: 1,
+            version: 2,
             run_nonce: "unit".into(),
             state: SmokeScenarioState::Passed,
             elapsed: Duration::ZERO,
             steps: Vec::new(),
             counters: SmokeCounters {
-                visual: Some(SmokeVisualEvidence { facts, png: None }),
+                visual: [(
+                    "standard-connected".to_owned(),
+                    SmokeVisualCheckpointEvidence {
+                        checkpoint_id: "standard-connected".to_owned(),
+                        state: SmokeVisualState::Connected,
+                        layout: ShellLayoutMode::Standard,
+                        facts,
+                        png: SmokePngEvidence::default(),
+                        dpi: SmokeDpiEvidence {
+                            logical_width: facts.realized_width,
+                            logical_height: facts.realized_height,
+                            effective_scale: 1.0,
+                            effective_dpi: 96.0,
+                            cell_width: 9.0,
+                            cell_height: 18.0,
+                            icon_logical_size: 16,
+                            icon_texture_width: 16,
+                            icon_texture_height: 16,
+                            dpi_fallback_used: true,
+                        },
+                        accessibility: SmokeAccessibilityEvidence::default(),
+                    },
+                )]
+                .into_iter()
+                .collect(),
                 ..Default::default()
             },
             failure: None,
             requested_png_path: None,
             png_path: None,
+            requested_png_paths: Vec::new(),
+            png_paths: Vec::new(),
             png_error: None,
         };
         let value = serde_json::to_value(super::P0SmokeReport::from_run(
@@ -412,10 +484,15 @@ mod tests {
             statuses,
         ))
         .unwrap();
-        assert_eq!(value["visual"]["facts"]["requested_width"], 1_360);
-        assert_eq!(value["visual"]["facts"]["embedded_icon_count"], 13);
-        assert_eq!(value["visual"]["facts"]["content_dialog"], true);
-        assert!(value["visual"]["png"].is_null());
+        let visual = &value["visual"]["standard-connected"];
+        assert_eq!(visual["facts"]["requested_width"], 1_360);
+        assert_eq!(visual["facts"]["embedded_icon_count"], 13);
+        assert_eq!(visual["facts"]["icon_logical_size"], 16);
+        assert_eq!(visual["facts"]["icon_texture_width"], 16);
+        assert_eq!(visual["facts"]["icon_backend"], "internal_vector");
+        assert_eq!(visual["facts"]["effective_dpi_bits"], 96.0_f64.to_bits());
+        assert_eq!(visual["facts"]["content_dialog"], true);
+        assert_eq!(visual["png"]["non_empty"], false);
         assert!(value["steps"].as_array().unwrap().is_empty());
     }
 }

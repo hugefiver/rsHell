@@ -4,6 +4,7 @@ use std::{
         Arc,
         atomic::{AtomicUsize, Ordering},
     },
+    time::Duration,
 };
 
 use async_trait::async_trait;
@@ -82,6 +83,26 @@ async fn session_port_adapter_exposes_bounded_binding_and_routes_commands() {
         event,
         SessionUiEvent::State(SessionState::Created | SessionState::Connecting)
     ));
+    adapter
+        .command(binding.id, SessionUiCommand::Interrupt)
+        .await
+        .unwrap();
+    adapter
+        .command(binding.id, SessionUiCommand::ResetDisplay)
+        .await
+        .unwrap();
+    tokio::time::timeout(Duration::from_secs(1), async {
+        loop {
+            if matches!(
+                binding.events.recv().await,
+                Ok(SessionUiEvent::RecoveryChanged(None))
+            ) {
+                return;
+            }
+        }
+    })
+    .await
+    .expect("reset recovery event must cross the port boundary");
     adapter
         .command(binding.id, SessionUiCommand::Reconnect)
         .await

@@ -30,9 +30,6 @@ impl SimpleComponent for InteractionDialog {
         let root = gtk::Box::new(gtk::Orientation::Vertical, 12);
         root.add_css_class("interaction-dialog");
         root.add_css_class("content-dialog");
-        root.set_width_request(520);
-        root.set_halign(gtk::Align::Center);
-        root.set_valign(gtk::Align::Center);
         root.set_visible(false);
         root
     }
@@ -146,7 +143,10 @@ impl SimpleComponent for InteractionDialog {
 
     fn update_view(&self, widgets: &mut Self::Widgets, sender: ComponentSender<Self>) {
         if self.pending || !self.visible {
+            widgets.park_focus();
             widgets.wipe_inputs();
+        } else {
+            widgets.title.set_focusable(false);
         }
         if let Some(root) = widgets.title.ancestor(gtk::Box::static_type())
             && let Ok(root) = root.downcast::<gtk::Box>()
@@ -170,6 +170,7 @@ impl InteractionDialog {
 
 fn attach_keys(root: &gtk::Box, sender: &ComponentSender<InteractionDialog>) {
     let keys = gtk::EventControllerKey::new();
+    keys.set_propagation_phase(gtk::PropagationPhase::Capture);
     let input = sender.input_sender().clone();
     keys.connect_key_pressed(move |_, key, _, _| {
         let action = if key == gtk::gdk::Key::Escape {

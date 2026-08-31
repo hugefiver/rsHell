@@ -3,7 +3,7 @@ use std::{fmt, path::PathBuf, time::Duration};
 pub use crate::smoke_driver_action_kind::SmokeActionKind;
 pub use crate::smoke_driver_actions::{SmokeAction, SmokeConnectionField, SmokeImportExpectation};
 
-pub const SMOKE_SCENARIO_VERSION: u16 = 1;
+pub const SMOKE_SCENARIO_VERSION: u16 = 2;
 pub const DEFAULT_SMOKE_STEP_TIMEOUT: Duration = Duration::from_secs(10);
 pub const DEFAULT_SMOKE_SCENARIO_TIMEOUT: Duration = Duration::from_secs(120);
 
@@ -74,6 +74,29 @@ impl SmokeScenario {
         if close.as_slice() != [self.actions.len() - 1] {
             return Err(SmokeScenarioError::CloseAllNotFinal);
         }
+        let mut checkpoint_ids = std::collections::BTreeSet::new();
+        for step in &self.actions {
+            match &step.action {
+                SmokeAction::VisualCheckpoint(checkpoint) => {
+                    if !checkpoint.validate() {
+                        return Err(SmokeScenarioError::InvalidVisualCheckpoint);
+                    }
+                    if !checkpoint_ids.insert(checkpoint.id.as_str()) {
+                        return Err(SmokeScenarioError::DuplicateCheckpointId);
+                    }
+                }
+                SmokeAction::ResizeWindow {
+                    width,
+                    height,
+                    expected_mode,
+                } if !crate::smoke_driver_visual_matrix::supported_dimensions(*width, *height)
+                    || crate::ShellLayout::for_width(*width).mode != *expected_mode =>
+                {
+                    return Err(SmokeScenarioError::InvalidWindowResize);
+                }
+                _ => {}
+            }
+        }
         if self.actions.iter().any(|step| {
             step.surface
                 .as_deref()
@@ -110,6 +133,9 @@ pub enum SmokeScenarioError {
     InvalidRunNonce,
     InvalidLabel,
     CloseAllNotFinal,
+    DuplicateCheckpointId,
+    InvalidVisualCheckpoint,
+    InvalidWindowResize,
 }
 
 fn valid_label(value: &str) -> bool {
@@ -152,11 +178,11 @@ mod tests {
         assert_eq!(scenario.scenario_timeout, Duration::from_secs(120));
         assert_eq!(
             SmokeScenario {
-                version: 2,
+                version: 1,
                 ..scenario.clone()
             }
             .validate(),
-            Err(SmokeScenarioError::UnsupportedVersion(2))
+            Err(SmokeScenarioError::UnsupportedVersion(1))
         );
         let mut zero_timeout = scenario;
         zero_timeout.step_timeout = Duration::ZERO;

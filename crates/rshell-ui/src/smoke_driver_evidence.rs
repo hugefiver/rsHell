@@ -1,5 +1,7 @@
 use rshell_core::{AuthenticationKind, ImportSourceKind, SessionId};
 
+use crate::{ShellLayoutMode, SmokePngEvidence, SmokeVisualFacts, SmokeVisualState};
+
 #[derive(Debug, Clone, Default)]
 pub struct SmokeTerminalEvidence {
     pub resize: Option<SmokeResizeEvidence>,
@@ -9,8 +11,72 @@ pub struct SmokeTerminalEvidence {
     pub reconnect: Option<SmokeReconnectEvidence>,
     pub paste: Option<SmokePasteEvidence>,
     pub color: Option<SmokeColorEvidence>,
+    pub interrupt: Option<SmokeInterruptEvidence>,
     pub tui_entered: bool,
     pub tui_exited: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SmokeInterruptEvidence {
+    pub sequence: u64,
+    pub command_count: u64,
+    pub wire_byte: u8,
+    pub exact_etx: bool,
+    pub enhanced_encoder_bypassed: bool,
+    pub surviving_tui: bool,
+    pub notice_visible: bool,
+    pub reset_generation: Option<u64>,
+    pub modes_clean: bool,
+    pub replacement_character_count: usize,
+    pub old_tui_overlap: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct SmokeDpiEvidence {
+    pub logical_width: i32,
+    pub logical_height: i32,
+    pub effective_scale: f64,
+    pub effective_dpi: f64,
+    pub cell_width: f64,
+    pub cell_height: f64,
+    pub icon_logical_size: u16,
+    pub icon_texture_width: i32,
+    pub icon_texture_height: i32,
+    pub dpi_fallback_used: bool,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct SmokeAccessibilityEvidence {
+    pub unnamed_icon_controls: usize,
+    pub hidden_primary_actions: usize,
+    pub zero_size_panes: usize,
+    pub horizontal_clipping: bool,
+    pub background_insensitive: bool,
+    pub focus_contained: bool,
+    pub focus_restored: bool,
+    pub escape_cancelled: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SmokeWindowResizeEvidence {
+    pub sequence: u64,
+    pub requested_width: i32,
+    pub requested_height: i32,
+    pub realized_width: i32,
+    pub realized_height: i32,
+    pub expected_layout: ShellLayoutMode,
+    pub layout: ShellLayoutMode,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct SmokeVisualCheckpointEvidence {
+    pub checkpoint_id: String,
+    pub state: SmokeVisualState,
+    pub layout: ShellLayoutMode,
+    pub facts: SmokeVisualFacts,
+    pub png: SmokePngEvidence,
+    pub dpi: SmokeDpiEvidence,
+    pub accessibility: SmokeAccessibilityEvidence,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

@@ -1,7 +1,7 @@
 param(
     [AllowEmptyString()][string]$Target = "",
     [AllowEmptyString()][string]$Package = "",
-    [ValidateSet("", "invalid-target", "incomplete-report", "forbidden-binary-marker", "external-icon-payload", "external-resource-directory", "external-icons-directory", "runtime-icon-backends")]
+    [ValidateSet("", "invalid-target", "incomplete-report", "forbidden-binary-marker", "external-icon-payload", "external-resource-directory", "external-icons-directory", "runtime-icon-backends", "missing-recovery-hidpi-fields")]
     [string]$RegressionProbe = ""
 )
 
@@ -46,7 +46,9 @@ function Assert-StartupReport {
             "non_empty_render_frame",
             "shutdown_clean",
             "embedded_css_loaded",
-            "embedded_icons_renderable"
+            "embedded_icons_renderable",
+            "measured_terminal_geometry_ready",
+            "scale_aware_icons_ready"
         )) {
         $property = $Report.PSObject.Properties[$propertyName]
         if ($null -eq $property -or $property.Value -isnot [bool] -or -not $property.Value) {
@@ -56,6 +58,30 @@ function Assert-StartupReport {
     $backend = $Report.PSObject.Properties["embedded_icon_backend"]
     if ($null -eq $backend -or $backend.Value -notin @("gtk_svg", "internal_vector")) {
         throw "Startup smoke report has an invalid embedded icon backend."
+    }
+    $iconBackend = $Report.PSObject.Properties["icon_backend"]
+    if ($null -eq $iconBackend -or $iconBackend.Value -notin @("gtk_svg", "internal_vector") -or $iconBackend.Value -ne $backend.Value) {
+        throw "Startup smoke report has an invalid icon backend."
+    }
+    $iconCount = $Report.PSObject.Properties["icon_count"]
+    if ($null -eq $iconCount -or $iconCount.Value -isnot [long] -or $iconCount.Value -ne 18) {
+        throw "Startup smoke report has an invalid icon count."
+    }
+    $adaptiveLayoutModes = $Report.PSObject.Properties["adaptive_layout_modes"]
+    if ($null -eq $adaptiveLayoutModes -or $adaptiveLayoutModes.Value -isnot [long] -or $adaptiveLayoutModes.Value -ne 3) {
+        throw "Startup smoke report has an invalid adaptive layout mode count."
+    }
+}
+
+function New-CompleteStartupReport {
+    return [pscustomobject]@{
+        window_realized = $true; local_session_connected = $true
+        non_empty_render_frame = $true; shutdown_clean = $true
+        embedded_css_loaded = $true; embedded_icons_renderable = $true
+        embedded_icon_backend = "internal_vector"
+        measured_terminal_geometry_ready = $true; scale_aware_icons_ready = $true
+        icon_backend = "internal_vector"; icon_count = [long]18
+        adaptive_layout_modes = [long]3
     }
 }
 
@@ -352,21 +378,27 @@ if ($RegressionProbe) {
         }
         "runtime-icon-backends" {
             foreach ($backend in @("gtk_svg", "internal_vector")) {
-                $report = [pscustomobject]@{
-                    window_realized = $true; local_session_connected = $true
-                    non_empty_render_frame = $true; shutdown_clean = $true
-                    embedded_css_loaded = $true; embedded_icons_renderable = $true
-                    embedded_icon_backend = $backend
-                }
+                $report = New-CompleteStartupReport
+                $report.embedded_icon_backend = $backend
+                $report.icon_backend = $backend
                 Assert-StartupReport -Report $report
             }
-            $invalid = [pscustomobject]@{
-                window_realized = $true; local_session_connected = $true
-                non_empty_render_frame = $true; shutdown_clean = $true
-                embedded_css_loaded = $true; embedded_icons_renderable = $true
-                embedded_icon_backend = "theme_or_file_fallback"
-            }
+            $invalid = New-CompleteStartupReport
+            $invalid.embedded_icon_backend = "theme_or_file_fallback"
             Assert-Throws { Assert-StartupReport -Report $invalid }
+        }
+        "missing-recovery-hidpi-fields" {
+            foreach ($field in @(
+                    "measured_terminal_geometry_ready",
+                    "scale_aware_icons_ready",
+                    "icon_backend",
+                    "icon_count",
+                    "adaptive_layout_modes"
+                )) {
+                $report = New-CompleteStartupReport
+                $report.PSObject.Properties.Remove($field)
+                Assert-Throws { Assert-StartupReport -Report $report }
+            }
         }
     }
     exit 0

@@ -1,5 +1,5 @@
 {
-  "version": 1,
+  "version": 2,
   "run_nonce": "static-fixture-contract",
   "actions": [
     { "action": "wait_window_realized" },
@@ -26,10 +26,13 @@
     { "action": "select_range", "start_x": 0.0, "start_y": 0.0, "end_x": 12.0, "end_y": 18.0, "rectangular": false },
     { "action": "copy_selection" },
     { "action": "reconnect" },
-    { "action": "visual_checkpoint", "surface": "gtk" },
+    { "action": "resize_window", "width": 1360, "height": 860, "expected_mode": "standard" },
+    { "action": "visual_checkpoint", "id": "standard-connected", "state": "connected", "width": 1360, "height": 860, "expected_mode": "standard", "surface": "gtk" },
     { "action": "preview_import", "source": "legacy_rshell_json", "path": "tests/fixtures/smoke/legacy.json" },
     { "action": "commit_import" },
     { "action": "cancel_import" },
+    { "action": "interrupt_terminal" },
+    { "action": "reset_display" },
     { "action": "close_all" }
   ]
 }

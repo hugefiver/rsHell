@@ -119,7 +119,7 @@ impl Default for TerminalSettingsV1 {
             initial_cols: 120,
             initial_rows: 36,
             scrollback_lines: 6_000,
-            font_family: "Monospace".into(),
+            font_family: "Cascadia Mono".into(),
             font_size: 15.0,
             color_scheme: ColorScheme::default(),
             key_bindings: Vec::new(),

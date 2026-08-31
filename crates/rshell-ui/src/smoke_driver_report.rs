@@ -1,14 +1,16 @@
-use std::{cell::RefCell, path::PathBuf, rc::Rc, time::Duration};
+use std::{cell::RefCell, collections::BTreeMap, path::PathBuf, rc::Rc, time::Duration};
 
 use rshell_core::{ConnectionId, PaneId, SessionId, SessionState};
 
 pub use crate::smoke_driver_evidence::{
-    SmokeCellRangeEvidence, SmokeClipboardEvidence, SmokeColorEvidence, SmokeFrameEvidence,
-    SmokeImportEvidence, SmokeImportPreviewEvidence, SmokePasteEvidence, SmokeReconnectEvidence,
-    SmokeResizeEvidence, SmokeSearchEvidence, SmokeSelectionEvidence, SmokeTerminalEvidence,
+    SmokeAccessibilityEvidence, SmokeCellRangeEvidence, SmokeClipboardEvidence, SmokeColorEvidence,
+    SmokeDpiEvidence, SmokeFrameEvidence, SmokeImportEvidence, SmokeImportPreviewEvidence,
+    SmokeInterruptEvidence, SmokePasteEvidence, SmokeReconnectEvidence, SmokeResizeEvidence,
+    SmokeSearchEvidence, SmokeSelectionEvidence, SmokeTerminalEvidence,
+    SmokeVisualCheckpointEvidence, SmokeWindowResizeEvidence,
 };
 
-use crate::{SmokeActionKind, SmokeDriverInit, SmokeVisualEvidence};
+use crate::{SmokeActionKind, SmokeDriverInit};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SmokeStepState {
@@ -47,7 +49,8 @@ pub struct SmokeCounters {
     pub import_revisions: u64,
     pub terminal: SmokeTerminalEvidence,
     pub imports: SmokeImportEvidence,
-    pub visual: Option<SmokeVisualEvidence>,
+    pub visual: BTreeMap<String, SmokeVisualCheckpointEvidence>,
+    pub window_resize: Option<SmokeWindowResizeEvidence>,
 }
 
 #[derive(Debug, Clone)]
@@ -101,6 +104,8 @@ pub struct SmokeReport {
     pub failure: Option<SmokeFailure>,
     pub requested_png_path: Option<PathBuf>,
     pub png_path: Option<PathBuf>,
+    pub requested_png_paths: Vec<PathBuf>,
+    pub png_paths: Vec<PathBuf>,
     pub png_error: Option<&'static str>,
 }
 
@@ -137,6 +142,8 @@ impl SmokeReportHandle {
             failure: None,
             requested_png_path: init.png_path.clone(),
             png_path: None,
+            requested_png_paths: Vec::new(),
+            png_paths: Vec::new(),
             png_error: None,
         })))
     }

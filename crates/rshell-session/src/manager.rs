@@ -81,6 +81,7 @@ impl SessionManager {
                 Ok(result) => result,
                 Err(error) => {
                     if error.is_panic() {
+                        let _ = event_tx.send(SessionEvent::RecoveryChanged(None));
                         let _ = event_tx.send(SessionEvent::StateChanged(SessionState::Crashed));
                         let _ = event_tx.send(SessionEvent::Crashed(CRASH_MESSAGE.to_owned()));
                     }

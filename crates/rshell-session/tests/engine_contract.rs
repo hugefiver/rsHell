@@ -1,5 +1,7 @@
 use std::{collections::BTreeSet, sync::Arc};
 
+mod support;
+
 use rshell_core::{
     CellPosition, Color, CursorShape, KeyCode, KeyModifiers, MouseButton, MouseEventKind,
     RenderFrame, ResolvedTerminalProfile, SearchQuery, SelectionRange, TerminalInput,
@@ -7,6 +9,7 @@ use rshell_core::{
 };
 use rshell_session::{DefaultTerminalEngine, TerminalEngine};
 use sha2::{Digest, Sha256};
+use support::display_recovery::{MODE_SEQUENCE, assert_every_two_chunk_split, feed_chunks};
 
 const FIXTURE: &[u8] = include_bytes!("fixtures/compatibility.ansi");
 const CANARY_FIXTURE: &str = include_str!("fixtures/vt/canary.json");
@@ -45,6 +48,30 @@ fn viewport(top_stable_row: i64, rows: u16) -> Viewport {
     }
 }
 
+fn display_mode_fixture_engine() -> DefaultTerminalEngine {
+    engine_with_size(size(32, 6), |settings| {
+        settings.scrollback_lines = 1_000;
+        settings.enable_kitty_keyboard = true;
+    })
+}
+
+#[test]
+fn whole_and_every_two_chunk_split_are_identical() {
+    let fixture_viewport = viewport(0, 6);
+    let mut engine = display_mode_fixture_engine();
+    let whole = feed_chunks(&mut engine, [MODE_SEQUENCE], fixture_viewport);
+
+    assert_every_two_chunk_split(display_mode_fixture_engine, fixture_viewport, &whole);
+}
+
+#[test]
+fn mode_fixture_contains_no_replacement_character() {
+    let mut engine = display_mode_fixture_engine();
+    let observed = feed_chunks(&mut engine, [MODE_SEQUENCE], viewport(0, 6));
+
+    assert_eq!(observed.replacement_count(), 0);
+}
+
 fn frame_text(frame: &RenderFrame) -> String {
     frame
         .rows
@@ -52,6 +79,67 @@ fn frame_text(frame: &RenderFrame) -> String {
         .map(|row| row.cells.iter().map(|cell| cell.text.as_str()).collect())
         .collect::<Vec<String>>()
         .join("\n")
+}
+
+#[test]
+fn display_recovery_preserves_primary_and_clears_modes() {
+    let mut engine = display_mode_fixture_engine();
+    engine
+        .input(
+            b"primary-00\r\nprimary-01\r\nprimary-02\r\nprimary-03\r\nprimary-04\r\nprimary-05\r\nprimary-06\r\nprimary-07\r\nprimary-08\r\nprimary-09\r\nprimary-tail",
+        )
+        .unwrap();
+    let query = SearchQuery {
+        needle: "primary-00".into(),
+        case_sensitive: true,
+        regex: false,
+    };
+    let primary_before = engine.search(&query)[0];
+    engine.input(MODE_SEQUENCE).unwrap();
+    engine
+        .input(b"\x1b[>2u\x1b[>4u\x1b[?1002h\x1b[?1003h\x1b[?1005h\xe7\x95")
+        .unwrap();
+
+    let residue = engine.display_modes();
+    assert!(residue.alternate_screen);
+    assert!(residue.enhanced_keyboard);
+    assert!(residue.mouse_reporting);
+    assert!(residue.application_cursor);
+    assert!(residue.cursor_hidden);
+    assert!(residue.stale_title);
+    assert!(residue.has_residue());
+
+    let recovery = engine.recover_display().unwrap();
+    assert_eq!(recovery.before, residue);
+    assert_eq!(recovery.after, Default::default());
+    assert!(recovery.changed);
+    assert_eq!(engine.display_modes(), Default::default());
+    engine.input(b"\x8c").unwrap();
+    assert_eq!(engine.advance(b"\x1b[?u").unwrap().outbound, b"\x1b[?0u");
+
+    let primary_after = engine.search(&query)[0];
+    assert_eq!(
+        primary_after.start.stable_row,
+        primary_before.start.stable_row
+    );
+    let bounds = engine.viewport_bounds();
+    let history = engine.snapshot(viewport(bounds.first_stable_row, 6), None);
+    let recovered = engine.snapshot(viewport(bounds.bottom_top_stable_row, 6), None);
+    let recovered_text = format!("{}\n{}", frame_text(&history), frame_text(&recovered));
+    assert_eq!(recovered.title, "rsHell");
+    assert!(frame_text(&history).contains("primary-00"));
+    assert!(frame_text(&recovered).contains("primary-tail"));
+    assert!(recovered_text.contains('界'));
+    assert!(!recovered_text.contains("fixture-"));
+    assert!(!recovered_text.contains('\u{fffd}'));
+    assert_eq!(
+        recovered.alternate_screen,
+        recovered.display_modes.alternate_screen
+    );
+    assert_eq!(
+        recovered.mouse_reporting,
+        recovered.display_modes.mouse_reporting
+    );
 }
 
 #[test]
@@ -966,7 +1054,7 @@ fn configured_mouse_policy_can_disable_dynamic_reporting() {
 
     let mut disabled = engine_with(|settings| settings.mouse_reporting = false);
     disabled.advance(b"\x1b[?1002h\x1b[?1006h").unwrap();
-    assert!(!disabled.snapshot(viewport(0, 3), None).mouse_reporting);
+    assert!(disabled.snapshot(viewport(0, 3), None).mouse_reporting);
     assert!(disabled.encode_mouse(left_press()).is_err());
 }
 
@@ -1058,13 +1146,16 @@ fn control() -> KeyModifiers {
 }
 
 fn engine_with(change: impl FnOnce(&mut TerminalSettingsV1)) -> DefaultTerminalEngine {
+    engine_with_size(size(20, 3), change)
+}
+
+fn engine_with_size(
+    size: TerminalSize,
+    change: impl FnOnce(&mut TerminalSettingsV1),
+) -> DefaultTerminalEngine {
     let mut settings = TerminalSettingsV1::default();
     change(&mut settings);
-    DefaultTerminalEngine::new(
-        &settings.resolve(&TerminalOverrides::default()),
-        size(20, 3),
-    )
-    .unwrap()
+    DefaultTerminalEngine::new(&settings.resolve(&TerminalOverrides::default()), size).unwrap()
 }
 
 fn left_press() -> TerminalMouseEvent {

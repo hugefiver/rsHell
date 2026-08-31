@@ -6,6 +6,7 @@ use std::{
     path::Path,
     rc::Rc,
     sync::{Arc, Mutex},
+    time::{Duration, Instant},
 };
 
 use gtk::prelude::*;
@@ -15,8 +16,8 @@ use rshell_core::{
     ColorScheme, ConnectionId, ConnectionProfile, HostKeyPrompt, ImportCandidateId,
     ImportCandidateView, ImportPreviewId, ImportPreviewView, ImportSourceKind, ImportWarningView,
     InteractionId, InteractionRequest, KeyBinding, KeyCode, KeyModifiers, PaneId, PaneLaunchTarget,
-    PaneTree, SessionId, SessionState, SessionUiEvent, TabId, TabState, TerminalProfile, UiCommand,
-    UiCommandPort, UiPortError,
+    PaneTree, SessionId, SessionState, SessionUiEvent, SplitAxis, TabId, TabState, TerminalProfile,
+    UiCommand, UiCommandPort, UiPortError, WorkspaceState,
 };
 use rshell_platform::{FileSelectionCallback, FileSelectionRequest, FileSelectionService};
 use rshell_ui::{
@@ -25,12 +26,7 @@ use rshell_ui::{
     SettingsWindow, SettingsWindowInit, SettingsWindowMsg,
 };
 
-#[test]
-fn task18_dialogs_present_real_accessible_widgets_and_wipe_native_secrets() {
-    if let Err(error) = gtk::init() {
-        eprintln!("Task18 native GTK smoke skipped: {error}");
-        return;
-    }
+fn assert_task18_dialogs_present_real_accessible_widgets_and_wipe_native_secrets() {
     assert_main_shell_surface();
     assert_saved_connection_row_activation_connects_the_active_pane();
     assert_settings_surface();
@@ -40,6 +36,314 @@ fn task18_dialogs_present_real_accessible_widgets_and_wipe_native_secrets() {
     assert_expanded_connection_overrides();
     assert_exact_interaction_handshake();
     assert_terminal_controller_ingress();
+}
+
+#[test]
+fn task18_native_contracts_run_on_one_gtk_thread() {
+    if let Err(error) = gtk::init() {
+        eprintln!("Task 18 native contracts skipped: {error}");
+        return;
+    }
+    let settings = gtk::Settings::default().expect("GTK settings");
+    settings.set_property("gtk-cursor-blink", false);
+    assert!(!settings.property::<bool>("gtk-cursor-blink"));
+    assert_task18_dialogs_present_real_accessible_widgets_and_wipe_native_secrets();
+    assert_adaptive_recursive_pane_fixtures();
+    assert_adaptive_command_bar();
+    let commands = Arc::new(RecordingPort::default());
+    let connection = ConnectionProfile::new("Drawer connection", "drawer.example.test");
+    let connection_id = connection.id;
+    let pane = PaneId::new();
+    let tab = TabId::new_v4();
+    let mut view = view_with_profiles(vec![TerminalProfile::default()]);
+    view.catalog.connections.insert(connection_id, connection);
+    view.workspace.tabs.push(TabState {
+        id: tab,
+        title: "Drawer".into(),
+        pane_tree: PaneTree::leaf(pane),
+        active_pane: pane,
+    });
+    view.workspace.active_tab = Some(tab);
+    let main = MainWindow::builder()
+        .launch(
+            MainWindowInit::new(commands.clone(), view)
+                .with_file_selection(Rc::new(CancelSelection)),
+        )
+        .detach();
+    let window = present_main(&main, 800, 600);
+    main.emit(MainWindowMsg::Allocated { width: 800 });
+    assert!(flush_gtk());
+
+    let rail = css_child(main.widget(), "compact-nav-rail");
+    assert_eq!(rail.width_request(), 48);
+    for tooltip in ["Navigation", "New connection", "New group"] {
+        let action = descendants(&rail)
+            .into_iter()
+            .filter_map(|widget| widget.downcast::<gtk::Button>().ok())
+            .find(|button| button.tooltip_text().as_deref() == Some(tooltip))
+            .unwrap_or_else(|| panic!("missing compact rail action {tooltip}"));
+        assert!(action.is_focusable());
+    }
+    let navigation = descendants(&rail)
+        .into_iter()
+        .filter_map(|widget| widget.downcast::<gtk::Button>().ok())
+        .find(|button| button.tooltip_text().as_deref() == Some("Navigation"))
+        .unwrap();
+    let sidebar = css_child(main.widget(), "sidebar");
+    assert!(!sidebar.is_visible());
+    navigation.emit_clicked();
+    assert!(flush_gtk());
+    assert!(sidebar.is_visible());
+    let search = css_child(&sidebar, "connection-search");
+    assert!(
+        focus_is_within(&search),
+        "opening the drawer focuses search"
+    );
+
+    assert!(press_key(
+        &sidebar,
+        gtk::gdk::Key::Escape,
+        gtk::gdk::ModifierType::empty(),
+    ));
+    assert!(flush_gtk());
+    assert!(!sidebar.is_visible());
+    assert!(navigation.has_focus(), "Escape restores Navigation focus");
+
+    navigation.emit_clicked();
+    assert!(flush_gtk());
+    let list = css_child(&sidebar, "connection-list")
+        .downcast::<gtk::ListBox>()
+        .expect("drawer connection list");
+    let row = list.row_at_index(0).expect("drawer connection row");
+    row.emit_by_name::<()>("activate", &[]);
+    assert!(flush_gtk());
+    assert_eq!(commands.connects(), [(pane, connection_id)]);
+    assert!(!sidebar.is_visible(), "delivery precedes drawer close");
+
+    main.emit(MainWindowMsg::Allocated { width: 1_360 });
+    assert!(flush_gtk());
+    assert!(sidebar.is_visible());
+    assert_eq!(
+        descendants(main.widget())
+            .into_iter()
+            .filter(|widget| widget.has_css_class("sidebar"))
+            .count(),
+        1,
+        "breakpoint changes must reattach one existing sidebar widget"
+    );
+    window.close();
+    assert!(flush_gtk());
+}
+
+fn assert_adaptive_command_bar() {
+    let commands = Arc::new(RecordingPort::default());
+    let main = launch_main_with_profiles(
+        commands.clone(),
+        Rc::new(CancelSelection),
+        vec![TerminalProfile::default()],
+    );
+    let window = present_main(&main, 900, 700);
+    main.emit(MainWindowMsg::Allocated { width: 900 });
+    assert!(flush_gtk());
+    let command_bar = css_child(main.widget(), "command-bar");
+    let actions = descendants(&command_bar)
+        .into_iter()
+        .filter_map(|widget| widget.downcast::<gtk::Button>().ok())
+        .collect::<Vec<_>>();
+    assert_eq!(actions.len(), 3);
+    assert_eq!(
+        actions
+            .iter()
+            .map(|button| button.tooltip_text().unwrap().to_string())
+            .collect::<Vec<_>>(),
+        [
+            "New local terminal tab",
+            "Import connections",
+            "Terminal settings"
+        ]
+    );
+    assert_eq!(
+        actions
+            .iter()
+            .map(|button| visible_button_text(button).unwrap())
+            .collect::<Vec<_>>(),
+        ["New session", "Import", "Settings"]
+    );
+    assert!(actions.iter().all(|button| {
+        button.accessible_role() == gtk::AccessibleRole::Button
+            && descendants(button)
+                .iter()
+                .any(|child| child.has_css_class("product-icon"))
+    }));
+    assert!(
+        descendants(&command_bar)
+            .into_iter()
+            .filter_map(|widget| widget.downcast::<gtk::Label>().ok())
+            .all(|label| label.text().as_str() != "rsHell"),
+        "the native title is the sole product identity"
+    );
+    assert!(
+        descendants(main.widget())
+            .iter()
+            .all(|widget| !widget.has_css_class("status-bar"))
+    );
+    assert!(
+        command_bar
+            .last_child()
+            .is_some_and(|child| child.has_css_class("command-status"))
+    );
+    actions[0].emit_clicked();
+    assert!(flush_gtk());
+    assert_eq!(commands.new_tab_count(), 1);
+
+    window.set_default_size(800, 700);
+    main.emit(MainWindowMsg::Allocated { width: 800 });
+    assert!(flush_gtk());
+    assert!(
+        wait_for_gtk(|| {
+            css_child(main.widget(), "shell-compact").is_visible()
+                && actions
+                    .iter()
+                    .all(|action| visible_button_text(action).is_none())
+        }),
+        "compact command labels must settle hidden"
+    );
+    let compact_text = actions
+        .iter()
+        .filter_map(visible_button_text)
+        .collect::<Vec<_>>();
+    assert!(
+        compact_text.is_empty(),
+        "compact command labels remained visible: {compact_text:?}"
+    );
+    window.close();
+    assert!(flush_gtk());
+}
+
+fn assert_adaptive_recursive_pane_fixtures() {
+    for fixture in AdaptivePaneFixture::ALL {
+        for (width, height) in [(800, 600), (1_360, 860), (1_920, 1_080)] {
+            let (view, leaves) = fixture.view();
+            let main = MainWindow::builder()
+                .launch(MainWindowInit::new(
+                    Arc::new(RecordingPort::default()),
+                    view,
+                ))
+                .detach();
+            let window = present_main(&main, width, height);
+            main.emit(MainWindowMsg::Allocated { width });
+            assert!(flush_gtk(), "{fixture:?} at {width}x{height}");
+            let mode = if width < 900 {
+                "shell-compact"
+            } else if width < 1_440 {
+                "shell-standard"
+            } else {
+                "shell-wide"
+            };
+            assert!(css_child(main.widget(), mode).is_visible());
+            let terminals = descendants(main.widget())
+                .into_iter()
+                .filter(|widget| widget.has_css_class("terminal-canvas"))
+                .collect::<Vec<_>>();
+            assert_eq!(terminals.len(), leaves, "{fixture:?} at {width}x{height}");
+            assert!(
+                terminals
+                    .iter()
+                    .all(|terminal| terminal.width() > 0 && terminal.height() > 0),
+                "{fixture:?} has a zero terminal allocation at {width}x{height}"
+            );
+            for tooltip in [
+                "Split horizontally",
+                "Split vertically",
+                "Reconnect session",
+                "Close",
+            ] {
+                let controls = descendants(main.widget())
+                    .into_iter()
+                    .filter_map(|widget| widget.downcast::<gtk::Button>().ok())
+                    .filter(|button| button.has_css_class("pane-action-btn"))
+                    .filter(|button| button.tooltip_text().as_deref() == Some(tooltip))
+                    .collect::<Vec<_>>();
+                assert_eq!(controls.len(), leaves, "{fixture:?}: {tooltip}");
+                assert!(controls.iter().all(|button| {
+                    button.accessible_role() == gtk::AccessibleRole::Button
+                        && button.tooltip_text().is_some_and(|name| !name.is_empty())
+                }));
+            }
+            window.close();
+            assert!(flush_gtk());
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+enum AdaptivePaneFixture {
+    Single,
+    HSplit,
+    VSplit,
+    TopBottom3,
+    Grid,
+}
+
+impl AdaptivePaneFixture {
+    const ALL: [Self; 5] = [
+        Self::Single,
+        Self::HSplit,
+        Self::VSplit,
+        Self::TopBottom3,
+        Self::Grid,
+    ];
+
+    fn view(self) -> (AppViewModel, usize) {
+        let leaf_count = match self {
+            Self::Single => 1,
+            Self::HSplit | Self::VSplit => 2,
+            Self::TopBottom3 => 3,
+            Self::Grid => 4,
+        };
+        let panes = (0..leaf_count).map(|_| PaneId::new()).collect::<Vec<_>>();
+        let sessions = (0..leaf_count)
+            .map(|_| SessionId::new())
+            .collect::<Vec<_>>();
+        let mut tree = PaneTree::with_session(panes[0], sessions[0]);
+        match self {
+            Self::Single => {}
+            Self::HSplit => tree = split(tree, panes[0], SplitAxis::Horizontal, panes[1]),
+            Self::VSplit => tree = split(tree, panes[0], SplitAxis::Vertical, panes[1]),
+            Self::TopBottom3 => {
+                tree = split(tree, panes[0], SplitAxis::Vertical, panes[1]);
+                tree = split(tree, panes[1], SplitAxis::Horizontal, panes[2]);
+            }
+            Self::Grid => {
+                tree = split(tree, panes[0], SplitAxis::Vertical, panes[1]);
+                tree = split(tree, panes[0], SplitAxis::Horizontal, panes[2]);
+                tree = split(tree, panes[1], SplitAxis::Horizontal, panes[3]);
+            }
+        }
+        for (&pane, &session) in panes.iter().zip(&sessions).skip(1) {
+            tree.replace_session(pane, Some(session)).unwrap();
+        }
+        let tab = TabId::new_v4();
+        let mut view = view_with_profiles(vec![TerminalProfile::default()]);
+        view.workspace = WorkspaceState {
+            tabs: vec![TabState {
+                id: tab,
+                title: format!("{self:?}"),
+                pane_tree: tree,
+                active_pane: panes[0],
+            }],
+            active_tab: Some(tab),
+        };
+        for (&pane, &session) in panes.iter().zip(&sessions) {
+            view.pane_launches.insert(pane, PaneLaunchTarget::Local);
+            view.session_states.insert(session, SessionState::Connected);
+        }
+        (view, leaf_count)
+    }
+}
+
+fn split(tree: PaneTree, pane: PaneId, axis: SplitAxis, new_pane: PaneId) -> PaneTree {
+    tree.split(pane, axis, new_pane, 0.5).unwrap()
 }
 
 fn assert_terminal_controller_ingress() {
@@ -383,6 +687,9 @@ fn assert_expanded_connection_overrides() {
     button(&editor, "Save connection").emit_clicked();
     assert!(flush_gtk());
     assert!(commands.has_exact_override_profile());
+    button(&editor, "Cancel").emit_clicked();
+    assert!(flush_gtk());
+    assert!(!editor.is_visible());
 
     window.close();
     assert!(flush_gtk());
@@ -465,6 +772,14 @@ fn assert_exact_interaction_handshake() {
         mapped_labels(main.widget()).contains(&"Newest password".into()),
         "the third request is retained and promoted rather than abandoned"
     );
+    button(main.widget(), "Cancel").emit_clicked();
+    assert!(flush_gtk());
+    main.emit(MainWindowMsg::AppEvent(AppEvent::InteractionResponded {
+        session,
+        interaction: newest,
+    }));
+    assert!(flush_gtk());
+    assert!(!mapped_labels(main.widget()).contains(&"Newest password".into()));
 
     window.close();
     assert!(flush_gtk());
@@ -644,6 +959,10 @@ fn assert_interaction_surface() {
         }),
     });
     assert!(flush_gtk());
+    assert!(
+        focus_is_within(interaction.widget().upcast_ref()),
+        "new interaction content must receive focus after its controls are rendered"
+    );
     assert!(interaction.widget().has_css_class("content-dialog"));
     assert!(
         descendants(interaction.widget())
@@ -654,16 +973,21 @@ fn assert_interaction_surface() {
     assert_eq!(labels, ["Copy diagnostics", "Close"]);
     assert!(!labels.iter().any(|label| label.contains("Accept")));
 
+    let password_interaction = InteractionId::new();
     interaction.emit(InteractionDialogMsg::Open {
         session: SessionId::new(),
         request: InteractionRequest::Password(AuthPrompt {
-            id: InteractionId::new(),
+            id: password_interaction,
             label: "Password".into(),
             echo: false,
         }),
     });
     interaction.emit(InteractionDialogMsg::ResponseAccepted(changed_interaction));
     assert!(flush_gtk());
+    assert!(
+        focus_is_within(interaction.widget().upcast_ref()),
+        "queued authentication controls must retain interaction focus"
+    );
     let password = descendants(interaction.widget())
         .into_iter()
         .find_map(|widget| widget.downcast::<gtk::PasswordEntry>().ok())
@@ -677,6 +1001,9 @@ fn assert_interaction_surface() {
         "submit must wipe native secret text"
     );
     assert!(!button(interaction.widget(), "Submit").is_sensitive());
+    interaction.emit(InteractionDialogMsg::ResponseAccepted(password_interaction));
+    assert!(flush_gtk());
+    assert!(!interaction.widget().is_visible());
     window.close();
     assert!(flush_gtk());
 }
@@ -879,6 +1206,14 @@ fn button_text(button: &gtk::Button) -> Option<String> {
     })
 }
 
+fn visible_button_text(button: &gtk::Button) -> Option<String> {
+    descendants(button)
+        .into_iter()
+        .filter_map(|widget| widget.downcast::<gtk::Label>().ok())
+        .find(|label| label.is_visible())
+        .map(|label| label.text().into())
+}
+
 fn visible_labels(root: &impl IsA<gtk::Widget>) -> Vec<String> {
     descendants(root)
         .into_iter()
@@ -962,6 +1297,14 @@ fn descendants(root: &impl IsA<gtk::Widget>) -> Vec<gtk::Widget> {
     output
 }
 
+fn focus_is_within(root: &gtk::Widget) -> bool {
+    root.root()
+        .and_then(|window| gtk::prelude::RootExt::focus(&window))
+        .is_some_and(|focused| {
+            focused == *root || descendants(root).into_iter().any(|child| child == focused)
+        })
+}
+
 fn press_key(
     root: &impl IsA<gtk::Widget>,
     key: gtk::gdk::Key,
@@ -983,4 +1326,18 @@ fn flush_gtk() -> bool {
         }
     }
     false
+}
+
+fn wait_for_gtk(mut condition: impl FnMut() -> bool) -> bool {
+    let deadline = Instant::now() + Duration::from_secs(2);
+    loop {
+        flush_gtk();
+        if condition() {
+            return true;
+        }
+        if Instant::now() >= deadline {
+            return false;
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
 }

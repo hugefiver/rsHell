@@ -45,8 +45,20 @@ struct CounterEvidence {
     editor_revisions: u64,
     interaction_revisions: u64,
     import_revisions: u64,
+    window_resize: Option<WindowResizeEvidence>,
     terminal: TerminalEvidence,
     imports: ImportEvidence,
+}
+
+#[derive(Serialize)]
+struct WindowResizeEvidence {
+    sequence: u64,
+    requested_width: i32,
+    requested_height: i32,
+    realized_width: i32,
+    realized_height: i32,
+    expected_layout: &'static str,
+    layout: &'static str,
 }
 
 #[derive(Serialize)]
@@ -124,6 +136,18 @@ pub(crate) fn convert_steps(report: &SmokeReport) -> Vec<P0StepReport> {
                 editor_revisions: step.evidence.editor_revisions,
                 interaction_revisions: step.evidence.interaction_revisions,
                 import_revisions: step.evidence.import_revisions,
+                window_resize: step
+                    .evidence
+                    .window_resize
+                    .map(|evidence| WindowResizeEvidence {
+                        sequence: evidence.sequence,
+                        requested_width: evidence.requested_width,
+                        requested_height: evidence.requested_height,
+                        realized_width: evidence.realized_width,
+                        realized_height: evidence.realized_height,
+                        expected_layout: evidence.expected_layout.as_str(),
+                        layout: evidence.layout.as_str(),
+                    }),
                 terminal: terminal_evidence(&step.evidence.terminal),
                 imports: import_evidence(&step.evidence.imports),
             },

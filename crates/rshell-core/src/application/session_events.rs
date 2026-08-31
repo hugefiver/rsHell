@@ -9,6 +9,14 @@ impl CommandLoop {
                 if !self.forwarders.contains_key(&session) || !self.session_is_bound(session) {
                     return;
                 }
+                if self
+                    .view_model
+                    .latest_frames
+                    .get(&session)
+                    .is_some_and(|current| current.generation > frame.generation)
+                {
+                    return;
+                }
                 self.view_model.latest_frames.insert(session, frame.clone());
                 self.publish_view();
                 (session, SessionUiEvent::Frame(frame))
@@ -27,6 +35,15 @@ impl CommandLoop {
         match &event {
             SessionUiEvent::State(state) => {
                 self.view_model.session_states.insert(session, *state);
+                self.publish_view();
+            }
+            SessionUiEvent::RecoveryChanged(Some(notice)) => {
+                self.view_model.display_recovery.insert(session, *notice);
+                self.publish_view();
+            }
+            SessionUiEvent::RecoveryChanged(None)
+                if self.view_model.display_recovery.remove(&session).is_some() =>
+            {
                 self.publish_view();
             }
             SessionUiEvent::InteractionRequired(request) => {

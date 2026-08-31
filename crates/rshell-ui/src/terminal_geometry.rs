@@ -2,11 +2,10 @@ use rshell_core::{
     CellPosition, KeyModifiers, MouseButton, MouseEventKind, RenderFrame, TerminalSize,
 };
 
-use crate::terminal_input::{FontMetrics, TerminalViewError, positive_finite};
-
-pub(crate) fn terminal_font_metrics() -> FontMetrics {
-    FontMetrics::new(9.0, 18.0).expect("static terminal metrics")
-}
+use crate::{
+    terminal_input::{FontMetrics, TerminalViewError, positive_finite},
+    terminal_metrics::TerminalGeometryInput,
+};
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct ViewRect {
@@ -69,25 +68,38 @@ impl PointerEvent {
     }
 }
 
+impl TerminalGeometryInput {
+    pub fn terminal_size(self) -> Result<TerminalSize, TerminalViewError> {
+        terminal_size(self)
+    }
+}
+
 pub(crate) fn terminal_size(
-    width: i32,
-    height: i32,
-    scale: f64,
-    metrics: FontMetrics,
+    input: TerminalGeometryInput,
 ) -> Result<TerminalSize, TerminalViewError> {
-    if width <= 0 || height <= 0 {
+    if input.logical_width <= 0 || input.logical_height <= 0 {
         return Err(TerminalViewError::InvalidAllocation);
     }
-    if !positive_finite(scale) {
-        return Err(TerminalViewError::InvalidScale);
-    }
+    input.environment.validate()?;
+    FontMetrics::new(input.metrics.cell_width, input.metrics.cell_height)?;
     Ok(TerminalSize {
-        cols: checked_dimension((f64::from(width) / metrics.cell_width).max(1.0), u16::MAX)? as u16,
-        rows: checked_dimension((f64::from(height) / metrics.cell_height).max(1.0), u16::MAX)?
-            as u16,
-        pixel_width: checked_dimension(f64::from(width) * scale, u32::MAX)? as u32,
-        pixel_height: checked_dimension(f64::from(height) * scale, u32::MAX)? as u32,
-        dpi: checked_dimension(96.0 * scale, u32::MAX)? as u32,
+        cols: checked_dimension(
+            (f64::from(input.logical_width) / input.metrics.cell_width).max(1.0),
+            u16::MAX,
+        )? as u16,
+        rows: checked_dimension(
+            (f64::from(input.logical_height) / input.metrics.cell_height).max(1.0),
+            u16::MAX,
+        )? as u16,
+        pixel_width: checked_dimension(
+            f64::from(input.logical_width) * input.environment.effective_scale,
+            u32::MAX,
+        )? as u32,
+        pixel_height: checked_dimension(
+            f64::from(input.logical_height) * input.environment.effective_scale,
+            u32::MAX,
+        )? as u32,
+        dpi: checked_dimension(input.environment.effective_dpi, u32::MAX)? as u32,
     })
 }
 

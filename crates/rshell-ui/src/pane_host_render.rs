@@ -5,7 +5,8 @@ use relm4::{ComponentController, Controller, gtk};
 use rshell_core::{PaneId, SessionId, SplitAxis};
 
 use crate::{
-    PaneAction, PaneHostMsg, PanePageKind, PaneProjection, ProductIcon, TerminalView,
+    PaneAction, PaneHostMsg, PanePageKind, PaneProjection, TerminalView,
+    pane_action_widgets::{action_button, action_region},
     pane_host::PaneHost,
 };
 
@@ -46,6 +47,7 @@ fn render_leaf(
 ) -> gtk::Box {
     let surface = gtk::Box::new(gtk::Orientation::Vertical, 0);
     surface.add_css_class("pane-surface");
+    surface.set_size_request(1, 1);
     surface.set_hexpand(true);
     surface.set_vexpand(true);
     if active == Some(pane.pane()) {
@@ -73,9 +75,12 @@ fn render_leaf(
     status.set_hexpand(true);
     toolbar.append(&status);
     if matches!(pane.page(), PanePageKind::Terminal | PanePageKind::Pending) {
-        for action in pane.actions() {
-            toolbar.append(&action_button(pane_id, action, sender, true));
-        }
+        let actions = pane
+            .actions()
+            .into_iter()
+            .filter(|action| *action != PaneAction::ResetDisplay)
+            .collect::<Vec<_>>();
+        toolbar.append(&action_region(&surface, pane_id, actions, sender, true));
     }
     surface.append(&toolbar);
 
@@ -86,21 +91,32 @@ fn render_leaf(
             } else {
                 surface.append(&status_page("Terminal unavailable"));
             }
+            if pane.recovery_notice().is_some() {
+                surface.append(&recovery_notice(pane_id, sender));
+            }
         }
         PanePageKind::Pending => surface.append(&status_page(pane.status_label())),
         PanePageKind::Status | PanePageKind::Error | PanePageKind::Unavailable => {
             let page = status_page(pane.status_label());
-            let actions = gtk::Box::new(gtk::Orientation::Horizontal, 4);
+            let actions = action_region(&surface, pane_id, pane.actions(), sender, false);
             actions.add_css_class("pane-error-actions");
             actions.set_halign(gtk::Align::Center);
-            for action in pane.actions() {
-                actions.append(&action_button(pane_id, action, sender, false));
-            }
             page.append(&actions);
             surface.append(&page);
         }
     }
     surface
+}
+
+fn recovery_notice(pane: PaneId, sender: &relm4::ComponentSender<PaneHost>) -> gtk::Box {
+    let notice = gtk::Box::new(gtk::Orientation::Horizontal, 4);
+    notice.add_css_class("display-recovery-notice");
+    let label = gtk::Label::new(Some("Display mode not restored"));
+    label.set_halign(gtk::Align::Start);
+    label.set_hexpand(true);
+    notice.append(&label);
+    notice.append(&action_button(pane, PaneAction::ResetDisplay, sender, true));
+    notice
 }
 
 fn status_page(label: &str) -> gtk::Box {
@@ -117,44 +133,6 @@ fn status_page(label: &str) -> gtk::Box {
     label.set_vexpand(true);
     page.append(&label);
     page
-}
-
-fn action_button(
-    pane: PaneId,
-    action: PaneAction,
-    sender: &relm4::ComponentSender<PaneHost>,
-    icon_only: bool,
-) -> gtk::Button {
-    let (icon, label) = action_metadata(action);
-    let button = gtk::Button::new();
-    button.add_css_class("pane-action-btn");
-    button.set_tooltip_text(Some(label));
-    button.update_property(&[gtk::accessible::Property::Label(label)]);
-    if icon_only {
-        button.set_child(Some(&icon.image().expect("embedded pane action icon")));
-    } else {
-        let content = gtk::Box::new(gtk::Orientation::Horizontal, 4);
-        content.append(&icon.image().expect("embedded pane action icon"));
-        content.append(&gtk::Label::new(Some(label)));
-        button.set_child(Some(&content));
-    }
-    let input = sender.input_sender().clone();
-    button.connect_clicked(move |_| {
-        let _ = input.send(PaneHostMsg::Action { pane, action });
-    });
-    button
-}
-
-fn action_metadata(action: PaneAction) -> (ProductIcon, &'static str) {
-    match action {
-        PaneAction::SplitHorizontal => (ProductIcon::SplitHorizontal, "Split horizontally"),
-        PaneAction::SplitVertical => (ProductIcon::SplitVertical, "Split vertically"),
-        PaneAction::Reconnect => (ProductIcon::Retry, "Reconnect session"),
-        PaneAction::Retry => (ProductIcon::Retry, "Retry"),
-        PaneAction::EditConnection => (ProductIcon::Edit, "Edit Connection"),
-        PaneAction::CopyDiagnostics => (ProductIcon::CopyDiagnostics, "Copy Diagnostics"),
-        PaneAction::Close => (ProductIcon::CloseTab, "Close"),
-    }
 }
 
 fn project_ratio(split: &gtk::Paned, ratio: f32) {

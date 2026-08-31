@@ -27,11 +27,6 @@ impl SimpleComponent for SettingsWindow {
         let root = gtk::Box::new(gtk::Orientation::Vertical, 12);
         root.add_css_class("settings-window");
         root.add_css_class("content-dialog");
-        root.set_width_request(620);
-        root.set_halign(gtk::Align::Center);
-        root.set_valign(gtk::Align::Fill);
-        root.set_margin_top(40);
-        root.set_margin_bottom(40);
         root.set_visible(false);
         root
     }
@@ -187,6 +182,7 @@ fn connect_inputs(widgets: &SettingsWindowWidgets, sender: &ComponentSender<Sett
 
 fn connect_keys(root: &gtk::Box, sender: &ComponentSender<SettingsWindow>) {
     let keys = gtk::EventControllerKey::new();
+    keys.set_propagation_phase(gtk::PropagationPhase::Capture);
     keys.connect_key_pressed({
         let sender = sender.clone();
         move |_, key, _, _| {

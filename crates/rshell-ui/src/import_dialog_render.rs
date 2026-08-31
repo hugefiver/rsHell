@@ -3,7 +3,8 @@ use relm4::{ComponentSender, gtk};
 use rshell_core::ImportSourceKind;
 
 use crate::{
-    ImportDialog, ImportDialogMsg, ProductIcon, import_dialog_widgets::ImportDialogWidgets,
+    IconRenderRequest, ImportDialog, ImportDialogMsg, ProductIcon,
+    import_dialog_widgets::ImportDialogWidgets,
 };
 
 pub fn render_import(
@@ -67,16 +68,19 @@ pub fn render_import(
             details.append(&marker);
         }
         row.append(&details);
+        let icon_request = IconRenderRequest::for_widget(16, &row);
         if candidate.has_secret {
             let secret = ProductIcon::SecretPresent
-                .image()
+                .image(icon_request)
                 .expect("embedded secret-present icon");
             secret.set_tooltip_text(Some("Secret is present; value is never displayed"));
             secret.update_property(&[gtk::accessible::Property::Label("Secret present")]);
             row.append(&secret);
         }
         if !candidate.selectable {
-            let warning = ProductIcon::Warning.image().expect("embedded warning icon");
+            let warning = ProductIcon::Warning
+                .image(icon_request)
+                .expect("embedded warning icon");
             warning.set_tooltip_text(Some("This candidate cannot be imported"));
             warning.update_property(&[gtk::accessible::Property::Label(
                 "Candidate cannot be imported",
@@ -114,11 +118,7 @@ pub fn render_import(
     widgets
         .openssh
         .set_sensitive(!model.selecting && !model.view.is_pending());
-    if let Some(root) = widgets.source.ancestor(gtk::Box::static_type())
-        && let Ok(root) = root.downcast::<gtk::Box>()
-    {
-        root.set_visible(model.visible);
-    }
+    widgets.root.set_visible(model.visible);
 }
 
 fn clear(container: &gtk::Box) {

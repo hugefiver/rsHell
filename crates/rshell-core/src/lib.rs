@@ -20,16 +20,17 @@ pub use connection::{
 };
 pub use error::DomainError;
 pub use protocol::{
-    AppEvent, AppFailure, AppFailureCategory, AuthPrompt, HostKeyDecision, HostKeyPrompt,
-    ImportCandidateId, ImportCandidateView, ImportPreviewId, ImportPreviewView, ImportReportView,
-    ImportSourceKind, ImportWarningView, InteractionId, InteractionRequest, InteractionResponse,
-    KeyboardInteractivePrompt, RecoveryAction, SecretUpdate, SessionUiCommand, SessionUiEvent,
-    UiCommand,
+    AppEvent, AppFailure, AppFailureCategory, AuthPrompt, DisplayRecoveryNotice, HostKeyDecision,
+    HostKeyPrompt, ImportCandidateId, ImportCandidateView, ImportPreviewId, ImportPreviewView,
+    ImportReportView, ImportSourceKind, ImportWarningView, InteractionId, InteractionRequest,
+    InteractionResponse, KeyboardInteractivePrompt, RecoveryAction, SecretUpdate, SessionUiCommand,
+    SessionUiEvent, UiCommand,
 };
 pub use render::{
-    CellAttributes, CellPosition, Color, CursorShape, ExitStatus, MouseButton, MouseEventKind,
-    RenderCell, RenderCursor, RenderFrame, RenderRow, SearchMatch, SearchQuery, SelectionRange,
-    SessionFailure, SessionState, TerminalInput, TerminalMouseEvent, TerminalSize, Viewport,
+    CellAttributes, CellPosition, Color, CursorShape, DisplayRecovery, ExitStatus, MouseButton,
+    MouseEventKind, RenderCell, RenderCursor, RenderFrame, RenderRow, SearchMatch, SearchQuery,
+    SelectionRange, SessionFailure, SessionState, TerminalDisplayModes, TerminalInput,
+    TerminalMouseEvent, TerminalSize, Viewport,
 };
 pub use terminal::{
     AppSettings, ColorScheme, KeyBinding, KeyCode, KeyModifiers, ResolvedTerminalProfile,

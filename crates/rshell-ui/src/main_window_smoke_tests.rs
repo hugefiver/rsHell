@@ -50,6 +50,7 @@ fn selection_only_frame_with_the_same_terminal_generation_is_real_evidence() {
         }]),
         cursor: None,
         title: String::new(),
+        display_modes: Default::default(),
         alternate_screen: false,
         mouse_reporting: false,
     };
@@ -165,6 +166,7 @@ fn smoke_frame(rows: &[(i64, &str)]) -> RenderFrame {
         ),
         cursor: None,
         title: String::new(),
+        display_modes: Default::default(),
         alternate_screen: false,
         mouse_reporting: false,
     }

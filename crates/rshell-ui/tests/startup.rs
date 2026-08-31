@@ -29,6 +29,11 @@ fn smoke_report_requires_realized_window_local_session_frame_and_clean_shutdown(
         report.embedded_icon_backend,
         "gtk_svg" | "internal_vector"
     ));
+    assert!(report.measured_terminal_geometry_ready);
+    assert!(report.scale_aware_icons_ready);
+    assert!(matches!(report.icon_backend, "gtk_svg" | "internal_vector"));
+    assert_eq!(report.icon_count, 18);
+    assert_eq!(report.adaptive_layout_modes, 3);
     assert!(report.is_complete());
 }
 
@@ -57,6 +62,7 @@ fn frame() -> RenderFrame {
         }]),
         cursor: None,
         title: "probe".into(),
+        display_modes: Default::default(),
         alternate_screen: false,
         mouse_reporting: false,
     }

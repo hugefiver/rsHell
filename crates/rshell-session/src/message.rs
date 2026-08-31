@@ -1,9 +1,9 @@
 use std::{fmt, sync::Arc};
 
 use rshell_core::{
-    ExitStatus, InteractionId, InteractionRequest, InteractionResponse, RenderFrame,
-    ResolvedTerminalProfile, SearchMatch, SearchQuery, SelectionRange, SessionFailure, SessionId,
-    SessionState, TerminalInput, TerminalMouseEvent, TerminalSize,
+    DisplayRecoveryNotice, ExitStatus, InteractionId, InteractionRequest, InteractionResponse,
+    RenderFrame, ResolvedTerminalProfile, SearchMatch, SearchQuery, SelectionRange, SessionFailure,
+    SessionId, SessionState, TerminalInput, TerminalMouseEvent, TerminalSize,
 };
 use secrecy::SecretString;
 use tokio::sync::{broadcast, mpsc, watch};
@@ -17,6 +17,8 @@ pub const COMMAND_CAPACITY: usize = 128;
 pub const EVENT_CAPACITY: usize = 64;
 
 pub enum SessionCommand {
+    Interrupt,
+    ResetDisplay,
     Input(TerminalInput),
     Mouse(TerminalMouseEvent),
     Paste(SecretString),
@@ -34,6 +36,8 @@ pub enum SessionCommand {
 impl fmt::Debug for SessionCommand {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::Interrupt => formatter.write_str("Interrupt"),
+            Self::ResetDisplay => formatter.write_str("ResetDisplay"),
             Self::Input(input) => formatter.debug_tuple("Input").field(input).finish(),
             Self::Mouse(event) => formatter.debug_tuple("Mouse").field(event).finish(),
             Self::Paste(_) => formatter.write_str("Paste([REDACTED])"),
@@ -60,6 +64,7 @@ pub enum SessionEvent {
     /// One-time notification for the first frame of a session.
     /// All frame updates are delivered through `SessionClient::frames`.
     FrameReady(Arc<RenderFrame>),
+    RecoveryChanged(Option<DisplayRecoveryNotice>),
     SearchCompleted(Vec<SearchMatch>),
     CopyReady(String),
     InteractionRequired(InteractionRequest),
@@ -75,6 +80,10 @@ impl fmt::Debug for SessionEvent {
                 formatter.debug_tuple("StateChanged").field(state).finish()
             }
             Self::FrameReady(frame) => formatter.debug_tuple("FrameReady").field(frame).finish(),
+            Self::RecoveryChanged(notice) => formatter
+                .debug_tuple("RecoveryChanged")
+                .field(notice)
+                .finish(),
             Self::SearchCompleted(matches) => formatter
                 .debug_tuple("SearchCompleted")
                 .field(matches)
