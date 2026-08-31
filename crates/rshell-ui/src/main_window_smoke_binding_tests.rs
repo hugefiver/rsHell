@@ -3,7 +3,7 @@ use rshell_core::{AuthenticationKind, ConnectionId, TransportKind};
 use crate::{
     ConnectionEditorDraftState, EditorTextField, SmokeAction, SmokeConnectionField,
     main_window_smoke_binding::editor_action_matches,
-    main_window_smoke_binding_profiles::session_component_is_synchronized,
+    main_window_smoke_binding_profiles::session_component_is_ready,
     main_window_smoke_visual::{
         VisualCheckpointPhase, visual_checkpoint_binding, visual_checkpoint_component_verified,
     },
@@ -14,16 +14,27 @@ use crate::{
 fn session_actions_wait_for_the_rendered_pane_host_session() {
     let expected = rshell_core::SessionId::new();
     let stale = rshell_core::SessionId::new();
-    assert!(!session_component_is_synchronized(None, Some(expected)));
-    assert!(!session_component_is_synchronized(
+    assert!(!session_component_is_ready(None, None, Some(expected)));
+    assert!(!session_component_is_ready(
+        Some(stale),
         Some(stale),
         Some(expected)
     ));
-    assert!(session_component_is_synchronized(
+    assert!(!session_component_is_ready(
+        Some(expected),
+        None,
+        Some(expected)
+    ));
+    assert!(session_component_is_ready(
+        Some(expected),
         Some(expected),
         Some(expected)
     ));
-    assert!(!session_component_is_synchronized(Some(expected), None));
+    assert!(!session_component_is_ready(
+        Some(expected),
+        Some(expected),
+        None
+    ));
 }
 
 fn draft() -> ConnectionEditorDraftState {

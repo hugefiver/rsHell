@@ -4,8 +4,7 @@ use crate::{
     ConnectionEditorDraftState, EditorTextField, MainWindow, SmokeAction, SmokeActionKind,
     SmokeBindingEvidence, SmokeConnectionField,
     main_window_smoke_binding_profiles::{
-        ComponentSessionState, actual_label, profile_matches_surface,
-        session_component_is_synchronized,
+        ComponentSessionState, actual_label, profile_matches_surface, session_component_is_ready,
     },
     main_window_smoke_visual::{visual_checkpoint_binding, visual_checkpoint_component_verified},
     smoke_driver_observation::SmokeBindingRequest,
@@ -75,6 +74,7 @@ impl MainWindow {
                 local,
                 launch_matches,
                 rendered: self.smoke_state.pane_host_session,
+                geometry: self.smoke_state.pane_host_geometry_session,
                 expected: session_id,
             },
         );
@@ -198,7 +198,11 @@ fn component_verified(
             session.exists
                 && (session.local || session.launch_matches)
                 && (!requires_rendered_terminal(action)
-                    || session_component_is_synchronized(session.rendered, session.expected))
+                    || session_component_is_ready(
+                        session.rendered,
+                        session.geometry,
+                        session.expected,
+                    ))
         }
         SmokeActionKind::NewTab
         | SmokeActionKind::SplitHorizontal

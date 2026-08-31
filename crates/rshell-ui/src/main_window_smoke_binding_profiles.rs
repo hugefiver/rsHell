@@ -8,14 +8,16 @@ pub(crate) struct ComponentSessionState {
     pub local: bool,
     pub launch_matches: bool,
     pub rendered: Option<SessionId>,
+    pub geometry: Option<SessionId>,
     pub expected: Option<SessionId>,
 }
 
-pub(crate) fn session_component_is_synchronized(
+pub(crate) fn session_component_is_ready(
     rendered: Option<SessionId>,
+    geometry: Option<SessionId>,
     expected: Option<SessionId>,
 ) -> bool {
-    expected.is_some() && rendered == expected
+    expected.is_some() && rendered == expected && geometry == expected
 }
 
 pub(crate) fn profile_matches_surface(profile: &ConnectionProfile, surface: &str) -> bool {

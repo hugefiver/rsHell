@@ -48,6 +48,7 @@ pub enum PaneHostOutput {
     EditConnection(ConnectionId),
     ActiveTab(TabId),
     RenderedSession(Option<SessionId>),
+    GeometryReady(SessionId),
     ClipboardWritten { bytes: usize },
     Error(&'static str),
 }
@@ -182,6 +183,7 @@ impl SimpleComponent for PaneHost {
                     && self.geometry.acknowledge(source, *session, *size)
                 {
                     self.model.observe_terminal_geometry(*size);
+                    let _ = sender.output(PaneHostOutput::GeometryReady(*session));
                     self.geometry.schedule(&self.content, &sender);
                 }
                 let _ = sender.output(PaneHostOutput::Command(command));
