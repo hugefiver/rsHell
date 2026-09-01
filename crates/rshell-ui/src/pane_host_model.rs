@@ -50,6 +50,10 @@ impl PaneHostModel {
         self
     }
 
+    pub(crate) fn startup_probe(&self) -> Option<crate::StartupProbe> {
+        self.startup_probe.clone()
+    }
+
     pub fn replace_view_model(&mut self, view_model: AppViewModel) {
         let known_tabs = self
             .view_model

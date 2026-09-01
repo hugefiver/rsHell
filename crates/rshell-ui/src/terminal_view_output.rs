@@ -1,5 +1,5 @@
 use relm4::ComponentSender;
-use rshell_core::UiCommand;
+use rshell_core::{SessionUiCommand, UiCommand};
 
 use super::{TerminalView, TerminalViewOutput};
 use crate::TerminalViewError;
@@ -21,11 +21,23 @@ pub(crate) fn optional(
 
 pub(crate) fn geometry(
     result: Result<Option<UiCommand>, TerminalViewError>,
+    startup_probe: Option<&crate::StartupProbe>,
     sender: &ComponentSender<TerminalView>,
 ) {
     match result {
         Ok(Some(value)) => {
-            let _ = command(value, sender);
+            let size = match &value {
+                UiCommand::Session {
+                    command: SessionUiCommand::Resize(size),
+                    ..
+                } => Some(*size),
+                _ => None,
+            };
+            if command(value, sender)
+                && let (Some(probe), Some(size)) = (startup_probe, size)
+            {
+                probe.observe_terminal_geometry(size);
+            }
         }
         Ok(None) => {}
         Err(value) => {

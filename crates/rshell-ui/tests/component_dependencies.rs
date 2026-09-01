@@ -281,7 +281,14 @@ fn hosted_native_contracts_keep_selection_thread_and_geometry_boundaries() {
     assert!(acknowledgement < observation);
     let output = fs::read_to_string(src.join("terminal_view_output.rs")).unwrap();
     assert!(!output.contains("confirm_geometry_delivery"));
-    assert!(!output.contains("observe_terminal_geometry"));
+    assert!(output.contains("SessionUiCommand::Resize(size)"));
+    let output_delivery = output
+        .find("if command(value, sender)")
+        .expect("terminal output delivery boundary");
+    let measured_observation = output
+        .find("probe.observe_terminal_geometry(size);")
+        .expect("measured geometry startup observation");
+    assert!(output_delivery < measured_observation);
     let terminal_view = fs::read_to_string(src.join("terminal_view.rs")).unwrap();
     assert!(terminal_view.contains("TerminalViewMsg::GeometryAcknowledged(size)"));
     assert!(terminal_view.contains("if self.model.confirm_geometry_delivery(size)"));

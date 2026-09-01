@@ -35,6 +35,7 @@ fn twenty_tabs_are_keyboard_and_overflow_reachable() {
     assert_twenty_tab_overflow_and_keyboard_reachability();
     assert_terminal_view_native_boundary();
     assert_terminal_geometry_retries_until_typed_acknowledgement();
+    assert_measured_startup_geometry_precedes_round_trip_acknowledgement();
     assert_pane_host_acknowledges_positive_geometry_after_reparent();
     assert_native_workspace_boundary();
     assert_sidebar_catalog_refresh_preserves_only_the_same_visible_identity();
@@ -777,6 +778,7 @@ fn assert_terminal_view_native_boundary() {
             session: SessionId::new(),
             profile,
             metrics,
+            startup_probe: None,
         })
         .detach();
     let window = gtk::Window::new();
@@ -1003,6 +1005,7 @@ fn assert_terminal_geometry_retries_until_typed_acknowledgement() {
                 session,
                 profile,
                 metrics,
+                startup_probe: None,
             },
             sizes: Rc::clone(&sizes),
             acknowledge_after: 2,
@@ -1065,6 +1068,51 @@ fn assert_terminal_geometry_retries_until_typed_acknowledgement() {
     );
     window.close();
     assert!(flush_gtk(), "geometry retry window close must quiesce");
+}
+
+fn assert_measured_startup_geometry_precedes_round_trip_acknowledgement() {
+    let profile = TerminalSettingsV1::default().resolve(&TerminalOverrides::default());
+    let metric_probe = gtk::Label::new(None);
+    let context = metric_probe.pango_context();
+    let environment =
+        FontMetricEnvironment::from_context(&context, f64::from(metric_probe.scale_factor()))
+            .expect("native metric environment");
+    let metrics = match FontMetricsService::default()
+        .measure(&context, &profile, environment)
+        .expect("native terminal metrics")
+    {
+        MetricsChange::Changed(metrics) | MetricsChange::Unchanged(metrics) => metrics,
+    };
+    let sizes = Rc::new(RefCell::new(Vec::new()));
+    let probe = StartupProbe::new();
+    let terminal = GeometryHarness::builder()
+        .launch(GeometryHarnessInit {
+            terminal: TerminalViewInit {
+                pane: PaneId::new(),
+                session: SessionId::new(),
+                profile,
+                metrics,
+                startup_probe: Some(probe.clone()),
+            },
+            sizes: Rc::clone(&sizes),
+            acknowledge_after: usize::MAX,
+        })
+        .detach();
+    let canvas = descendants(terminal.widget())
+        .into_iter()
+        .find_map(|widget| widget.downcast::<gtk::DrawingArea>().ok())
+        .expect("startup geometry canvas");
+    let window = gtk::Window::new();
+    window.set_default_size(640, 360);
+    window.set_child(Some(terminal.widget()));
+    window.present();
+    assert!(wait_for_gtk(|| {
+        !sizes.borrow().is_empty()
+            && probe.report(false).measured_terminal_geometry_ready
+            && canvas.has_css_class("terminal-geometry-pending")
+    }));
+    window.close();
+    assert!(flush_gtk(), "startup geometry window close must quiesce");
 }
 
 fn zero_pixel_frame(generation: u64) -> Arc<RenderFrame> {

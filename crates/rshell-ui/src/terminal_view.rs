@@ -22,6 +22,7 @@ pub struct TerminalView {
     model: TerminalViewModel,
     metrics_service: FontMetricsService,
     metric_widget: gtk::DrawingArea,
+    startup_probe: Option<crate::StartupProbe>,
     clipboard: gdk::Clipboard,
     geometry_retry: TerminalGeometryRetry,
     selection_anchor: Option<(f64, f64)>,
@@ -58,6 +59,7 @@ impl SimpleComponent for TerminalView {
             ),
             metrics_service,
             metric_widget: widgets.canvas.clone(),
+            startup_probe: init.startup_probe,
             clipboard: root.display().clipboard(),
             geometry_retry: TerminalGeometryRetry::default(),
             selection_anchor: None,
@@ -79,6 +81,7 @@ impl SimpleComponent for TerminalView {
                         &mut self.model,
                         environment,
                     ),
+                    self.startup_probe.as_ref(),
                     &sender,
                 );
                 self.finish_geometry_attempt(&sender);
@@ -91,6 +94,7 @@ impl SimpleComponent for TerminalView {
                         &self.metric_widget,
                         &mut self.model,
                     ),
+                    self.startup_probe.as_ref(),
                     &sender,
                 );
                 self.finish_geometry_attempt(&sender);
@@ -103,6 +107,7 @@ impl SimpleComponent for TerminalView {
                         &self.metric_widget,
                         &mut self.model,
                     ),
+                    self.startup_probe.as_ref(),
                     &sender,
                 );
                 self.finish_geometry_attempt(&sender);
@@ -128,6 +133,7 @@ impl SimpleComponent for TerminalView {
                         &mut self.model,
                         profile,
                     ),
+                    self.startup_probe.as_ref(),
                     &sender,
                 );
                 self.finish_geometry_attempt(&sender);
@@ -154,6 +160,7 @@ impl SimpleComponent for TerminalView {
                         height,
                         scale,
                     ),
+                    self.startup_probe.as_ref(),
                     &sender,
                 );
                 self.finish_geometry_attempt(&sender);
