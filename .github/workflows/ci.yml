@@ -341,7 +341,7 @@ jobs:
           [void](New-Item -ItemType Directory -Path $vaultRoot)
           $displayLedger = Join-Path $vaultRoot "display-mode.json"
           try {
-            pwsh -NoProfile -File scripts/qa/windows-display.ps1 -Mode Apply -Ledger $displayLedger -Width 2560 -Height 1440
+            pwsh -NoProfile -File scripts/qa/windows-display.ps1 -Mode Apply -Ledger $displayLedger -Width 1920 -Height 1080
             if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
             $env:RSHELL_P0_QA_VAULT_REFERENCE = "rshell://credential/$([Guid]::NewGuid().ToString('N'))"
             $env:RSHELL_P0_QA_VAULT_OBSERVATION_PATH = Join-Path $vaultRoot "vault-observation.json"

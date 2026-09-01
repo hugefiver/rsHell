@@ -1,4 +1,4 @@
-use std::{cell::Cell, rc::Rc};
+use std::{cell::Cell, rc::Rc, time::Duration};
 
 use gtk::prelude::*;
 use relm4::ComponentSender;
@@ -90,13 +90,13 @@ impl TerminalView {
         }
         let retry = self.geometry_retry.clone();
         let input = sender.input_sender().clone();
-        let _ = self.metric_widget.add_tick_callback(move |canvas, _| {
-            if retry.callback_fired(canvas.is_mapped())
-                && input.send(TerminalViewMsg::RefreshGeometry).is_err()
+        let canvas = self.metric_widget.downgrade();
+        gtk::glib::timeout_add_local_once(Duration::from_millis(16), move || {
+            let mapped = canvas.upgrade().is_some_and(|canvas| canvas.is_mapped());
+            if retry.callback_fired(mapped) && input.send(TerminalViewMsg::RefreshGeometry).is_err()
             {
                 retry.input_failed();
             }
-            gtk::glib::ControlFlow::Break
         });
     }
 }

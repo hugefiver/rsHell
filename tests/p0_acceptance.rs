@@ -708,7 +708,7 @@ fn hosted_windows_p0_provisions_and_restores_a_wide_display() {
 
     for marker in [
         "scripts/qa/windows-display.ps1 -Mode Apply",
-        "-Width 2560 -Height 1440",
+        "-Width 1920 -Height 1080",
         "scripts/qa/windows-display.ps1 -Mode Restore",
         "Windows display restoration failed.",
     ] {
@@ -725,11 +725,13 @@ fn hosted_windows_p0_provisions_and_restores_a_wide_display() {
     for marker in [
         "EnumDisplaySettings",
         "ChangeDisplaySettings",
+        "PreferredAtLeast",
         "CDS_TEST",
         "CDS_FULLSCREEN",
         "The display mode did not converge.",
         "RSHELL_DISPLAY_APPLIED",
         "RSHELL_DISPLAY_RESTORED",
+        "$restoreMode = [RshellDisplayMode]::new()",
     ] {
         assert!(
             display.contains(marker),

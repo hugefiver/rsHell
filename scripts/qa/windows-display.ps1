@@ -87,13 +87,13 @@ public static class RshellDisplayConfiguration {
         return ToInfo(mode);
     }
 
-    public static RshellDisplayMode Preferred(int width, int height) {
+    public static RshellDisplayMode PreferredAtLeast(int width, int height) {
         DEVMODE? preferred = null;
         for (var index = 0; ; index++) {
             var candidate = NewMode();
             if (!EnumDisplaySettings(null, index, ref candidate)) break;
-            if (candidate.dmPelsWidth != width || candidate.dmPelsHeight != height) continue;
-            if (!preferred.HasValue || Score(candidate) > Score(preferred.Value)) preferred = candidate;
+            if (candidate.dmPelsWidth < width || candidate.dmPelsHeight < height) continue;
+            if (!preferred.HasValue || Better(candidate, preferred.Value)) preferred = candidate;
         }
         if (!preferred.HasValue) throw new InvalidOperationException("The required display mode is unavailable.");
         return ToInfo(preferred.Value);
@@ -136,9 +136,15 @@ public static class RshellDisplayConfiguration {
         return mode;
     }
 
-    private static int Score(DEVMODE mode) {
-        var frequency = mode.dmDisplayFrequency == 60 ? 10000 : mode.dmDisplayFrequency;
-        return mode.dmBitsPerPel * 100000 + frequency;
+    private static bool Better(DEVMODE candidate, DEVMODE current) {
+        var candidateArea = (long)candidate.dmPelsWidth * candidate.dmPelsHeight;
+        var currentArea = (long)current.dmPelsWidth * current.dmPelsHeight;
+        if (candidateArea != currentArea) return candidateArea < currentArea;
+        var candidateAt60 = candidate.dmDisplayFrequency == 60;
+        var currentAt60 = current.dmDisplayFrequency == 60;
+        if (candidateAt60 != currentAt60) return candidateAt60;
+        if (candidate.dmBitsPerPel != current.dmBitsPerPel) return candidate.dmBitsPerPel > current.dmBitsPerPel;
+        return candidate.dmDisplayFrequency < current.dmDisplayFrequency;
     }
 
     private static RshellDisplayMode ToInfo(DEVMODE mode) {
@@ -154,7 +160,7 @@ public static class RshellDisplayConfiguration {
 
 switch ($Mode) {
     "Probe" {
-        $target = [RshellDisplayConfiguration]::Preferred($Width, $Height)
+        $target = [RshellDisplayConfiguration]::PreferredAtLeast($Width, $Height)
         [RshellDisplayConfiguration]::Test($target)
         Write-Output "RSHELL_DISPLAY_PROBE width=$($target.Width) height=$($target.Height)"
     }
@@ -172,7 +178,7 @@ switch ($Mode) {
             ($current | ConvertTo-Json -Compress),
             [System.Text.UTF8Encoding]::new($false)
         )
-        $target = [RshellDisplayConfiguration]::Preferred($Width, $Height)
+        $target = [RshellDisplayConfiguration]::PreferredAtLeast($Width, $Height)
         [RshellDisplayConfiguration]::Test($target)
         [RshellDisplayConfiguration]::Apply($target)
         Write-Output "RSHELL_DISPLAY_APPLIED width=$($target.Width) height=$($target.Height)"
@@ -182,13 +188,13 @@ switch ($Mode) {
             throw "The display ledger is unavailable."
         }
         $saved = Get-Content -LiteralPath $Ledger -Raw | ConvertFrom-Json
-        $mode = [RshellDisplayMode]::new()
-        $mode.Width = [int]$saved.Width
-        $mode.Height = [int]$saved.Height
-        $mode.BitsPerPixel = [int]$saved.BitsPerPixel
-        $mode.Frequency = [int]$saved.Frequency
-        [RshellDisplayConfiguration]::Test($mode)
-        [RshellDisplayConfiguration]::Apply($mode)
-        Write-Output "RSHELL_DISPLAY_RESTORED width=$($mode.Width) height=$($mode.Height)"
+        $restoreMode = [RshellDisplayMode]::new()
+        $restoreMode.Width = [int]$saved.Width
+        $restoreMode.Height = [int]$saved.Height
+        $restoreMode.BitsPerPixel = [int]$saved.BitsPerPixel
+        $restoreMode.Frequency = [int]$saved.Frequency
+        [RshellDisplayConfiguration]::Test($restoreMode)
+        [RshellDisplayConfiguration]::Apply($restoreMode)
+        Write-Output "RSHELL_DISPLAY_RESTORED width=$($restoreMode.Width) height=$($restoreMode.Height)"
     }
 }

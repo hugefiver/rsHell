@@ -467,13 +467,13 @@ foreach ($pattern in @(
 }
 $windowsModeAll = Assert-NamedStep -Text $ci -Name "Run Credential Manager vault probe and P0 All smoke (Windows)" -Failures $failures
 foreach ($pattern in @(
-        'windows-display\.ps1 -Mode Apply', '-Width 2560 -Height 1440',
+        'windows-display\.ps1 -Mode Apply', '-Width 1920 -Height 1080',
         'windows-display\.ps1 -Mode Restore', 'Windows display restoration failed\.'
     )) {
     Assert-StepPattern -Step $windowsModeAll -Pattern $pattern -Name "Run Credential Manager vault probe and P0 All smoke (Windows)" -Failures $failures
 }
 $displayHelper = Get-Content -LiteralPath (Join-Path $PSScriptRoot "windows-display.ps1") -Raw
-foreach ($pattern in @('EnumDisplaySettings', 'ChangeDisplaySettings', 'CDS_TEST', 'CDS_FULLSCREEN', 'The display mode did not converge\.')) {
+foreach ($pattern in @('EnumDisplaySettings', 'ChangeDisplaySettings', 'PreferredAtLeast', 'CDS_TEST', 'CDS_FULLSCREEN', 'The display mode did not converge\.', '\$restoreMode = \[RshellDisplayMode\]::new\(\)')) {
     Assert-Contains -Text $displayHelper -Pattern $pattern -Label "Windows display helper '$pattern'" -Failures $failures
 }
 
