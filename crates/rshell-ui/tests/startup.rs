@@ -16,13 +16,14 @@ fn smoke_report_requires_realized_window_local_session_frame_and_clean_shutdown(
 
     probe.observe_window_realized();
     probe.observe_local_session_state(SessionState::Connected);
-    let mut initial = frame();
-    initial.size.pixel_width = 0;
-    initial.size.pixel_height = 0;
+    let initial = frame();
     probe.observe_render_frame(&initial);
 
     assert!(probe.report(true).non_empty_render_frame);
-    assert!(!probe.report(true).measured_terminal_geometry_ready);
+    assert!(
+        !probe.report(true).measured_terminal_geometry_ready,
+        "render-frame acceptance must not stand in for acknowledged measured geometry"
+    );
     probe.observe_terminal_geometry(frame().size);
 
     let report = probe.report(true);

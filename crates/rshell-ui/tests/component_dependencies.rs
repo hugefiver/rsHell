@@ -257,7 +257,7 @@ fn hosted_native_contracts_keep_selection_thread_and_geometry_boundaries() {
 
     let probe = fs::read_to_string(src.join("startup_probe.rs")).unwrap();
     assert!(probe.contains("pub fn observe_terminal_geometry(&self, size: TerminalSize)"));
-    assert!(probe.contains("self.observe_terminal_geometry(frame.size);"));
+    assert!(!probe.contains("self.observe_terminal_geometry(frame.size);"));
     let model = fs::read_to_string(src.join("pane_host_model.rs")).unwrap();
     assert!(model.contains("probe.observe_terminal_geometry(size);"));
     let pane_host = fs::read_to_string(src.join("pane_host.rs")).unwrap();
@@ -272,23 +272,33 @@ fn hosted_native_contracts_keep_selection_thread_and_geometry_boundaries() {
     assert!(geometry.contains("TerminalViewMsg::ReplayGeometry"));
     assert!(geometry.contains("TerminalViewMsg::GeometryAcknowledged(size)"));
     assert!(geometry.contains("model.observe_terminal_geometry(size);"));
+    let acknowledgement = geometry
+        .find("send_terminal_message(terminal, TerminalViewMsg::GeometryAcknowledged(size))")
+        .expect("typed terminal geometry acknowledgement");
+    let observation = geometry
+        .find("model.observe_terminal_geometry(size);")
+        .expect("post-ack startup geometry observation");
+    assert!(acknowledgement < observation);
     let output = fs::read_to_string(src.join("terminal_view_output.rs")).unwrap();
     assert!(!output.contains("confirm_geometry_delivery"));
     assert!(!output.contains("observe_terminal_geometry"));
     let terminal_view = fs::read_to_string(src.join("terminal_view.rs")).unwrap();
     assert!(terminal_view.contains("TerminalViewMsg::GeometryAcknowledged(size)"));
     assert!(terminal_view.contains("self.model.confirm_geometry_delivery(size);"));
+    assert!(terminal_view.contains(
+        "metric_refresh::send_post_render_geometry(&widgets.canvas, &self.model, &sender);"
+    ));
+    let pane_events = fs::read_to_string(src.join("main_window_pane_events.rs")).unwrap();
+    assert!(!pane_events.contains("geometry::observe"));
+    assert!(!src.join("main_window_geometry.rs").exists());
     let smoke = fs::read_to_string(src.join("main_window_smoke.rs")).unwrap();
     assert!(smoke.contains("queue_visual_completion_tick("));
     assert!(smoke.contains("|message| sender.input(message)"));
     assert!(!smoke.contains("std::time::Duration::ZERO"));
     let widgets = fs::read_to_string(src.join("terminal_view_widgets.rs")).unwrap();
     for required in [
-        "canvas.add_tick_callback",
-        "if !canvas.is_mapped()",
-        "gtk::glib::ControlFlow::Continue",
-        "gtk::glib::ControlFlow::Break",
-        "initial_geometry_pending",
+        "canvas.connect_map",
+        "canvas.connect_resize",
         "model.has_positive_emitted_geometry()",
         ".send(TerminalViewMsg::Resize",
         ".is_ok()",
@@ -296,6 +306,22 @@ fn hosted_native_contracts_keep_selection_thread_and_geometry_boundaries() {
         assert!(
             widgets.contains(required),
             "missing geometry retry contract: {required}"
+        );
+    }
+    assert!(!widgets.contains("canvas.add_tick_callback"));
+    let metrics = fs::read_to_string(src.join("terminal_view_metrics.rs")).unwrap();
+    for required in [
+        "pub(crate) fn send_post_render_geometry(",
+        "model.needs_post_render_geometry()",
+        "!canvas.is_mapped()",
+        "width <= 0",
+        "height <= 0",
+        "scale <= 0",
+        ".send(TerminalViewMsg::Resize",
+    ] {
+        assert!(
+            metrics.contains(required),
+            "missing post-render geometry contract: {required}"
         );
     }
 }

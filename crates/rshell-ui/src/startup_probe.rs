@@ -106,18 +106,12 @@ impl StartupProbe {
             .flat_map(|row| row.cells.iter())
             .any(|cell| !cell.text.is_empty());
         self.update(|state| state.non_empty_render_frame |= non_empty_render_frame);
-        self.observe_terminal_geometry(frame.size);
     }
 
     pub fn observe_terminal_geometry(&self, size: TerminalSize) {
         if terminal_geometry_ready(size) {
             self.update(|state| state.measured_terminal_geometry_ready = true);
         }
-    }
-
-    #[cfg(test)]
-    pub(crate) fn terminal_geometry_ready(&self) -> bool {
-        self.state.borrow().measured_terminal_geometry_ready
     }
 
     pub fn report(&self, shutdown_clean: bool) -> StartupReport {

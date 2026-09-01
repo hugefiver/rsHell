@@ -37,6 +37,29 @@ pub(crate) fn connect_metric_refresh(
     }
 }
 
+pub(crate) fn send_post_render_geometry(
+    canvas: &gtk::DrawingArea,
+    model: &TerminalViewModel,
+    sender: &ComponentSender<TerminalView>,
+) {
+    let width = canvas.width();
+    let height = canvas.height();
+    let scale = canvas.scale_factor();
+    if !model.needs_post_render_geometry()
+        || !canvas.is_mapped()
+        || width <= 0
+        || height <= 0
+        || scale <= 0
+    {
+        return;
+    }
+    let _ = sender.input_sender().send(TerminalViewMsg::Resize {
+        width,
+        height,
+        scale: f64::from(scale),
+    });
+}
+
 pub(crate) fn metric_environment(
     widget: &impl IsA<gtk::Widget>,
 ) -> Result<FontMetricEnvironment, crate::TerminalViewError> {

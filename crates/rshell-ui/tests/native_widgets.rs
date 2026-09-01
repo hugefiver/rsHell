@@ -34,7 +34,7 @@ fn twenty_tabs_are_keyboard_and_overflow_reachable() {
     }
     assert_twenty_tab_overflow_and_keyboard_reachability();
     assert_terminal_view_native_boundary();
-    assert_mapped_terminal_retries_geometry_after_zero_allocation();
+    assert_post_render_terminal_geometry_settles_once_after_zero_pixel_frame();
     assert_pane_host_acknowledges_positive_geometry_after_reparent();
     assert_native_workspace_boundary();
     assert_sidebar_catalog_refresh_preserves_only_the_same_visible_identity();
@@ -827,6 +827,7 @@ fn assert_terminal_view_native_boundary() {
 #[derive(Debug)]
 enum GeometryHarnessMsg {
     Terminal(TerminalViewOutput),
+    ApplyFrame(Arc<RenderFrame>),
     RefreshGeometry,
     AcknowledgeGeometry(TerminalSize),
 }
@@ -964,6 +965,9 @@ impl SimpleComponent for GeometryHarness {
                 }
             }
             GeometryHarnessMsg::Terminal(_) => {}
+            GeometryHarnessMsg::ApplyFrame(frame) => {
+                self.terminal.emit(TerminalViewMsg::ApplyFrame(frame));
+            }
             GeometryHarnessMsg::RefreshGeometry => {
                 self.terminal.emit(TerminalViewMsg::RefreshGeometry);
             }
@@ -975,7 +979,7 @@ impl SimpleComponent for GeometryHarness {
     }
 }
 
-fn assert_mapped_terminal_retries_geometry_after_zero_allocation() {
+fn assert_post_render_terminal_geometry_settles_once_after_zero_pixel_frame() {
     let profile = TerminalSettingsV1::default().resolve(&TerminalOverrides::default());
     let metric_probe = gtk::Label::new(None);
     let context = metric_probe.pango_context();
@@ -989,11 +993,12 @@ fn assert_mapped_terminal_retries_geometry_after_zero_allocation() {
         MetricsChange::Changed(metrics) | MetricsChange::Unchanged(metrics) => metrics,
     };
     let sizes = Rc::new(RefCell::new(Vec::new()));
+    let session = SessionId::new();
     let terminal = GeometryHarness::builder()
         .launch(GeometryHarnessInit {
             terminal: TerminalViewInit {
                 pane: PaneId::new(),
-                session: SessionId::new(),
+                session,
                 profile,
                 metrics,
             },
@@ -1010,13 +1015,31 @@ fn assert_mapped_terminal_retries_geometry_after_zero_allocation() {
         canvas.has_css_class("terminal-geometry-pending"),
         "initial geometry must remain pending before model confirmation"
     );
+    terminal.emit(GeometryHarnessMsg::ApplyFrame(zero_pixel_frame(1)));
+    assert!(flush_gtk(), "unmapped zero-pixel frame must quiesce");
+    assert!(sizes.borrow().is_empty());
 
     let window = gtk::Window::new();
     window.set_default_size(640, 360);
     window.set_child(Some(terminal.widget()));
     window.present();
-    assert!(wait_for_gtk(|| sizes.borrow().len() >= 2));
+    assert!(wait_for_gtk(|| {
+        canvas.is_mapped()
+            && canvas.width() > 0
+            && canvas.height() > 0
+            && !sizes.borrow().is_empty()
+    }));
+    terminal.emit(GeometryHarnessMsg::ApplyFrame(zero_pixel_frame(2)));
+    assert!(
+        flush_gtk(),
+        "delayed frame sync must not leave a busy geometry retry"
+    );
     let emitted = sizes.borrow().clone();
+    assert_eq!(
+        emitted.len(),
+        1,
+        "one measured resize must reach output before acknowledgement"
+    );
     assert!(
         emitted[0].pixel_width > 0 && emitted[0].pixel_height > 0,
         "emitted geometry must have positive physical dimensions"
@@ -1034,6 +1057,7 @@ fn assert_mapped_terminal_retries_geometry_after_zero_allocation() {
 
     terminal.emit(GeometryHarnessMsg::RefreshGeometry);
     terminal.emit(GeometryHarnessMsg::RefreshGeometry);
+    terminal.emit(GeometryHarnessMsg::ApplyFrame(zero_pixel_frame(3)));
     assert!(flush_gtk());
     assert_eq!(
         sizes.borrow().len(),
@@ -1042,6 +1066,26 @@ fn assert_mapped_terminal_retries_geometry_after_zero_allocation() {
     );
     window.close();
     assert!(flush_gtk(), "geometry retry window close must quiesce");
+}
+
+fn zero_pixel_frame(generation: u64) -> Arc<RenderFrame> {
+    Arc::new(RenderFrame {
+        generation,
+        size: TerminalSize {
+            cols: 80,
+            rows: 24,
+            pixel_width: 0,
+            pixel_height: 0,
+            dpi: 96,
+        },
+        viewport_top: 0,
+        rows: Arc::from([]),
+        cursor: None,
+        title: "delayed geometry fixture".into(),
+        display_modes: Default::default(),
+        alternate_screen: false,
+        mouse_reporting: false,
+    })
 }
 
 fn assert_pane_host_acknowledges_positive_geometry_after_reparent() {

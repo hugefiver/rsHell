@@ -5,7 +5,7 @@ use std::{
 };
 
 use gtk::prelude::*;
-use relm4::{ComponentSender, Controller, gtk};
+use relm4::{ComponentController, ComponentSender, Controller, gtk};
 use rshell_core::{SessionId, SessionUiCommand, TerminalSize, UiCommand};
 
 use crate::{
@@ -81,7 +81,10 @@ impl PaneHostGeometryAck {
 
     pub(crate) fn refresh(&self, terminals: &mut BTreeMap<SessionId, Controller<TerminalView>>) {
         for session in self.unacknowledged() {
-            let message = self.next_probe(session);
+            let message = terminals
+                .get(&session)
+                .and_then(|terminal| allocation_probe(terminal.widget()))
+                .unwrap_or_else(|| self.next_probe(session));
             let delivered = terminals
                 .get(&session)
                 .is_some_and(|terminal| send_terminal_message(terminal, message));
@@ -196,11 +199,33 @@ pub(crate) fn positive_terminal_geometry(size: TerminalSize) -> bool {
     size.cols > 0 && size.rows > 0 && size.pixel_width > 0 && size.pixel_height > 0 && size.dpi > 0
 }
 
+fn allocation_probe(widget: &gtk::Overlay) -> Option<TerminalViewMsg> {
+    allocation_message(
+        widget.is_mapped(),
+        widget.width(),
+        widget.height(),
+        widget.scale_factor(),
+    )
+}
+
+fn allocation_message(
+    mapped: bool,
+    width: i32,
+    height: i32,
+    scale: i32,
+) -> Option<TerminalViewMsg> {
+    (mapped && width > 0 && height > 0 && scale > 0).then_some(TerminalViewMsg::Resize {
+        width,
+        height,
+        scale: f64::from(scale),
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use rshell_core::SessionId;
 
-    use super::PaneHostGeometryAck;
+    use super::{PaneHostGeometryAck, allocation_message};
 
     #[test]
     fn unacknowledged_geometry_rechecks_allocation_after_an_empty_replay() {
@@ -218,5 +243,19 @@ mod tests {
             geometry.next_probe(session),
             crate::TerminalViewMsg::RefreshGeometry
         ));
+    }
+
+    #[test]
+    fn positive_mapped_host_allocation_is_a_real_resize_probe() {
+        assert!(matches!(
+            allocation_message(true, 640, 360, 2),
+            Some(crate::TerminalViewMsg::Resize {
+                width: 640,
+                height: 360,
+                scale,
+            }) if scale.to_bits() == 2.0_f64.to_bits()
+        ));
+        assert!(allocation_message(false, 640, 360, 2).is_none());
+        assert!(allocation_message(true, 0, 360, 2).is_none());
     }
 }

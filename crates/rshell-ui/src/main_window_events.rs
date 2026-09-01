@@ -12,8 +12,6 @@ use crate::{
     session_diagnostics::emit_session_failure,
 };
 
-#[path = "main_window_geometry.rs"]
-mod geometry;
 #[path = "main_window_pane_events.rs"]
 mod pane;
 

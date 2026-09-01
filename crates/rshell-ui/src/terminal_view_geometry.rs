@@ -30,6 +30,10 @@ impl TerminalViewModel {
             })
     }
 
+    pub(crate) fn needs_post_render_geometry(&self) -> bool {
+        self.frame.is_some() && !self.last_geometry_delivered && !self.geometry_delivery_in_flight
+    }
+
     pub(crate) fn replay_geometry(&self) -> Option<UiCommand> {
         (!self.last_geometry_delivered && !self.geometry_delivery_in_flight)
             .then_some(self.last_emitted_size)

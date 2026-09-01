@@ -168,8 +168,9 @@ impl SimpleComponent for TerminalView {
         }
     }
 
-    fn update_view(&self, widgets: &mut Self::Widgets, _sender: ComponentSender<Self>) {
+    fn update_view(&self, widgets: &mut Self::Widgets, sender: ComponentSender<Self>) {
         widgets.sync(&self.model);
+        metric_refresh::send_post_render_geometry(&widgets.canvas, &self.model, &sender);
     }
 }
 
