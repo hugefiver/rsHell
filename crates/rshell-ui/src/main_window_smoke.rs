@@ -44,7 +44,6 @@ pub(crate) struct SmokeUiState {
     pub interaction_responses: u64,
     pub import_completions: u64,
     pub import_cancellations: u64,
-    pub close_all_last_tabs: Option<usize>,
     pub terminal: SmokeTerminalEvidence,
     pub imports: SmokeImportEvidence,
     pub pending_resize: Option<PendingResize>,

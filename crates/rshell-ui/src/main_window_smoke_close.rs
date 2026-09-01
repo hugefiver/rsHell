@@ -1,6 +1,6 @@
 use rshell_core::UiCommand;
 
-use crate::{MainWindow, PaneAction, PaneHostMsg, SessionTabBarMsg};
+use crate::{MainWindow, PaneAction, PaneHostMsg};
 
 impl MainWindow {
     pub(crate) fn send_active_pane_action(&self, action: PaneAction) -> Result<(), &'static str> {
@@ -18,20 +18,6 @@ impl MainWindow {
     }
 
     pub(crate) fn route_smoke_close_all(&mut self) -> Result<bool, &'static str> {
-        let tabs = self
-            .view_model
-            .workspace
-            .tabs
-            .iter()
-            .map(|tab| tab.id)
-            .collect::<Vec<_>>();
-        if let Some(tab) = tabs.first().copied() {
-            if self.smoke_state.close_all_last_tabs != Some(tabs.len()) {
-                self.smoke_state.close_all_last_tabs = Some(tabs.len());
-                self.send_tab(SessionTabBarMsg::Close(tab));
-            }
-            return Ok(false);
-        }
         match crate::command_port::dispatch(&self.command_port, UiCommand::Shutdown) {
             Ok(()) => {}
             Err(rshell_core::UiPortError::Busy) => return Ok(false),

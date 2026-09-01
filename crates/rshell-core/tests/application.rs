@@ -1242,6 +1242,132 @@ async fn recovery_notice_is_bound_to_current_session() {
 }
 
 #[tokio::test]
+async fn shutdown_publishes_an_empty_workspace_before_shutdown_complete() {
+    let bootstrap = bootstrap_state();
+    let ports = RecordingPorts::new(&bootstrap);
+    let app = ApplicationService::start(ports.dependencies(), bootstrap)
+        .await
+        .unwrap();
+    let events = app.event_receiver();
+    let initial = &app.initial_view_model().workspace.tabs[0];
+    let initial_session = initial
+        .pane_tree
+        .session_id(initial.active_pane)
+        .unwrap()
+        .unwrap();
+
+    app.ui_port().try_send(UiCommand::NewLocalTab).unwrap();
+    let AppEvent::WorkspaceChanged(workspace) = recv_matching(&events, |event| {
+        matches!(event, AppEvent::WorkspaceChanged(_))
+    })
+    .await
+    else {
+        unreachable!()
+    };
+    let second_tab = &workspace.tabs[1];
+    let second_session = second_tab
+        .pane_tree
+        .session_id(second_tab.active_pane)
+        .unwrap()
+        .unwrap();
+
+    ports.send_frame(
+        initial_session,
+        Arc::new(RenderFrame {
+            generation: 1,
+            size: TerminalSize {
+                cols: 80,
+                rows: 24,
+                pixel_width: 0,
+                pixel_height: 0,
+                dpi: 96,
+            },
+            viewport_top: 0,
+            rows: Vec::<RenderRow>::new().into(),
+            cursor: None,
+            title: "shutdown-frame".into(),
+            display_modes: Default::default(),
+            alternate_screen: false,
+            mouse_reporting: false,
+        }),
+    );
+    recv_matching(&events, |event| {
+        matches!(
+            event,
+            AppEvent::Session {
+                session,
+                event: SessionUiEvent::Frame(_),
+            } if *session == initial_session
+        )
+    })
+    .await;
+    ports.send_session_event(
+        initial_session,
+        SessionUiEvent::RecoveryChanged(Some(DisplayRecoveryNotice {
+            interrupted_generation: 0,
+            observed_generation: 1,
+            modes: TerminalDisplayModes {
+                alternate_screen: true,
+                ..Default::default()
+            },
+        })),
+    );
+    recv_matching(&events, |event| {
+        matches!(
+            event,
+            AppEvent::Session {
+                session,
+                event: SessionUiEvent::RecoveryChanged(Some(_)),
+            } if *session == initial_session
+        )
+    })
+    .await;
+    ports.send_session_event(
+        second_session,
+        SessionUiEvent::Failed(SessionFailure::Network),
+    );
+    recv_matching(&events, |event| {
+        matches!(
+            event,
+            AppEvent::Session {
+                session,
+                event: SessionUiEvent::Failed(SessionFailure::Network),
+            } if *session == second_session
+        )
+    })
+    .await;
+    let before_shutdown = app.view_model();
+    assert_eq!(before_shutdown.workspace.tabs.len(), 2);
+    assert!(!before_shutdown.pane_launches.is_empty());
+    assert!(!before_shutdown.session_states.is_empty());
+    assert!(!before_shutdown.latest_frames.is_empty());
+    assert!(!before_shutdown.display_recovery.is_empty());
+    assert!(!before_shutdown.error_panes.is_empty());
+
+    app.ui_port().try_send(UiCommand::Shutdown).unwrap();
+    assert_eq!(
+        recv_matching(&events, |event| matches!(event, AppEvent::ShutdownComplete)).await,
+        AppEvent::ShutdownComplete
+    );
+
+    let shutdown_view = app.view_model();
+    assert!(shutdown_view.revision > before_shutdown.revision);
+    assert!(shutdown_view.workspace.tabs.is_empty());
+    assert_eq!(shutdown_view.workspace.active_tab, None);
+    assert!(shutdown_view.pane_launches.is_empty());
+    assert!(shutdown_view.session_states.is_empty());
+    assert!(shutdown_view.latest_frames.is_empty());
+    assert!(shutdown_view.display_recovery.is_empty());
+    assert!(shutdown_view.error_panes.is_empty());
+    assert_eq!(ports.shutdowns(), 1);
+    timeout(Duration::from_secs(2), app.shutdown())
+        .await
+        .expect("shutdown must remain bounded")
+        .unwrap();
+    assert_eq!(ports.shutdowns(), 1);
+}
+
+#[tokio::test]
 async fn shutdown_closes_intake_cancels_previews_and_stops_sessions() {
     let bootstrap = bootstrap_state();
     let ports = RecordingPorts::new(&bootstrap);

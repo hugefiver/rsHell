@@ -93,6 +93,13 @@ impl CommandLoop {
             }
         }
         self.forwarders.clear();
+        self.view_model.workspace = Default::default();
+        self.view_model.pane_launches.clear();
+        self.view_model.session_states.clear();
+        self.view_model.latest_frames.clear();
+        self.view_model.display_recovery.clear();
+        self.view_model.error_panes.clear();
+        self.publish_view();
         let _ = self.events.try_send(AppEvent::ShutdownComplete);
         session_shutdown
     }
