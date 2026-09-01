@@ -72,7 +72,7 @@ impl SimpleComponent for TerminalView {
                 self.model.apply_frame(frame);
             }
             TerminalViewMsg::RefreshMetrics(environment) => {
-                let output_open = output::geometry(
+                output::geometry(
                     metric_refresh::refresh_metrics(
                         &mut self.metrics_service,
                         &self.metric_widget,
@@ -81,11 +81,11 @@ impl SimpleComponent for TerminalView {
                     ),
                     &sender,
                 );
-                self.finish_geometry_attempt(output_open, &sender);
+                self.finish_geometry_attempt(&sender);
             }
             TerminalViewMsg::RefreshGeometry => {
                 self.model.prepare_geometry_retry();
-                let output_open = output::geometry(
+                output::geometry(
                     metric_refresh::refresh_current_geometry(
                         &mut self.metrics_service,
                         &self.metric_widget,
@@ -93,11 +93,11 @@ impl SimpleComponent for TerminalView {
                     ),
                     &sender,
                 );
-                self.finish_geometry_attempt(output_open, &sender);
+                self.finish_geometry_attempt(&sender);
             }
             TerminalViewMsg::ReplayGeometry => {
                 self.model.prepare_geometry_retry();
-                let output_open = output::geometry(
+                output::geometry(
                     metric_refresh::replay_current_geometry(
                         &mut self.metrics_service,
                         &self.metric_widget,
@@ -105,7 +105,7 @@ impl SimpleComponent for TerminalView {
                     ),
                     &sender,
                 );
-                self.finish_geometry_attempt(output_open, &sender);
+                self.finish_geometry_attempt(&sender);
             }
             TerminalViewMsg::GeometryAcknowledged(size) => {
                 if self.model.confirm_geometry_delivery(size) {
@@ -121,7 +121,7 @@ impl SimpleComponent for TerminalView {
             }
             TerminalViewMsg::GeometryUnmapped => self.geometry_retry.unmapped(),
             TerminalViewMsg::UpdateProfile(profile) => {
-                let output_open = output::geometry(
+                output::geometry(
                     metric_refresh::refresh_profile(
                         &mut self.metrics_service,
                         &self.metric_widget,
@@ -130,7 +130,7 @@ impl SimpleComponent for TerminalView {
                     ),
                     &sender,
                 );
-                self.finish_geometry_attempt(output_open, &sender);
+                self.finish_geometry_attempt(&sender);
             }
             TerminalViewMsg::Key { key, state } => self.handle_key(key, state, &sender),
             TerminalViewMsg::KeyReleased(key) => self.model.key_released(key),
@@ -145,7 +145,7 @@ impl SimpleComponent for TerminalView {
                 height,
                 scale,
             } => {
-                let output_open = output::geometry(
+                output::geometry(
                     metric_refresh::refresh_geometry(
                         &mut self.metrics_service,
                         &self.metric_widget,
@@ -156,7 +156,7 @@ impl SimpleComponent for TerminalView {
                     ),
                     &sender,
                 );
-                self.finish_geometry_attempt(output_open, &sender);
+                self.finish_geometry_attempt(&sender);
             }
             TerminalViewMsg::Selection {
                 start_x,

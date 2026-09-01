@@ -702,6 +702,43 @@ fn hosted_gui_tests_use_linux_xvfb_and_a_supported_macos_runner() {
 }
 
 #[test]
+fn hosted_windows_p0_provisions_and_restores_a_wide_display() {
+    let ci = include_str!("../.github/workflows/ci.yml");
+    let display = include_str!("../scripts/qa/windows-display.ps1");
+
+    for marker in [
+        "scripts/qa/windows-display.ps1 -Mode Apply",
+        "-Width 2560 -Height 1440",
+        "scripts/qa/windows-display.ps1 -Mode Restore",
+        "Windows display restoration failed.",
+    ] {
+        assert!(ci.contains(marker), "Windows P0 is missing {marker}");
+    }
+    let apply = ci.find("windows-display.ps1 -Mode Apply").unwrap();
+    let smoke = apply
+        + ci[apply..]
+            .find("pwsh -NoProfile -File scripts/qa/p0-smoke.ps1 -Mode All")
+            .unwrap();
+    let restore = ci.find("windows-display.ps1 -Mode Restore").unwrap();
+    assert!(apply < smoke && smoke < restore);
+
+    for marker in [
+        "EnumDisplaySettings",
+        "ChangeDisplaySettings",
+        "CDS_TEST",
+        "CDS_FULLSCREEN",
+        "The display mode did not converge.",
+        "RSHELL_DISPLAY_APPLIED",
+        "RSHELL_DISPLAY_RESTORED",
+    ] {
+        assert!(
+            display.contains(marker),
+            "display helper is missing {marker}"
+        );
+    }
+}
+
+#[test]
 fn hosted_native_credentials_and_macos_gtk_evidence_are_fail_closed() {
     let ci = include_str!("../.github/workflows/ci.yml");
     let harness = include_str!("../scripts/qa/p0-smoke.ps1");

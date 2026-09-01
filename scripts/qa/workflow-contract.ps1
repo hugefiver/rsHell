@@ -465,6 +465,17 @@ foreach ($pattern in @(
     )) {
     Assert-StepPattern -Step $macosModeAll -Pattern $pattern -Name "Run temporary keychain vault probe and P0 All smoke (macOS)" -Failures $failures
 }
+$windowsModeAll = Assert-NamedStep -Text $ci -Name "Run Credential Manager vault probe and P0 All smoke (Windows)" -Failures $failures
+foreach ($pattern in @(
+        'windows-display\.ps1 -Mode Apply', '-Width 2560 -Height 1440',
+        'windows-display\.ps1 -Mode Restore', 'Windows display restoration failed\.'
+    )) {
+    Assert-StepPattern -Step $windowsModeAll -Pattern $pattern -Name "Run Credential Manager vault probe and P0 All smoke (Windows)" -Failures $failures
+}
+$displayHelper = Get-Content -LiteralPath (Join-Path $PSScriptRoot "windows-display.ps1") -Raw
+foreach ($pattern in @('EnumDisplaySettings', 'ChangeDisplaySettings', 'CDS_TEST', 'CDS_FULLSCREEN', 'The display mode did not converge\.')) {
+    Assert-Contains -Text $displayHelper -Pattern $pattern -Label "Windows display helper '$pattern'" -Failures $failures
+}
 
 foreach ($required in @(
         "libgtk-4-dev", "xvfb", "dbus-x11", "gnome-keyring", "dbus-run-session", "gnome-keyring-daemon",

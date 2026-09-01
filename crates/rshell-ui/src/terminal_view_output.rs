@@ -22,11 +22,15 @@ pub(crate) fn optional(
 pub(crate) fn geometry(
     result: Result<Option<UiCommand>, TerminalViewError>,
     sender: &ComponentSender<TerminalView>,
-) -> bool {
+) {
     match result {
-        Ok(Some(value)) => command(value, sender),
-        Ok(None) => true,
-        Err(value) => error(value, sender),
+        Ok(Some(value)) => {
+            let _ = command(value, sender);
+        }
+        Ok(None) => {}
+        Err(value) => {
+            let _ = error(value, sender);
+        }
     }
 }
 

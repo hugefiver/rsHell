@@ -339,7 +339,10 @@ jobs:
         run: |
           $vaultRoot = Join-Path $env:RUNNER_TEMP "rshell-windows-p0-$([Guid]::NewGuid().ToString('N'))"
           [void](New-Item -ItemType Directory -Path $vaultRoot)
+          $displayLedger = Join-Path $vaultRoot "display-mode.json"
           try {
+            pwsh -NoProfile -File scripts/qa/windows-display.ps1 -Mode Apply -Ledger $displayLedger -Width 2560 -Height 1440
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
             $env:RSHELL_P0_QA_VAULT_REFERENCE = "rshell://credential/$([Guid]::NewGuid().ToString('N'))"
             $env:RSHELL_P0_QA_VAULT_OBSERVATION_PATH = Join-Path $vaultRoot "vault-observation.json"
             try {
@@ -354,6 +357,10 @@ jobs:
             if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           }
           finally {
+            if (Test-Path -LiteralPath $displayLedger -PathType Leaf) {
+              pwsh -NoProfile -File scripts/qa/windows-display.ps1 -Mode Restore -Ledger $displayLedger
+              if ($LASTEXITCODE -ne 0) { throw "Windows display restoration failed." }
+            }
             if (Test-Path -LiteralPath $vaultRoot -PathType Container) {
               Remove-Item -LiteralPath $vaultRoot -Recurse -Force
             }
