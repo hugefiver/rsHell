@@ -229,11 +229,9 @@ impl MainWindow {
 }
 
 pub(crate) fn visual_checkpoint_component_verified(
-    phase: VisualCheckpointPhase,
     visual: Option<&SmokeVisualCheckpointEvidence>,
 ) -> bool {
-    phase == VisualCheckpointPhase::Complete
-        && visual.is_some_and(SmokeVisualCheckpointEvidence::contract_passes)
+    visual.is_some_and(SmokeVisualCheckpointEvidence::contract_passes)
 }
 
 pub(crate) fn visual_checkpoint_binding(

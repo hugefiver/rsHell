@@ -14,9 +14,7 @@ use crate::{
     main_window_smoke_terminal_effects::{
         frame_contains_text, has_new_marker_occurrence, marker_occurrences,
     },
-    main_window_smoke_visual::{
-        VisualCheckpointPhase, visual_checkpoint_binding, visual_checkpoint_component_verified,
-    },
+    main_window_smoke_visual::{visual_checkpoint_binding, visual_checkpoint_component_verified},
     smoke_driver_visual_tests::passing_visual_evidence,
 };
 
@@ -44,8 +42,7 @@ fn visual_completion_enqueues_one_component_tick_with_verified_binding() {
     assert!(matches!(queued.pop(), Some(MainWindowMsg::SmokeTick)));
 
     let visual = passing_visual_evidence();
-    let component_verified =
-        visual_checkpoint_component_verified(VisualCheckpointPhase::Complete, Some(&visual));
+    let component_verified = visual_checkpoint_component_verified(Some(&visual));
     let binding = visual_checkpoint_binding(Some("gtk"), None, component_verified);
     assert!(binding.verified && binding.component_verified);
 }

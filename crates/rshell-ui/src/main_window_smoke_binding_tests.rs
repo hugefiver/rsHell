@@ -1,3 +1,5 @@
+use std::collections::BTreeMap;
+
 use rshell_core::{AuthenticationKind, ConnectionId, TransportKind};
 
 use crate::{
@@ -58,23 +60,32 @@ fn draft() -> ConnectionEditorDraftState {
 
 #[test]
 fn visual_checkpoint_binding_is_global_verified_main_window_evidence() {
-    let visual = passing_visual_evidence();
-    for phase in [
+    let current_checkpoint = "compact-settings";
+    let mut visuals = BTreeMap::<String, _>::new();
+    visuals.insert("prior-checkpoint".into(), passing_visual_evidence());
+    let mut failing = passing_visual_evidence();
+    failing.png.non_empty = false;
+    visuals.insert(current_checkpoint.into(), failing);
+
+    assert!(!visual_checkpoint_component_verified(
+        visuals.get(current_checkpoint)
+    ));
+    assert!(!visual_checkpoint_component_verified(
+        visuals.get("missing-checkpoint")
+    ));
+
+    visuals.insert(current_checkpoint.into(), passing_visual_evidence());
+    for _phase in [
         VisualCheckpointPhase::Idle,
         VisualCheckpointPhase::Opening,
         VisualCheckpointPhase::Observed,
         VisualCheckpointPhase::Closing,
+        VisualCheckpointPhase::Complete,
     ] {
-        assert!(!visual_checkpoint_component_verified(phase, Some(&visual)));
+        assert!(visual_checkpoint_component_verified(
+            visuals.get(current_checkpoint)
+        ));
     }
-    assert!(!visual_checkpoint_component_verified(
-        VisualCheckpointPhase::Complete,
-        None
-    ));
-    assert!(visual_checkpoint_component_verified(
-        VisualCheckpointPhase::Complete,
-        Some(&visual)
-    ));
 
     let binding = visual_checkpoint_binding(Some("gtk"), None, true);
     assert!(binding.verified && binding.component_verified);

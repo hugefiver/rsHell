@@ -17,10 +17,8 @@ impl MainWindow {
     ) -> Option<SmokeBindingEvidence> {
         let request = request?;
         if let SmokeAction::VisualCheckpoint(checkpoint) = &request.action {
-            let component_verified = visual_checkpoint_component_verified(
-                self.smoke_state.visual_checkpoint,
-                self.smoke_state.visuals.get(&checkpoint.id),
-            );
+            let component_verified =
+                visual_checkpoint_component_verified(self.smoke_state.visuals.get(&checkpoint.id));
             return Some(visual_checkpoint_binding(
                 request.surface.as_deref(),
                 request.connection.as_deref(),
@@ -208,10 +206,7 @@ fn component_verified(
         | SmokeActionKind::SplitHorizontal
         | SmokeActionKind::SplitVertical
         | SmokeActionKind::SwitchTab => !window.view_model.workspace.tabs.is_empty(),
-        SmokeActionKind::VisualCheckpoint => visual_checkpoint_component_verified(
-            window.smoke_state.visual_checkpoint,
-            window.smoke_state.visuals.values().next_back(),
-        ),
+        SmokeActionKind::VisualCheckpoint => false,
         SmokeActionKind::ResizeWindow => window.smoke_state.window_realized,
         SmokeActionKind::PreviewImport => window.smoke_state.import_preview_ready,
         SmokeActionKind::CommitImport => window.smoke_state.imports.completed,
