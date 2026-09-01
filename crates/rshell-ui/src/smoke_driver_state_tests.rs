@@ -20,7 +20,6 @@ fn observation(active_interaction: Option<InteractionId>) -> SmokeObservation {
         active_interaction,
         answered_prompts: Vec::new(),
         last_interaction_response: active_interaction,
-        visual_checkpoint_complete: false,
         binding: None,
         counters: SmokeCounters::default(),
     }

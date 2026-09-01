@@ -284,7 +284,8 @@ fn hosted_native_contracts_keep_selection_thread_and_geometry_boundaries() {
     assert!(!output.contains("observe_terminal_geometry"));
     let terminal_view = fs::read_to_string(src.join("terminal_view.rs")).unwrap();
     assert!(terminal_view.contains("TerminalViewMsg::GeometryAcknowledged(size)"));
-    assert!(terminal_view.contains("self.model.confirm_geometry_delivery(size);"));
+    assert!(terminal_view.contains("if self.model.confirm_geometry_delivery(size)"));
+    assert!(terminal_view.contains("self.geometry_retry.acknowledged();"));
     assert!(terminal_view.contains(
         "metric_refresh::send_post_render_geometry(&widgets.canvas, &self.model, &sender);"
     ));

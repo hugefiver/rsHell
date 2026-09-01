@@ -21,7 +21,6 @@ fn observation(counters: SmokeCounters) -> SmokeObservation {
         active_interaction: None,
         answered_prompts: Vec::new(),
         last_interaction_response: None,
-        visual_checkpoint_complete: false,
         binding: None,
         counters,
     }

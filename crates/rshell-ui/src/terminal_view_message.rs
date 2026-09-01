@@ -21,6 +21,8 @@ pub enum TerminalViewMsg {
     RefreshGeometry,
     ReplayGeometry,
     GeometryAcknowledged(rshell_core::TerminalSize),
+    GeometryMapped,
+    GeometryUnmapped,
     UpdateProfile(ResolvedTerminalProfile),
     Key {
         key: gdk::Key,
@@ -70,6 +72,8 @@ impl fmt::Debug for TerminalViewMsg {
                 .debug_tuple("GeometryAcknowledged")
                 .field(size)
                 .finish(),
+            Self::GeometryMapped => formatter.write_str("GeometryMapped"),
+            Self::GeometryUnmapped => formatter.write_str("GeometryUnmapped"),
             Self::UpdateProfile(_) => formatter.write_str("UpdateProfile(..)"),
             Self::Key { key, state } => formatter
                 .debug_struct("Key")

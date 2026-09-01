@@ -34,7 +34,7 @@ fn twenty_tabs_are_keyboard_and_overflow_reachable() {
     }
     assert_twenty_tab_overflow_and_keyboard_reachability();
     assert_terminal_view_native_boundary();
-    assert_post_render_terminal_geometry_settles_once_after_zero_pixel_frame();
+    assert_terminal_geometry_retries_until_typed_acknowledgement();
     assert_pane_host_acknowledges_positive_geometry_after_reparent();
     assert_native_workspace_boundary();
     assert_sidebar_catalog_refresh_preserves_only_the_same_visible_identity();
@@ -829,17 +829,18 @@ enum GeometryHarnessMsg {
     Terminal(TerminalViewOutput),
     ApplyFrame(Arc<RenderFrame>),
     RefreshGeometry,
-    AcknowledgeGeometry(TerminalSize),
 }
 
 struct GeometryHarnessInit {
     terminal: TerminalViewInit,
     sizes: Rc<RefCell<Vec<TerminalSize>>>,
+    acknowledge_after: usize,
 }
 
 struct GeometryHarness {
     terminal: Controller<TerminalView>,
     sizes: Rc<RefCell<Vec<TerminalSize>>>,
+    acknowledge_after: usize,
 }
 
 struct GeometryHarnessWidgets;
@@ -948,6 +949,7 @@ impl SimpleComponent for GeometryHarness {
             model: Self {
                 terminal,
                 sizes: init.sizes,
+                acknowledge_after: init.acknowledge_after,
             },
             widgets: GeometryHarnessWidgets,
         }
@@ -962,6 +964,10 @@ impl SimpleComponent for GeometryHarness {
                 } = *command
                 {
                     self.sizes.borrow_mut().push(size);
+                    if self.sizes.borrow().len() == self.acknowledge_after {
+                        self.terminal
+                            .emit(TerminalViewMsg::GeometryAcknowledged(size));
+                    }
                 }
             }
             GeometryHarnessMsg::Terminal(_) => {}
@@ -971,15 +977,11 @@ impl SimpleComponent for GeometryHarness {
             GeometryHarnessMsg::RefreshGeometry => {
                 self.terminal.emit(TerminalViewMsg::RefreshGeometry);
             }
-            GeometryHarnessMsg::AcknowledgeGeometry(size) => {
-                self.terminal
-                    .emit(TerminalViewMsg::GeometryAcknowledged(size));
-            }
         }
     }
 }
 
-fn assert_post_render_terminal_geometry_settles_once_after_zero_pixel_frame() {
+fn assert_terminal_geometry_retries_until_typed_acknowledgement() {
     let profile = TerminalSettingsV1::default().resolve(&TerminalOverrides::default());
     let metric_probe = gtk::Label::new(None);
     let context = metric_probe.pango_context();
@@ -1003,6 +1005,7 @@ fn assert_post_render_terminal_geometry_settles_once_after_zero_pixel_frame() {
                 metrics,
             },
             sizes: Rc::clone(&sizes),
+            acknowledge_after: 2,
         })
         .detach();
     let canvas = descendants(terminal.widget())
@@ -1027,32 +1030,28 @@ fn assert_post_render_terminal_geometry_settles_once_after_zero_pixel_frame() {
         canvas.is_mapped()
             && canvas.width() > 0
             && canvas.height() > 0
-            && !sizes.borrow().is_empty()
+            && sizes.borrow().len() == 2
+            && !canvas.has_css_class("terminal-geometry-pending")
     }));
-    terminal.emit(GeometryHarnessMsg::ApplyFrame(zero_pixel_frame(2)));
     assert!(
         flush_gtk(),
-        "delayed frame sync must not leave a busy geometry retry"
+        "typed acknowledgement must settle the frame-clock geometry retry"
     );
     let emitted = sizes.borrow().clone();
     assert_eq!(
         emitted.len(),
-        1,
-        "one measured resize must reach output before acknowledgement"
+        2,
+        "one dropped resize must be retried exactly once before acknowledgement"
     );
+    assert_eq!(emitted[0], emitted[1]);
     assert!(
         emitted[0].pixel_width > 0 && emitted[0].pixel_height > 0,
         "emitted geometry must have positive physical dimensions"
     );
     assert!(
-        canvas.has_css_class("terminal-geometry-pending"),
-        "output acceptance before the host round trip must keep geometry pending"
+        !canvas.has_css_class("terminal-geometry-pending"),
+        "typed acknowledgement must clear pending geometry"
     );
-
-    terminal.emit(GeometryHarnessMsg::AcknowledgeGeometry(emitted[0]));
-    assert!(wait_for_gtk(|| {
-        !canvas.has_css_class("terminal-geometry-pending")
-    }));
     let acknowledged_count = sizes.borrow().len();
 
     terminal.emit(GeometryHarnessMsg::RefreshGeometry);

@@ -185,7 +185,14 @@ fn connect_search(search: &gtk::SearchEntry, sender: &ComponentSender<TerminalVi
 fn connect_resize(canvas: &gtk::DrawingArea, sender: &ComponentSender<TerminalView>) {
     let input = sender.input_sender().clone();
     canvas.connect_map(move |canvas| {
+        if input.send(TerminalViewMsg::GeometryMapped).is_err() {
+            return;
+        }
         let _ = send_resize(canvas, canvas.width(), canvas.height(), &input);
+    });
+    let input = sender.input_sender().clone();
+    canvas.connect_unmap(move |_| {
+        let _ = input.send(TerminalViewMsg::GeometryUnmapped);
     });
     let input = sender.input_sender().clone();
     canvas.connect_resize(move |canvas, width, height| {

@@ -73,8 +73,6 @@ impl MainWindow {
             active_interaction: self.smoke_state.interaction,
             answered_prompts: self.smoke_state.interaction_answered_prompts.clone(),
             last_interaction_response: self.smoke_state.last_interaction_response,
-            visual_checkpoint_complete: self.smoke_state.visual_checkpoint
-                == crate::main_window_smoke_visual::VisualCheckpointPhase::Complete,
             binding: self.smoke_binding(binding),
             counters: SmokeCounters {
                 tabs: self.view_model.workspace.tabs.len(),

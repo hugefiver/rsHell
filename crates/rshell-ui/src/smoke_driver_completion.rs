@@ -160,19 +160,16 @@ pub(crate) fn action_is_complete(
                 && evidence.new_session.is_some()
                 && evidence.old_session_absent
         }),
-        SmokeAction::VisualCheckpoint(checkpoint) => {
-            now.visual_checkpoint_complete
-                && now
-                    .counters
-                    .visual
-                    .get(&checkpoint.id)
-                    .is_some_and(|visual| {
-                        visual.checkpoint_id == checkpoint.id
-                            && visual.state == checkpoint.state
-                            && visual.layout == checkpoint.expected_mode
-                            && visual.facts.contract_passes()
-                    })
-        }
+        SmokeAction::VisualCheckpoint(checkpoint) => now
+            .counters
+            .visual
+            .get(&checkpoint.id)
+            .is_some_and(|visual| {
+                visual.checkpoint_id == checkpoint.id
+                    && visual.state == checkpoint.state
+                    && visual.layout == checkpoint.expected_mode
+                    && visual.contract_passes()
+            }),
         SmokeAction::InterruptTerminal => now
             .counters
             .terminal

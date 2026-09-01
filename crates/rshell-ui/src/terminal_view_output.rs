@@ -13,15 +13,21 @@ pub(crate) fn optional(
             let _ = command(value, sender);
         }
         Ok(None) => {}
-        Err(value) => error(value, sender),
+        Err(value) => {
+            let _ = error(value, sender);
+        }
     }
 }
 
 pub(crate) fn geometry(
     result: Result<Option<UiCommand>, TerminalViewError>,
     sender: &ComponentSender<TerminalView>,
-) {
-    optional(result, sender);
+) -> bool {
+    match result {
+        Ok(Some(value)) => command(value, sender),
+        Ok(None) => true,
+        Err(value) => error(value, sender),
+    }
 }
 
 pub(crate) fn result(
@@ -32,7 +38,9 @@ pub(crate) fn result(
         Ok(value) => {
             let _ = command(value, sender);
         }
-        Err(value) => error(value, sender),
+        Err(value) => {
+            let _ = error(value, sender);
+        }
     }
 }
 
@@ -42,6 +50,6 @@ pub(crate) fn command(command: UiCommand, sender: &ComponentSender<TerminalView>
         .is_ok()
 }
 
-fn error(error: TerminalViewError, sender: &ComponentSender<TerminalView>) {
-    let _ = sender.output(TerminalViewOutput::Error(error));
+fn error(error: TerminalViewError, sender: &ComponentSender<TerminalView>) -> bool {
+    sender.output(TerminalViewOutput::Error(error)).is_ok()
 }

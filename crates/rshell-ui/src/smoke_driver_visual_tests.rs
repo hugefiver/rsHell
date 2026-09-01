@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeSet;
 
 use crate::{
     ShellLayoutMode, SmokeAccessibilityEvidence, SmokeAction, SmokeBindingEvidence, SmokeCounters,
@@ -9,7 +9,7 @@ use crate::{
 };
 
 #[test]
-fn visual_checkpoint_requires_complete_facts_and_verified_main_window_binding() {
+fn visual_checkpoint_uses_exact_persisted_evidence_and_verified_main_window_binding() {
     let before = SmokeCounters::default();
     let checkpoint = SmokeVisualCheckpoint {
         id: "standard-connected".into(),
@@ -19,20 +19,9 @@ fn visual_checkpoint_requires_complete_facts_and_verified_main_window_binding() 
         expected_mode: ShellLayoutMode::Standard,
     };
     let action = SmokeAction::VisualCheckpoint(checkpoint.clone());
-    let mut visual = BTreeMap::new();
-    visual.insert(checkpoint.id.clone(), passing_visual_evidence());
-    let mut observed = observation(SmokeCounters {
-        visual,
-        ..Default::default()
-    });
-    observed.visual_checkpoint_complete = true;
-    assert!(!action_is_complete(
-        &action,
-        &CompletionContext::new(&before, &observed).require_binding(),
-        |_| false,
-    ));
+    let mut observed = observation(SmokeCounters::default());
     observed.binding = Some(SmokeBindingEvidence {
-        verified: false,
+        verified: true,
         component_verified: true,
         actual_label: Some("main_window".into()),
         ..Default::default()
@@ -42,7 +31,85 @@ fn visual_checkpoint_requires_complete_facts_and_verified_main_window_binding() 
         &CompletionContext::new(&before, &observed).require_binding(),
         |_| false,
     ));
+
+    observed
+        .counters
+        .visual
+        .insert("wrong-key".into(), passing_visual_evidence());
+    assert!(!action_is_complete(
+        &action,
+        &CompletionContext::new(&before, &observed).require_binding(),
+        |_| false,
+    ));
+
+    let mut failing = passing_visual_evidence();
+    failing.png.non_empty = false;
+    observed
+        .counters
+        .visual
+        .insert(checkpoint.id.clone(), failing);
+    assert!(!action_is_complete(
+        &action,
+        &CompletionContext::new(&before, &observed).require_binding(),
+        |_| false,
+    ));
+
+    let mut wrong = passing_visual_evidence();
+    wrong.checkpoint_id = "wrong-id".into();
+    observed
+        .counters
+        .visual
+        .insert(checkpoint.id.clone(), wrong);
+    assert!(!action_is_complete(
+        &action,
+        &CompletionContext::new(&before, &observed).require_binding(),
+        |_| false,
+    ));
+
+    let mut wrong = passing_visual_evidence();
+    wrong.state = SmokeVisualState::Empty;
+    observed
+        .counters
+        .visual
+        .insert(checkpoint.id.clone(), wrong);
+    assert!(!action_is_complete(
+        &action,
+        &CompletionContext::new(&before, &observed).require_binding(),
+        |_| false,
+    ));
+
+    let mut wrong = passing_visual_evidence();
+    wrong.layout = ShellLayoutMode::Compact;
+    observed
+        .counters
+        .visual
+        .insert(checkpoint.id.clone(), wrong);
+    assert!(!action_is_complete(
+        &action,
+        &CompletionContext::new(&before, &observed).require_binding(),
+        |_| false,
+    ));
+
+    observed
+        .counters
+        .visual
+        .insert(checkpoint.id.clone(), passing_visual_evidence());
+    observed.binding.as_mut().unwrap().verified = false;
+    assert!(!action_is_complete(
+        &action,
+        &CompletionContext::new(&before, &observed).require_binding(),
+        |_| false,
+    ));
+
     observed.binding.as_mut().unwrap().verified = true;
+    observed.binding.as_mut().unwrap().component_verified = false;
+    assert!(!action_is_complete(
+        &action,
+        &CompletionContext::new(&before, &observed).require_binding(),
+        |_| false,
+    ));
+
+    observed.binding.as_mut().unwrap().component_verified = true;
     assert!(action_is_complete(
         &action,
         &CompletionContext::new(&before, &observed).require_binding(),
@@ -77,7 +144,6 @@ fn observation(counters: SmokeCounters) -> SmokeObservation {
         active_interaction: None,
         answered_prompts: Vec::new(),
         last_interaction_response: None,
-        visual_checkpoint_complete: false,
         binding: None,
         counters,
     }

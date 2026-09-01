@@ -23,7 +23,6 @@ pub(crate) struct SmokeObservation {
     pub active_interaction: Option<InteractionId>,
     pub answered_prompts: Vec<usize>,
     pub last_interaction_response: Option<InteractionId>,
-    pub visual_checkpoint_complete: bool,
     pub binding: Option<SmokeBindingEvidence>,
     pub counters: SmokeCounters,
 }

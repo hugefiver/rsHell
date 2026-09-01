@@ -1,23 +1,29 @@
 use gtk::{gdk, prelude::*};
 use relm4::{ComponentParts, ComponentSender, SimpleComponent, gtk};
-use rshell_core::{MouseButton, MouseEventKind};
+use rshell_core::MouseButton;
 
 use crate::{
-    FontMetricsService, PointerEvent, TerminalClipboardAction, TerminalViewModel,
+    FontMetricsService, TerminalClipboardAction, TerminalViewModel,
     terminal_view_clipboard as clipboard_io, terminal_view_metrics as metric_refresh,
     terminal_view_widgets::TerminalViewWidgets,
 };
 
+#[path = "terminal_geometry_retry.rs"]
+mod geometry_retry;
+#[path = "terminal_view_interaction.rs"]
+mod interaction;
 #[path = "terminal_view_output.rs"]
 mod output;
 
 pub use crate::terminal_view_message::{TerminalViewInit, TerminalViewMsg, TerminalViewOutput};
+use geometry_retry::TerminalGeometryRetry;
 
 pub struct TerminalView {
     model: TerminalViewModel,
     metrics_service: FontMetricsService,
     metric_widget: gtk::DrawingArea,
     clipboard: gdk::Clipboard,
+    geometry_retry: TerminalGeometryRetry,
     selection_anchor: Option<(f64, f64)>,
     pressed_button: Option<MouseButton>,
 }
@@ -53,6 +59,7 @@ impl SimpleComponent for TerminalView {
             metrics_service,
             metric_widget: widgets.canvas.clone(),
             clipboard: root.display().clipboard(),
+            geometry_retry: TerminalGeometryRetry::default(),
             selection_anchor: None,
             pressed_button: None,
         };
@@ -65,7 +72,7 @@ impl SimpleComponent for TerminalView {
                 self.model.apply_frame(frame);
             }
             TerminalViewMsg::RefreshMetrics(environment) => {
-                output::geometry(
+                let output_open = output::geometry(
                     metric_refresh::refresh_metrics(
                         &mut self.metrics_service,
                         &self.metric_widget,
@@ -74,10 +81,11 @@ impl SimpleComponent for TerminalView {
                     ),
                     &sender,
                 );
+                self.finish_geometry_attempt(output_open, &sender);
             }
             TerminalViewMsg::RefreshGeometry => {
                 self.model.prepare_geometry_retry();
-                output::geometry(
+                let output_open = output::geometry(
                     metric_refresh::refresh_current_geometry(
                         &mut self.metrics_service,
                         &self.metric_widget,
@@ -85,10 +93,11 @@ impl SimpleComponent for TerminalView {
                     ),
                     &sender,
                 );
+                self.finish_geometry_attempt(output_open, &sender);
             }
             TerminalViewMsg::ReplayGeometry => {
                 self.model.prepare_geometry_retry();
-                output::geometry(
+                let output_open = output::geometry(
                     metric_refresh::replay_current_geometry(
                         &mut self.metrics_service,
                         &self.metric_widget,
@@ -96,19 +105,33 @@ impl SimpleComponent for TerminalView {
                     ),
                     &sender,
                 );
+                self.finish_geometry_attempt(output_open, &sender);
             }
             TerminalViewMsg::GeometryAcknowledged(size) => {
-                self.model.confirm_geometry_delivery(size);
+                if self.model.confirm_geometry_delivery(size) {
+                    self.geometry_retry.acknowledged();
+                }
             }
-            TerminalViewMsg::UpdateProfile(profile) => output::geometry(
-                metric_refresh::refresh_profile(
-                    &mut self.metrics_service,
-                    &self.metric_widget,
-                    &mut self.model,
-                    profile,
-                ),
-                &sender,
-            ),
+            TerminalViewMsg::GeometryMapped => {
+                self.geometry_retry.mapped();
+                if !self.model.has_positive_emitted_geometry() {
+                    self.geometry_retry.pending();
+                    self.schedule_geometry_retry(&sender);
+                }
+            }
+            TerminalViewMsg::GeometryUnmapped => self.geometry_retry.unmapped(),
+            TerminalViewMsg::UpdateProfile(profile) => {
+                let output_open = output::geometry(
+                    metric_refresh::refresh_profile(
+                        &mut self.metrics_service,
+                        &self.metric_widget,
+                        &mut self.model,
+                        profile,
+                    ),
+                    &sender,
+                );
+                self.finish_geometry_attempt(output_open, &sender);
+            }
             TerminalViewMsg::Key { key, state } => self.handle_key(key, state, &sender),
             TerminalViewMsg::KeyReleased(key) => self.model.key_released(key),
             TerminalViewMsg::FocusLost => self.model.focus_lost(),
@@ -121,17 +144,20 @@ impl SimpleComponent for TerminalView {
                 width,
                 height,
                 scale,
-            } => output::geometry(
-                metric_refresh::refresh_geometry(
-                    &mut self.metrics_service,
-                    &self.metric_widget,
-                    &mut self.model,
-                    width,
-                    height,
-                    scale,
-                ),
-                &sender,
-            ),
+            } => {
+                let output_open = output::geometry(
+                    metric_refresh::refresh_geometry(
+                        &mut self.metrics_service,
+                        &self.metric_widget,
+                        &mut self.model,
+                        width,
+                        height,
+                        scale,
+                    ),
+                    &sender,
+                );
+                self.finish_geometry_attempt(output_open, &sender);
+            }
             TerminalViewMsg::Selection {
                 start_x,
                 start_y,
@@ -171,75 +197,6 @@ impl SimpleComponent for TerminalView {
     fn update_view(&self, widgets: &mut Self::Widgets, sender: ComponentSender<Self>) {
         widgets.sync(&self.model);
         metric_refresh::send_post_render_geometry(&widgets.canvas, &self.model, &sender);
-    }
-}
-
-impl TerminalView {
-    fn handle_key(
-        &mut self,
-        key: gdk::Key,
-        state: gdk::ModifierType,
-        sender: &ComponentSender<Self>,
-    ) {
-        let value = key.to_unicode().map(|value| value.to_ascii_lowercase());
-        let control_shift = state.contains(gdk::ModifierType::CONTROL_MASK)
-            && state.contains(gdk::ModifierType::SHIFT_MASK);
-        if control_shift && value == Some('c') {
-            let _ = output::command(self.model.copy(), sender);
-        } else if control_shift && value == Some('v') {
-            clipboard_io::read(&self.clipboard, sender);
-        } else {
-            match self.model.key(key, state) {
-                Ok(Some(command)) => {
-                    let _ = output::command(command, sender);
-                }
-                Ok(None) => {}
-                Err(error) => {
-                    let _ = sender.output(TerminalViewOutput::Error(error));
-                }
-            }
-        }
-    }
-
-    fn handle_pointer(&mut self, mut event: PointerEvent, sender: &ComponentSender<Self>) {
-        if event.kind == MouseEventKind::Move {
-            event.button = self.pressed_button;
-        }
-        let reports_mouse = self.model.reports_mouse();
-        if reports_mouse {
-            if event.kind == MouseEventKind::Press {
-                self.pressed_button = event.button;
-            } else if event.kind == MouseEventKind::Release {
-                self.pressed_button = None;
-            }
-            output::optional(self.model.mouse(event), sender);
-            return;
-        }
-        match event.kind {
-            MouseEventKind::Press if event.button == Some(MouseButton::Left) => {
-                self.selection_anchor = Some((event.x, event.y));
-            }
-            MouseEventKind::Move => {
-                if let Some((start_x, start_y)) = self.selection_anchor {
-                    output::result(
-                        self.model
-                            .selection(start_x, start_y, event.x, event.y, false),
-                        sender,
-                    );
-                }
-            }
-            MouseEventKind::Release => {
-                if let Some((start_x, start_y)) = self.selection_anchor.take() {
-                    output::result(
-                        self.model
-                            .selection(start_x, start_y, event.x, event.y, false),
-                        sender,
-                    );
-                }
-            }
-            MouseEventKind::Scroll => output::optional(self.model.mouse(event), sender),
-            MouseEventKind::Press => {}
-        }
     }
 }
 
