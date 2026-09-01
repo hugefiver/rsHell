@@ -13,7 +13,6 @@ pub struct TerminalViewInit {
     pub session: SessionId,
     pub profile: ResolvedTerminalProfile,
     pub metrics: MeasuredFontMetrics,
-    pub startup_probe: Option<crate::StartupProbe>,
 }
 
 pub enum TerminalViewMsg {
@@ -21,6 +20,7 @@ pub enum TerminalViewMsg {
     RefreshMetrics(FontMetricEnvironment),
     RefreshGeometry,
     ReplayGeometry,
+    GeometryAcknowledged(rshell_core::TerminalSize),
     UpdateProfile(ResolvedTerminalProfile),
     Key {
         key: gdk::Key,
@@ -66,6 +66,10 @@ impl fmt::Debug for TerminalViewMsg {
                 .finish(),
             Self::RefreshGeometry => formatter.write_str("RefreshGeometry"),
             Self::ReplayGeometry => formatter.write_str("ReplayGeometry"),
+            Self::GeometryAcknowledged(size) => formatter
+                .debug_tuple("GeometryAcknowledged")
+                .field(size)
+                .finish(),
             Self::UpdateProfile(_) => formatter.write_str("UpdateProfile(..)"),
             Self::Key { key, state } => formatter
                 .debug_struct("Key")

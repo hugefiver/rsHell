@@ -261,15 +261,27 @@ fn hosted_native_contracts_keep_selection_thread_and_geometry_boundaries() {
     let model = fs::read_to_string(src.join("pane_host_model.rs")).unwrap();
     assert!(model.contains("probe.observe_terminal_geometry(size);"));
     let pane_host = fs::read_to_string(src.join("pane_host.rs")).unwrap();
-    assert!(pane_host.contains("SessionUiCommand::Resize(size)"));
-    assert!(pane_host.contains("self.model.observe_terminal_geometry(*size);"));
+    assert!(!pane_host.contains("observe_terminal_geometry"));
     assert!(pane_host.contains("PaneHostGeometryAck"));
     assert!(pane_host.contains("RefreshUnacknowledgedGeometry"));
     let geometry = fs::read_to_string(src.join("pane_host_geometry.rs")).unwrap();
     assert!(geometry.contains("acknowledge"));
     assert!(geometry.contains("positive_terminal_geometry"));
+    assert!(geometry.contains("SessionUiCommand::Resize(size)"));
     assert!(geometry.contains("TerminalViewMsg::RefreshGeometry"));
     assert!(geometry.contains("TerminalViewMsg::ReplayGeometry"));
+    assert!(geometry.contains("TerminalViewMsg::GeometryAcknowledged(size)"));
+    assert!(geometry.contains("model.observe_terminal_geometry(size);"));
+    let output = fs::read_to_string(src.join("terminal_view_output.rs")).unwrap();
+    assert!(!output.contains("confirm_geometry_delivery"));
+    assert!(!output.contains("observe_terminal_geometry"));
+    let terminal_view = fs::read_to_string(src.join("terminal_view.rs")).unwrap();
+    assert!(terminal_view.contains("TerminalViewMsg::GeometryAcknowledged(size)"));
+    assert!(terminal_view.contains("self.model.confirm_geometry_delivery(size);"));
+    let smoke = fs::read_to_string(src.join("main_window_smoke.rs")).unwrap();
+    assert!(smoke.contains("queue_visual_completion_tick("));
+    assert!(smoke.contains("|message| sender.input(message)"));
+    assert!(!smoke.contains("std::time::Duration::ZERO"));
     let widgets = fs::read_to_string(src.join("terminal_view_widgets.rs")).unwrap();
     for required in [
         "canvas.add_tick_callback",

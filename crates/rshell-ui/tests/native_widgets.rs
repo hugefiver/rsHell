@@ -777,7 +777,6 @@ fn assert_terminal_view_native_boundary() {
             session: SessionId::new(),
             profile,
             metrics,
-            startup_probe: None,
         })
         .detach();
     let window = gtk::Window::new();
@@ -829,6 +828,7 @@ fn assert_terminal_view_native_boundary() {
 enum GeometryHarnessMsg {
     Terminal(TerminalViewOutput),
     RefreshGeometry,
+    AcknowledgeGeometry(TerminalSize),
 }
 
 struct GeometryHarnessInit {
@@ -967,6 +967,10 @@ impl SimpleComponent for GeometryHarness {
             GeometryHarnessMsg::RefreshGeometry => {
                 self.terminal.emit(TerminalViewMsg::RefreshGeometry);
             }
+            GeometryHarnessMsg::AcknowledgeGeometry(size) => {
+                self.terminal
+                    .emit(TerminalViewMsg::GeometryAcknowledged(size));
+            }
         }
     }
 }
@@ -992,7 +996,6 @@ fn assert_mapped_terminal_retries_geometry_after_zero_allocation() {
                 session: SessionId::new(),
                 profile,
                 metrics,
-                startup_probe: None,
             },
             sizes: Rc::clone(&sizes),
         })
@@ -1012,24 +1015,31 @@ fn assert_mapped_terminal_retries_geometry_after_zero_allocation() {
     window.set_default_size(640, 360);
     window.set_child(Some(terminal.widget()));
     window.present();
-    assert!(wait_for_gtk(|| {
-        !sizes.borrow().is_empty() && !canvas.has_css_class("terminal-geometry-pending")
-    }));
+    assert!(wait_for_gtk(|| sizes.borrow().len() >= 2));
     let emitted = sizes.borrow().clone();
-    assert_eq!(emitted.len(), 1, "positive geometry must emit once");
     assert!(
         emitted[0].pixel_width > 0 && emitted[0].pixel_height > 0,
         "emitted geometry must have positive physical dimensions"
     );
     assert!(
-        !canvas.has_css_class("terminal-geometry-pending"),
-        "geometry pending must clear only after the emitted size reaches the model"
+        canvas.has_css_class("terminal-geometry-pending"),
+        "output acceptance before the host round trip must keep geometry pending"
     );
+
+    terminal.emit(GeometryHarnessMsg::AcknowledgeGeometry(emitted[0]));
+    assert!(wait_for_gtk(|| {
+        !canvas.has_css_class("terminal-geometry-pending")
+    }));
+    let acknowledged_count = sizes.borrow().len();
 
     terminal.emit(GeometryHarnessMsg::RefreshGeometry);
     terminal.emit(GeometryHarnessMsg::RefreshGeometry);
     assert!(flush_gtk());
-    assert_eq!(sizes.borrow().len(), 1, "duplicate refreshes are deduped");
+    assert_eq!(
+        sizes.borrow().len(),
+        acknowledged_count,
+        "duplicate refreshes are deduped only after round-trip acknowledgement"
+    );
     window.close();
     assert!(flush_gtk(), "geometry retry window close must quiesce");
 }
@@ -1080,13 +1090,22 @@ fn assert_pane_host_acknowledges_positive_geometry_after_reparent() {
     window.set_default_size(640, 360);
     window.set_child(Some(&reparent));
     window.present();
-    assert!(wait_for_gtk(|| {
+    let initial_geometry_ready = wait_for_gtk(|| {
         sizes.borrow().len() == 1
             && probe.report(false).measured_terminal_geometry_ready
             && !descendants(host.widget())
                 .iter()
                 .any(|widget| widget.has_css_class("pane-geometry-pending"))
-    }));
+    });
+    assert!(
+        initial_geometry_ready,
+        "round-trip geometry did not settle once: sizes={:?}, probe={:?}, pane_pending={}",
+        sizes.borrow(),
+        probe.report(false),
+        descendants(host.widget())
+            .iter()
+            .any(|widget| widget.has_css_class("pane-geometry-pending"))
+    );
     host.emit(PaneGeometryHarnessMsg::SetViewModel(Box::new(view.clone())));
     assert!(wait_for_gtk(|| {
         rendered_sessions.borrow().last().copied() == Some(Some(session))
@@ -1120,6 +1139,10 @@ fn assert_pane_host_acknowledges_positive_geometry_after_reparent() {
     host.emit(PaneGeometryHarnessMsg::SetViewModel(Box::new(view)));
     assert!(wait_for_gtk(|| {
         rendered_sessions.borrow().last().copied() == Some(Some(replacement))
+            && sizes.borrow().len() == 2
+            && !descendants(host.widget())
+                .iter()
+                .any(|widget| widget.has_css_class("pane-geometry-pending"))
     }));
     window.close();
     assert!(wait_for_gtk(|| !window.is_visible()));

@@ -6,6 +6,7 @@ use rshell_core::{
 
 use crate::{
     MainWindowMsg, SmokeTerminalEvidence,
+    main_window_smoke::queue_visual_completion_tick,
     main_window_smoke_evidence::{
         P0_TUI_ACTIVE_TITLE, selection_frame_confirms, track_tui_transition, tui_frame_is_active,
     },
@@ -13,6 +14,10 @@ use crate::{
     main_window_smoke_terminal_effects::{
         frame_contains_text, has_new_marker_occurrence, marker_occurrences,
     },
+    main_window_smoke_visual::{
+        VisualCheckpointPhase, visual_checkpoint_binding, visual_checkpoint_component_verified,
+    },
+    smoke_driver_visual_tests::passing_visual_evidence,
 };
 
 #[test]
@@ -21,6 +26,28 @@ fn stale_timer_does_not_panic_after_main_window_shutdown() {
     drop(receiver);
 
     let _ = sender.send(MainWindowMsg::SmokeTick);
+}
+
+#[test]
+fn visual_completion_enqueues_one_component_tick_with_verified_binding() {
+    let mut pending = true;
+    let mut queued = Vec::new();
+
+    assert!(queue_visual_completion_tick(&mut pending, |message| {
+        queued.push(message);
+    }));
+    assert!(!pending);
+    assert!(!queue_visual_completion_tick(&mut pending, |message| {
+        queued.push(message);
+    }));
+    assert_eq!(queued.len(), 1, "completion tick must enqueue once");
+    assert!(matches!(queued.pop(), Some(MainWindowMsg::SmokeTick)));
+
+    let visual = passing_visual_evidence();
+    let component_verified =
+        visual_checkpoint_component_verified(VisualCheckpointPhase::Complete, Some(&visual));
+    let binding = visual_checkpoint_binding(Some("gtk"), None, component_verified);
+    assert!(binding.verified && binding.component_verified);
 }
 
 #[test]

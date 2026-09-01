@@ -3,14 +3,13 @@ use std::{cell::Cell, collections::BTreeMap};
 use gtk::{gdk, prelude::*};
 use relm4::{ComponentParts, ComponentSender, Controller, SimpleComponent, gtk};
 use rshell_core::{
-    AppViewModel, ConnectionId, PaneId, SessionId, SessionUiCommand, SessionUiEvent, TabId,
-    UiCommand, UiPortError,
+    AppViewModel, ConnectionId, PaneId, SessionId, SessionUiEvent, TabId, UiCommand, UiPortError,
 };
 
 use crate::{
     PaneAction, PaneHostInit, PaneHostModel, TerminalView, TerminalViewMsg, TerminalViewOutput,
     pane_host_commands::{connect_active, handle_action},
-    pane_host_geometry::PaneHostGeometryAck,
+    pane_host_geometry::{PaneHostGeometryAck, forward_terminal_command},
     pane_host_layout::request_layout_frame,
     pane_host_refresh::{active_terminals_changed, projection_changed, session_is_active},
     pane_host_render::render_projection,
@@ -175,18 +174,17 @@ impl SimpleComponent for PaneHost {
                 }
             }
             PaneHostMsg::Terminal(source, TerminalViewOutput::Command(command)) => {
-                if let UiCommand::Session {
-                    session,
-                    command: SessionUiCommand::Resize(size),
-                    ..
-                } = command.as_ref()
-                    && self.geometry.acknowledge(source, *session, *size)
-                {
-                    self.model.observe_terminal_geometry(*size);
-                    let _ = sender.output(PaneHostOutput::GeometryReady(*session));
-                    self.geometry.schedule(&self.content, &sender);
+                if forward_terminal_command(
+                    source,
+                    command,
+                    &self.geometry,
+                    &mut self.terminals,
+                    &self.content,
+                    &self.model,
+                    &sender,
+                ) {
+                    self.sync_terminal_controllers(&sender);
                 }
-                let _ = sender.output(PaneHostOutput::Command(command));
             }
             PaneHostMsg::RefreshUnacknowledgedGeometry => {
                 self.geometry.refresh(&mut self.terminals);

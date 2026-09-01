@@ -213,7 +213,7 @@ fn geometry_matrix_uses_one_measured_source() {
             ..
         }
     ));
-    assert!(model.apply_geometry(input).unwrap().is_some());
+    assert!(model.apply_geometry(input).unwrap().is_none());
     assert_eq!(
         model.cursor_rect(),
         Some(ViewRect {
@@ -254,7 +254,7 @@ fn geometry_matrix_uses_one_measured_source() {
             ..
         }
     ));
-    assert!(model.apply_metrics(second, None).unwrap().is_some());
+    assert!(model.apply_metrics(second, None).unwrap().is_none());
 }
 
 #[test]

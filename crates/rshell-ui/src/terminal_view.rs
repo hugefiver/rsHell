@@ -17,7 +17,6 @@ pub struct TerminalView {
     model: TerminalViewModel,
     metrics_service: FontMetricsService,
     metric_widget: gtk::DrawingArea,
-    startup_probe: Option<crate::StartupProbe>,
     clipboard: gdk::Clipboard,
     selection_anchor: Option<(f64, f64)>,
     pressed_button: Option<MouseButton>,
@@ -53,7 +52,6 @@ impl SimpleComponent for TerminalView {
             ),
             metrics_service,
             metric_widget: widgets.canvas.clone(),
-            startup_probe: init.startup_probe,
             clipboard: root.display().clipboard(),
             selection_anchor: None,
             pressed_button: None,
@@ -74,31 +72,34 @@ impl SimpleComponent for TerminalView {
                         &mut self.model,
                         environment,
                     ),
-                    &mut self.model,
-                    self.startup_probe.as_ref(),
                     &sender,
                 );
             }
-            TerminalViewMsg::RefreshGeometry => output::geometry(
-                metric_refresh::refresh_current_geometry(
-                    &mut self.metrics_service,
-                    &self.metric_widget,
-                    &mut self.model,
-                ),
-                &mut self.model,
-                self.startup_probe.as_ref(),
-                &sender,
-            ),
-            TerminalViewMsg::ReplayGeometry => output::geometry(
-                metric_refresh::replay_current_geometry(
-                    &mut self.metrics_service,
-                    &self.metric_widget,
-                    &mut self.model,
-                ),
-                &mut self.model,
-                self.startup_probe.as_ref(),
-                &sender,
-            ),
+            TerminalViewMsg::RefreshGeometry => {
+                self.model.prepare_geometry_retry();
+                output::geometry(
+                    metric_refresh::refresh_current_geometry(
+                        &mut self.metrics_service,
+                        &self.metric_widget,
+                        &mut self.model,
+                    ),
+                    &sender,
+                );
+            }
+            TerminalViewMsg::ReplayGeometry => {
+                self.model.prepare_geometry_retry();
+                output::geometry(
+                    metric_refresh::replay_current_geometry(
+                        &mut self.metrics_service,
+                        &self.metric_widget,
+                        &mut self.model,
+                    ),
+                    &sender,
+                );
+            }
+            TerminalViewMsg::GeometryAcknowledged(size) => {
+                self.model.confirm_geometry_delivery(size);
+            }
             TerminalViewMsg::UpdateProfile(profile) => output::geometry(
                 metric_refresh::refresh_profile(
                     &mut self.metrics_service,
@@ -106,8 +107,6 @@ impl SimpleComponent for TerminalView {
                     &mut self.model,
                     profile,
                 ),
-                &mut self.model,
-                self.startup_probe.as_ref(),
                 &sender,
             ),
             TerminalViewMsg::Key { key, state } => self.handle_key(key, state, &sender),
@@ -131,8 +130,6 @@ impl SimpleComponent for TerminalView {
                     height,
                     scale,
                 ),
-                &mut self.model,
-                self.startup_probe.as_ref(),
                 &sender,
             ),
             TerminalViewMsg::Selection {

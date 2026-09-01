@@ -31,8 +31,16 @@ impl TerminalViewModel {
     }
 
     pub(crate) fn replay_geometry(&self) -> Option<UiCommand> {
-        self.last_emitted_size
+        (!self.last_geometry_delivered && !self.geometry_delivery_in_flight)
+            .then_some(self.last_emitted_size)
+            .flatten()
             .map(|size| self.command(SessionUiCommand::Resize(size)))
+    }
+
+    pub(crate) fn prepare_geometry_retry(&mut self) {
+        if !self.last_geometry_delivered {
+            self.geometry_delivery_in_flight = false;
+        }
     }
 
     pub(crate) fn confirm_geometry_delivery(&mut self, size: rshell_core::TerminalSize) -> bool {
@@ -40,6 +48,7 @@ impl TerminalViewModel {
             return false;
         }
         self.last_geometry_delivered = true;
+        self.geometry_delivery_in_flight = false;
         true
     }
 
@@ -70,11 +79,15 @@ impl TerminalViewModel {
         let size = terminal_size(input)?;
         self.last_logical_allocation = Some((input.logical_width, input.logical_height));
         if self.last_emitted_size == Some(size) {
-            return Ok((!self.last_geometry_delivered)
-                .then(|| self.command(SessionUiCommand::Resize(size))));
+            if self.last_geometry_delivered || self.geometry_delivery_in_flight {
+                return Ok(None);
+            }
+            self.geometry_delivery_in_flight = true;
+            return Ok(Some(self.command(SessionUiCommand::Resize(size))));
         }
         self.last_emitted_size = Some(size);
         self.last_geometry_delivered = false;
+        self.geometry_delivery_in_flight = true;
         Ok(Some(self.command(SessionUiCommand::Resize(size))))
     }
 
@@ -100,11 +113,15 @@ impl TerminalViewModel {
         self.measured = measured;
         self.last_logical_allocation = Some((logical_width, logical_height));
         if self.last_emitted_size == Some(size) {
-            return Ok((!self.last_geometry_delivered)
-                .then(|| self.command(SessionUiCommand::Resize(size))));
+            if self.last_geometry_delivered || self.geometry_delivery_in_flight {
+                return Ok(None);
+            }
+            self.geometry_delivery_in_flight = true;
+            return Ok(Some(self.command(SessionUiCommand::Resize(size))));
         }
         self.last_emitted_size = Some(size);
         self.last_geometry_delivered = false;
+        self.geometry_delivery_in_flight = true;
         Ok(Some(self.command(SessionUiCommand::Resize(size))))
     }
 
@@ -207,9 +224,11 @@ mod tests {
             _ => panic!("initial geometry command must be a session resize"),
         };
         assert!(!model.has_positive_emitted_geometry());
-        assert!(model.apply_geometry(input).unwrap().is_some());
+        assert!(model.apply_geometry(input).unwrap().is_none());
+        model.prepare_geometry_retry();
+        let retry = model.apply_geometry(input).unwrap();
         assert!(matches!(
-            model.replay_geometry(),
+            retry,
             Some(UiCommand::Session {
                 session,
                 command: SessionUiCommand::Resize(size),

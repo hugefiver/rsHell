@@ -6,9 +6,12 @@ use std::{
 
 use gtk::prelude::*;
 use relm4::{ComponentSender, Controller, gtk};
-use rshell_core::{SessionId, TerminalSize};
+use rshell_core::{SessionId, SessionUiCommand, TerminalSize, UiCommand};
 
-use crate::{PaneHost, PaneHostMsg, TerminalView, pane_host_terminals::send_terminal_message};
+use crate::{
+    PaneHost, PaneHostModel, PaneHostMsg, PaneHostOutput, TerminalView, TerminalViewMsg,
+    pane_host_terminals::send_terminal_message,
+};
 
 #[derive(Clone, Default)]
 pub(crate) struct PaneHostGeometryAck {
@@ -19,7 +22,7 @@ pub(crate) struct PaneHostGeometryAck {
 #[derive(Default)]
 struct GeometryAckState {
     current: BTreeSet<SessionId>,
-    acknowledged: BTreeSet<SessionId>,
+    acknowledged: BTreeMap<SessionId, TerminalSize>,
     probed: BTreeSet<SessionId>,
 }
 
@@ -35,7 +38,7 @@ impl PaneHostGeometryAck {
         let current = state.current.clone();
         state
             .acknowledged
-            .retain(|session| current.contains(session) && !replaced.contains(session));
+            .retain(|session, _| current.contains(session) && !replaced.contains(session));
         state
             .probed
             .retain(|session| current.contains(session) && !replaced.contains(session));
@@ -55,8 +58,25 @@ impl PaneHostGeometryAck {
             return false;
         }
         state.probed.remove(&session);
-        state.acknowledged.insert(session);
+        state.acknowledged.insert(session, size);
         true
+    }
+
+    fn current_positive_resize(
+        &self,
+        source: SessionId,
+        command: &UiCommand,
+    ) -> Option<(TerminalSize, bool)> {
+        let UiCommand::Session {
+            session,
+            command: SessionUiCommand::Resize(size),
+        } = command
+        else {
+            return None;
+        };
+        let state = self.state.borrow();
+        (source == *session && positive_terminal_geometry(*size) && state.current.contains(session))
+            .then_some((*size, state.acknowledged.get(session) == Some(size)))
     }
 
     pub(crate) fn refresh(&self, terminals: &mut BTreeMap<SessionId, Controller<TerminalView>>) {
@@ -98,7 +118,7 @@ impl PaneHostGeometryAck {
         state
             .current
             .iter()
-            .any(|session| !state.acknowledged.contains(session))
+            .any(|session| !state.acknowledged.contains_key(session))
     }
 
     fn unacknowledged(&self) -> Vec<SessionId> {
@@ -106,7 +126,7 @@ impl PaneHostGeometryAck {
         state
             .current
             .iter()
-            .filter(|session| !state.acknowledged.contains(session))
+            .filter(|session| !state.acknowledged.contains_key(session))
             .copied()
             .collect()
     }
@@ -127,6 +147,49 @@ impl PaneHostGeometryAck {
             crate::TerminalViewMsg::RefreshGeometry
         }
     }
+}
+
+pub(crate) fn forward_terminal_command(
+    source: SessionId,
+    command: Box<UiCommand>,
+    geometry: &PaneHostGeometryAck,
+    terminals: &mut BTreeMap<SessionId, Controller<TerminalView>>,
+    content: &gtk::Overlay,
+    model: &PaneHostModel,
+    sender: &ComponentSender<PaneHost>,
+) -> bool {
+    let resize = geometry.current_positive_resize(source, command.as_ref());
+    if let Some((size, true)) = resize {
+        let delivered = terminals.get(&source).is_some_and(|terminal| {
+            send_terminal_message(terminal, TerminalViewMsg::GeometryAcknowledged(size))
+        });
+        if delivered {
+            return false;
+        }
+        terminals.remove(&source);
+        geometry.forget(source);
+        geometry.schedule(content, sender);
+        return true;
+    }
+    if sender.output(PaneHostOutput::Command(command)).is_err() {
+        return false;
+    }
+    let Some((size, false)) = resize else {
+        return false;
+    };
+    let delivered = terminals.get(&source).is_some_and(|terminal| {
+        send_terminal_message(terminal, TerminalViewMsg::GeometryAcknowledged(size))
+    });
+    if delivered && geometry.acknowledge(source, source, size) {
+        model.observe_terminal_geometry(size);
+        let _ = sender.output(PaneHostOutput::GeometryReady(source));
+        geometry.schedule(content, sender);
+        return false;
+    }
+    terminals.remove(&source);
+    geometry.forget(source);
+    geometry.schedule(content, sender);
+    true
 }
 
 pub(crate) fn positive_terminal_geometry(size: TerminalSize) -> bool {

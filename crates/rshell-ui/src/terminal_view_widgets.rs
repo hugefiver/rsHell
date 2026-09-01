@@ -239,7 +239,7 @@ fn connect_resize(
                 initial_geometry_pending.stop_retry();
                 return gtk::glib::ControlFlow::Break;
             }
-            let _ = send_resize(canvas, canvas.width(), canvas.height(), &input);
+            let _ = input.send(TerminalViewMsg::RefreshGeometry);
             gtk::glib::ControlFlow::Continue
         });
     });

@@ -172,18 +172,13 @@ impl MainWindow {
             return;
         }
         self.smoke_tick_pending = true;
-        let sender = sender.input_sender().clone();
-        if std::mem::take(&mut self.smoke_state.visual_completion_tick_pending) {
-            gtk::glib::timeout_add_local_full(
-                std::time::Duration::ZERO,
-                gtk::glib::Priority::HIGH,
-                move || {
-                    send_smoke_tick(&sender);
-                    gtk::glib::ControlFlow::Break
-                },
-            );
+        if queue_visual_completion_tick(
+            &mut self.smoke_state.visual_completion_tick_pending,
+            |message| sender.input(message),
+        ) {
             return;
         }
+        let sender = sender.input_sender().clone();
         if self.smoke_state.window_resize.is_some_and(|evidence| {
             evidence.realized_width == 0
                 || evidence.realized_height == 0
@@ -244,4 +239,15 @@ impl MainWindow {
 
 fn send_smoke_tick(sender: &relm4::Sender<MainWindowMsg>) {
     let _ = sender.send(MainWindowMsg::SmokeTick);
+}
+
+pub(crate) fn queue_visual_completion_tick(
+    pending: &mut bool,
+    enqueue: impl FnOnce(MainWindowMsg),
+) -> bool {
+    if !std::mem::take(pending) {
+        return false;
+    }
+    enqueue(MainWindowMsg::SmokeTick);
+    true
 }

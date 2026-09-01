@@ -183,10 +183,6 @@ impl PaneHostModel {
         }
     }
 
-    pub(crate) fn startup_probe(&self) -> Option<crate::StartupProbe> {
-        self.startup_probe.clone()
-    }
-
     fn session_is_bound(&self, session: SessionId) -> bool {
         self.view_model.workspace.tabs.iter().any(|tab| {
             tab.pane_tree
