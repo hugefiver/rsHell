@@ -101,14 +101,13 @@ pub(crate) fn refresh_current_geometry(
     widget: &gtk::DrawingArea,
     model: &mut TerminalViewModel,
 ) -> Result<Option<UiCommand>, TerminalViewError> {
-    refresh_geometry(
-        service,
-        widget,
-        model,
-        widget.width(),
-        widget.height(),
-        f64::from(widget.scale_factor()),
-    )
+    let width = widget.width();
+    let height = widget.height();
+    let scale = f64::from(widget.scale_factor());
+    if !refreshable_geometry(width, height, scale) {
+        return Ok(None);
+    }
+    refresh_geometry(service, widget, model, width, height, scale)
 }
 
 pub(crate) fn replay_current_geometry(
@@ -161,5 +160,23 @@ fn gtk_settings_base_dpi() -> Option<f64> {
 fn send_refresh(widget: &impl IsA<gtk::Widget>, input: &relm4::Sender<TerminalViewMsg>) {
     if let Ok(environment) = metric_environment(widget) {
         let _ = input.send(TerminalViewMsg::RefreshMetrics(environment));
+    }
+}
+
+fn refreshable_geometry(width: i32, height: i32, scale: f64) -> bool {
+    width > 0 && height > 0 && scale.is_finite() && scale > 0.0
+}
+
+#[cfg(test)]
+mod tests {
+    use super::refreshable_geometry;
+
+    #[test]
+    fn internal_geometry_refresh_waits_for_a_positive_allocation() {
+        assert!(!refreshable_geometry(0, 360, 1.0));
+        assert!(!refreshable_geometry(640, 0, 1.0));
+        assert!(!refreshable_geometry(640, 360, 0.0));
+        assert!(!refreshable_geometry(640, 360, f64::NAN));
+        assert!(refreshable_geometry(640, 360, 2.0));
     }
 }
