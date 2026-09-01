@@ -68,7 +68,9 @@ impl TerminalViewWidgets {
         }));
         record_terminal_metrics(&canvas, &init.metrics);
         let draw_callback = Rc::clone(&draw);
+        let geometry_input = sender.input_sender().clone();
         canvas.set_draw_func(move |canvas, context, width, height| {
+            let _ = send_resize(canvas, width, height, &geometry_input);
             let mut snapshot = draw_callback.borrow_mut();
             let DrawSnapshot {
                 frame,

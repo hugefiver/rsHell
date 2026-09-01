@@ -298,6 +298,8 @@ fn hosted_native_contracts_keep_selection_thread_and_geometry_boundaries() {
     assert!(!smoke.contains("std::time::Duration::ZERO"));
     let widgets = fs::read_to_string(src.join("terminal_view_widgets.rs")).unwrap();
     for required in [
+        "canvas.set_draw_func",
+        "send_resize(canvas, width, height, &geometry_input)",
         "canvas.connect_map",
         "canvas.connect_resize",
         "model.has_positive_emitted_geometry()",
