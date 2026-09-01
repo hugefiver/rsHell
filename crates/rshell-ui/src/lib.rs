@@ -223,7 +223,7 @@ pub use smoke_driver_report::{
     SmokeVisualCheckpointEvidence, SmokeWindowResizeEvidence,
 };
 pub use smoke_driver_visual_matrix::{
-    REQUIRED_SMOKE_VISUAL_MATRIX, SmokeVisualCheckpoint, SmokeVisualState,
+    REQUIRED_SMOKE_VISUAL_MATRIX, SmokeVisualCheckpoint, SmokeVisualState, visual_matrix,
 };
 pub use startup_probe::{StartupProbe, StartupReport};
 pub use tab_overflow::TabOverflowModel;

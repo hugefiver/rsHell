@@ -705,6 +705,7 @@ fn hosted_gui_tests_use_linux_xvfb_and_a_supported_macos_runner() {
 fn hosted_windows_p0_provisions_and_restores_a_wide_display() {
     let ci = include_str!("../.github/workflows/ci.yml");
     let display = include_str!("../scripts/qa/windows-display.ps1");
+    let harness = include_str!("../scripts/qa/p0-smoke.ps1");
 
     for marker in [
         "scripts/qa/windows-display.ps1 -Mode Apply",
@@ -738,6 +739,21 @@ fn hosted_windows_p0_provisions_and_restores_a_wide_display() {
             "display helper is missing {marker}"
         );
     }
+    for marker in [
+        "windows-standard-connected",
+        "windows-standard-twenty-tabs",
+        "windows-standard-grid",
+        "windows-standard-editor",
+        "windows-standard-settings",
+        "windows-standard-import",
+        "Add-WindowResize $actions 1000 700 \"standard\"",
+    ] {
+        assert!(
+            harness.contains(marker),
+            "Windows session-zero visual matrix is missing {marker}"
+        );
+    }
+    assert!(harness.contains("else {\n            Add-WindowResize $actions 1920 1080 \"wide\""));
 }
 
 #[test]

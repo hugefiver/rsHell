@@ -480,14 +480,28 @@ function Assert-VisualContract {
         @("standard-host-key", "host_key", 1360, 860, "standard"),
         @("standard-authentication", "authentication", 1360, 860, "standard"),
         @("standard-failure", "failure", 1360, 860, "standard"),
-        @("standard-recovery", "recovery", 1360, 860, "standard"),
-        @("wide-connected", "connected", 1920, 1080, "wide"),
-        @("wide-twenty-tabs", "twenty_tabs", 1920, 1080, "wide"),
-        @("wide-grid", "grid", 1920, 1080, "wide"),
-        @("wide-editor", "editor", 1920, 1080, "wide"),
-        @("wide-settings", "settings", 1920, 1080, "wide"),
-        @("wide-import", "import", 1920, 1080, "wide")
+        @("standard-recovery", "recovery", 1360, 860, "standard")
     )
+    if ($IsWindows) {
+        $required += @(
+            @("windows-standard-connected", "connected", 1000, 700, "standard")
+            @("windows-standard-twenty-tabs", "twenty_tabs", 1000, 700, "standard")
+            @("windows-standard-grid", "grid", 1000, 700, "standard")
+            @("windows-standard-editor", "editor", 1000, 700, "standard")
+            @("windows-standard-settings", "settings", 1000, 700, "standard")
+            @("windows-standard-import", "import", 1000, 700, "standard")
+        )
+    }
+    else {
+        $required += @(
+            @("wide-connected", "connected", 1920, 1080, "wide")
+            @("wide-twenty-tabs", "twenty_tabs", 1920, 1080, "wide")
+            @("wide-grid", "grid", 1920, 1080, "wide")
+            @("wide-editor", "editor", 1920, 1080, "wide")
+            @("wide-settings", "settings", 1920, 1080, "wide")
+            @("wide-import", "import", 1920, 1080, "wide")
+        )
+    }
     if ($null -eq $Report.visual -or @($Report.visual.PSObject.Properties).Count -ne $required.Count) {
         throw "P0 visual matrix evidence is incomplete."
     }
@@ -1448,13 +1462,24 @@ try {
         Add-Action $actions ([ordered]@{ action = "switch_tab"; tab = 0 })
 
         Set-ActionBinding -Surface "gtk"
-        Add-WindowResize $actions 1920 1080 "wide"
-        Add-VisualCheckpoint $actions "wide-connected" "connected" 1920 1080 "wide"
-        Add-VisualCheckpoint $actions "wide-twenty-tabs" "twenty_tabs" 1920 1080 "wide"
-        Add-VisualCheckpoint $actions "wide-grid" "grid" 1920 1080 "wide"
-        Add-VisualCheckpoint $actions "wide-editor" "editor" 1920 1080 "wide"
-        Add-VisualCheckpoint $actions "wide-settings" "settings" 1920 1080 "wide"
-        Add-VisualCheckpoint $actions "wide-import" "import" 1920 1080 "wide"
+        if ($IsWindows) {
+            Add-WindowResize $actions 1000 700 "standard"
+            Add-VisualCheckpoint $actions "windows-standard-connected" "connected" 1000 700 "standard"
+            Add-VisualCheckpoint $actions "windows-standard-twenty-tabs" "twenty_tabs" 1000 700 "standard"
+            Add-VisualCheckpoint $actions "windows-standard-grid" "grid" 1000 700 "standard"
+            Add-VisualCheckpoint $actions "windows-standard-editor" "editor" 1000 700 "standard"
+            Add-VisualCheckpoint $actions "windows-standard-settings" "settings" 1000 700 "standard"
+            Add-VisualCheckpoint $actions "windows-standard-import" "import" 1000 700 "standard"
+        }
+        else {
+            Add-WindowResize $actions 1920 1080 "wide"
+            Add-VisualCheckpoint $actions "wide-connected" "connected" 1920 1080 "wide"
+            Add-VisualCheckpoint $actions "wide-twenty-tabs" "twenty_tabs" 1920 1080 "wide"
+            Add-VisualCheckpoint $actions "wide-grid" "grid" 1920 1080 "wide"
+            Add-VisualCheckpoint $actions "wide-editor" "editor" 1920 1080 "wide"
+            Add-VisualCheckpoint $actions "wide-settings" "settings" 1920 1080 "wide"
+            Add-VisualCheckpoint $actions "wide-import" "import" 1920 1080 "wide"
+        }
 
         Add-ConnectionPrefix $actions "vault" $ready.endpoints.native_password "native_ssh" "password" "vault"
         Add-Action $actions ([ordered]@{ action = "set_connection_field"; field = [ordered]@{ kind = "secret_from_env"; env_var = $passwordName } })

@@ -1,5 +1,9 @@
 use crate::{ShellLayout, ShellLayoutMode};
 
+#[path = "smoke_driver_visual_platform.rs"]
+mod platform;
+pub use platform::visual_matrix;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum SmokeVisualState {
     Empty,
@@ -81,7 +85,10 @@ impl SmokeVisualCheckpoint {
 }
 
 pub const fn supported_dimensions(width: i32, height: i32) -> bool {
-    matches!((width, height), (800, 600) | (1_360, 860) | (1_920, 1_080))
+    matches!(
+        (width, height),
+        (800, 600) | (1_000, 700) | (1_360, 860) | (1_920, 1_080)
+    )
 }
 
 pub const REQUIRED_SMOKE_VISUAL_MATRIX: [(i32, i32, SmokeVisualState, ShellLayoutMode); 26] = [
