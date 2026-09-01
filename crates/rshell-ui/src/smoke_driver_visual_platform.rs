@@ -1,5 +1,6 @@
 use crate::{REQUIRED_SMOKE_VISUAL_MATRIX, ShellLayoutMode, SmokeVisualState};
 
+#[cfg(windows)]
 const WINDOWS_SESSION_ZERO_TAIL: [(i32, i32, SmokeVisualState, ShellLayoutMode); 6] = [
     (
         1_000,
@@ -54,6 +55,7 @@ pub fn visual_matrix() -> Vec<(i32, i32, SmokeVisualState, ShellLayoutMode)> {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(windows)]
     use crate::ShellLayoutMode;
 
     #[test]

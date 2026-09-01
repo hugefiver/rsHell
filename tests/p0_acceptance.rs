@@ -367,7 +367,7 @@ fn p0_report_contract_has_fixed_fail_or_pass_surfaces() {
 
 #[test]
 fn powershell_harness_invokes_the_production_p0_driver() {
-    let harness = include_str!("../scripts/qa/p0-smoke.ps1");
+    let harness = include_str!("../scripts/qa/p0-smoke.ps1").replace("\r\n", "\n");
 
     assert!(
         harness.contains("--smoke-p0"),
@@ -705,7 +705,7 @@ fn hosted_gui_tests_use_linux_xvfb_and_a_supported_macos_runner() {
 fn hosted_windows_p0_provisions_and_restores_a_wide_display() {
     let ci = include_str!("../.github/workflows/ci.yml");
     let display = include_str!("../scripts/qa/windows-display.ps1");
-    let harness = include_str!("../scripts/qa/p0-smoke.ps1");
+    let harness = include_str!("../scripts/qa/p0-smoke.ps1").replace("\r\n", "\n");
 
     for marker in [
         "scripts/qa/windows-display.ps1 -Mode Apply",
