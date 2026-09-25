@@ -3,7 +3,7 @@ use std::sync::Arc;
 use rshell_core::{InteractionRequest, SessionFailure};
 use russh::{
     client::{self, AuthResult, KeyboardInteractiveAuthResponse},
-    keys::{PrivateKeyWithHashAlg, load_secret_key},
+    keys::{PrivateKey, PrivateKeyWithHashAlg, load_secret_key},
 };
 use secrecy::ExposeSecret;
 
@@ -40,20 +40,10 @@ pub(super) async fn authenticate(
             )
             .map_err(|_| authentication_error())?;
             drop(passphrase);
-            let hash = if key.algorithm().is_rsa() {
-                handle
-                    .best_supported_rsa_hash()
-                    .await
-                    .map_err(map_client)?
-                    .flatten()
-            } else {
-                None
-            };
-            let result = handle
-                .authenticate_publickey(username, PrivateKeyWithHashAlg::new(Arc::new(key), hash))
-                .await
-                .map_err(map_client)?;
-            require_success(result)?;
+            authenticate_with_key(handle, username, Arc::new(key)).await?;
+        }
+        AuthPlan::PrivateKey { key, .. } => {
+            authenticate_with_key(handle, username, key).await?;
         }
         AuthPlan::KeyboardInteractive { .. } => {
             authenticate_keyboard_interactive(handle, username, interactions).await?;
@@ -64,6 +54,27 @@ pub(super) async fn authenticate(
     }
     scrub_russh_auth_method(handle, username).await;
     Ok(())
+}
+
+async fn authenticate_with_key(
+    handle: &mut client::Handle<StrictClientHandler>,
+    username: &str,
+    key: Arc<PrivateKey>,
+) -> Result<(), TransportError> {
+    let hash = if key.algorithm().is_rsa() {
+        handle
+            .best_supported_rsa_hash()
+            .await
+            .map_err(map_client)?
+            .flatten()
+    } else {
+        None
+    };
+    let result = handle
+        .authenticate_publickey(username, PrivateKeyWithHashAlg::new(key, hash))
+        .await
+        .map_err(map_client)?;
+    require_success(result)
 }
 
 async fn authenticate_agent(

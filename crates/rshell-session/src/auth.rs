@@ -1,10 +1,11 @@
 mod error;
 mod keyboard_interactive;
 
-use std::{fmt, path::Path};
+use std::{fmt, path::Path, sync::Arc};
 
 use rshell_core::{AuthenticationKind, ConnectionProfile, TransportKind};
 use rshell_storage::CredentialVault;
+use russh::keys::PrivateKey;
 use secrecy::SecretString;
 
 pub use error::AuthPlanError;
@@ -30,6 +31,13 @@ pub enum AuthPlan {
     },
     KeyboardInteractive {
         host: String,
+    },
+    /// Public-key authentication with a decoded private key held in memory, for applications
+    /// that keep keys somewhere other than files (a keychain). Encrypted keys are decrypted by
+    /// the application before the plan is built.
+    PrivateKey {
+        host: String,
+        key: Arc<PrivateKey>,
     },
 }
 
@@ -75,6 +83,26 @@ impl AuthPlan {
         }
     }
 
+    /// Builds a public-key plan from a private key held in memory; `identity_file` is not read.
+    pub fn from_private_key(
+        profile: &ConnectionProfile,
+        key: Arc<PrivateKey>,
+    ) -> Result<Self, AuthPlanError> {
+        if profile.authentication != AuthenticationKind::PublicKey
+            || !supported_combination(profile.transport, profile.authentication)
+        {
+            return Err(AuthPlanError::UnsupportedCombination {
+                host: profile.host.clone(),
+                transport: profile.transport,
+                authentication: profile.authentication,
+            });
+        }
+        Ok(Self::PrivateKey {
+            host: profile.host.clone(),
+            key,
+        })
+    }
+
     pub fn from_profile(
         profile: &ConnectionProfile,
         vault: &dyn CredentialVault,
@@ -117,7 +145,7 @@ impl AuthPlan {
     pub fn kind(&self) -> AuthenticationKind {
         match self {
             Self::Password { .. } => AuthenticationKind::Password,
-            Self::PublicKey { .. } => AuthenticationKind::PublicKey,
+            Self::PublicKey { .. } | Self::PrivateKey { .. } => AuthenticationKind::PublicKey,
             Self::Agent { .. } => AuthenticationKind::Agent,
             Self::KeyboardInteractive { .. } => AuthenticationKind::KeyboardInteractive,
         }
@@ -127,6 +155,7 @@ impl AuthPlan {
         match self {
             Self::Password { host, .. }
             | Self::PublicKey { host, .. }
+            | Self::PrivateKey { host, .. }
             | Self::Agent { host }
             | Self::KeyboardInteractive { host } => host,
         }

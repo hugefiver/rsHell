@@ -25,7 +25,7 @@ use rshell_session::{
 use rshell_storage::{CredentialVault, MemoryCredentialVault};
 use russh::{
     ChannelMsg, client,
-    keys::{PublicKey, parse_public_key_base64},
+    keys::{PublicKey, decode_secret_key, parse_public_key_base64},
 };
 use secrecy::SecretString;
 use tempfile::TempDir;
@@ -565,6 +565,30 @@ async fn native_encrypted_key_uses_passphrase() {
     let snapshot = shutdown_native(&mut transport, server).await;
     assert_eq!(snapshot.successful_authentications, 1);
     emit_observation_from_snapshot(QaSurface::NativeKey, endpoint, &snapshot);
+}
+
+#[tokio::test]
+async fn native_in_memory_key_authenticates_without_a_key_file() {
+    let temp = TempDir::new().expect("native SSH temp directory");
+    let (key_path, public_key) = write_encrypted_client_key(temp.path());
+    let key = decode_secret_key(
+        &fs::read_to_string(&key_path).expect("read client key"),
+        Some(KEY_PASSPHRASE),
+    )
+    .expect("decode client key");
+    fs::remove_file(&key_path).expect("the plan must not need the key file");
+    let server = TestSshServer::start(ServerAuth::PublicKey(public_key)).await;
+    let profile = native_profile(server.address(), AuthenticationKind::PublicKey);
+    let auth = AuthPlan::from_private_key(&profile, Arc::new(key)).expect("in-memory key plan");
+    let mut transport = native_transport(profile, auth, &temp);
+
+    connect_accepting_host(&mut transport, &TransportRequest::new(size(80, 24)))
+        .await
+        .0
+        .expect("in-memory key authentication");
+
+    let snapshot = shutdown_native(&mut transport, server).await;
+    assert_eq!(snapshot.successful_authentications, 1);
 }
 
 #[tokio::test]
