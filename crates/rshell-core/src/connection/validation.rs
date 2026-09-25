@@ -223,16 +223,8 @@ fn validate_profile(profile: &ConnectionProfile) -> Result<(), DomainError> {
             connection_id: profile.id,
         });
     }
-    if profile.authentication == AuthenticationKind::Password
-        && profile
-            .credential_ref
-            .as_ref()
-            .is_none_or(|reference| reference.0.trim().is_empty())
-    {
-        return Err(DomainError::MissingCredentialRef {
-            connection_id: profile.id,
-        });
-    }
+    // Password authentication may leave `credential_ref` empty: the password is not saved and
+    // the application asks for it at connect time (`AuthPlan::from_secret`).
     validate_terminal_overrides(&profile.terminal_overrides).map_err(|error| {
         DomainError::InvalidTerminalOverride {
             field: error.field,

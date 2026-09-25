@@ -248,12 +248,14 @@ fn validation_rejects_invalid_hosts_ports_and_authentication() {
         Err(DomainError::MissingIdentityFile { .. })
     ));
 
-    let mut missing_credential = password_profile("bad-password", "password.example.test");
-    missing_credential.credential_ref = None;
-    assert!(matches!(
-        catalog.apply(CatalogMutation::Create(missing_credential)),
-        Err(DomainError::MissingCredentialRef { .. })
-    ));
+    // A password profile without a saved credential asks for the password at connect time.
+    let mut unsaved_password = password_profile("ask-password", "password.example.test");
+    unsaved_password.credential_ref = None;
+    let unsaved_password = create_profile(&mut catalog, unsaved_password);
+    assert_eq!(
+        catalog.connections[&unsaved_password.id].credential_ref,
+        None
+    );
 }
 
 #[test]
