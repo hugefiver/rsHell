@@ -1,4 +1,5 @@
 use std::{
+    collections::BTreeSet,
     fs::{self, File, OpenOptions},
     io::{self, Write},
     path::Path,
@@ -19,6 +20,23 @@ pub(super) fn store(
     key: &PublicKey,
 ) -> Result<(), HostKeyError> {
     store_with_copy(destination, host, port, key, copy_existing_file)
+}
+
+/// Learns `key` for `host`:`port` in place of every key recorded for them.
+pub(super) fn replace(
+    destination: &Path,
+    host: &str,
+    port: u16,
+    key: &PublicKey,
+) -> Result<(), HostKeyError> {
+    let stale = known_hosts::known_host_keys_path(host, port, destination)
+        .map_err(|_| storage_error(host, port, HostKeyStorageStep::CopyExisting))?
+        .into_iter()
+        .map(|(entry, _)| entry)
+        .collect::<BTreeSet<_>>();
+    store_with_copy(destination, host, port, key, |path, target| {
+        copy_without_entries(path, target, &stale)
+    })
 }
 
 fn store_with_copy(
@@ -74,6 +92,27 @@ fn copy_existing_file(path: &Path, target: &mut File) -> io::Result<()> {
         Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
         Err(error) => Err(error),
     }
+}
+
+/// Copies the known-hosts file without the entries numbered in `stale`, numbered the way russh
+/// reports them: from 1, not counting comment lines.
+fn copy_without_entries(path: &Path, target: &mut File, stale: &BTreeSet<usize>) -> io::Result<()> {
+    let content = match fs::read(path) {
+        Ok(content) => content,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(error),
+    };
+    let mut entry = 0;
+    for line in content.split_inclusive(|&byte| byte == b'\n') {
+        if line.first() != Some(&b'#') {
+            entry += 1;
+            if stale.contains(&entry) {
+                continue;
+            }
+        }
+        target.write_all(line)?;
+    }
+    Ok(())
 }
 
 fn create_private_temporary_file(

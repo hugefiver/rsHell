@@ -29,6 +29,7 @@ const DEFAULT_INTERACTION_TIMEOUT: Duration = Duration::from_secs(60);
 pub struct KnownHostsVerifier {
     path: PathBuf,
     timeout: Duration,
+    changed_key_prompt: bool,
     write_lock: Arc<Mutex<()>>,
 }
 
@@ -37,6 +38,7 @@ impl KnownHostsVerifier {
         Self {
             path: path.into(),
             timeout: DEFAULT_INTERACTION_TIMEOUT,
+            changed_key_prompt: false,
             write_lock: Arc::new(Mutex::new(())),
         }
     }
@@ -47,6 +49,16 @@ impl KnownHostsVerifier {
 
     pub const fn with_timeout(mut self, timeout: Duration) -> Self {
         self.timeout = timeout;
+        self
+    }
+
+    /// Asks about a changed key instead of failing closed without a prompt.
+    ///
+    /// The prompt for a key that differs from the recorded one carries `changed: true`.
+    /// Accepting it replaces every recorded key for that host and port; any other response
+    /// still fails with [`HostKeyError::Changed`]. Off by default.
+    pub const fn with_changed_key_prompt(mut self) -> Self {
+        self.changed_key_prompt = true;
         self
     }
 
@@ -64,21 +76,27 @@ impl KnownHostsVerifier {
         if !valid_endpoint(host, port) {
             return Err(HostKeyError::InvalidEndpoint);
         }
-        if self.is_known(host, port, key)? {
-            return Ok(());
-        }
+        let changed = match self.is_known(host, port, key) {
+            Ok(true) => return Ok(()),
+            Ok(false) => None,
+            Err(error @ HostKeyError::Changed { .. }) if self.changed_key_prompt => Some(error),
+            Err(error) => return Err(error),
+        };
 
         let response = self
-            .request_confirmation(host, port, key, interactions)
+            .request_confirmation(host, port, key, changed.is_some(), interactions)
             .await?;
         match response {
             InteractionResponse::HostKey(HostKeyDecision::AcceptAndStore) => {
-                self.store_after_acceptance(host, port, key).await
+                self.store_after_acceptance(host, port, key, changed.is_some())
+                    .await
             }
             InteractionResponse::HostKey(HostKeyDecision::Reject)
             | InteractionResponse::Cancel
             | InteractionResponse::Secret(_)
-            | InteractionResponse::Answers(_) => Err(HostKeyError::rejected(host, port)),
+            | InteractionResponse::Answers(_) => {
+                Err(changed.unwrap_or_else(|| HostKeyError::rejected(host, port)))
+            }
         }
     }
 
@@ -87,6 +105,7 @@ impl KnownHostsVerifier {
         host: &str,
         port: u16,
         key: &PublicKey,
+        changed: bool,
         interactions: &InteractionBroker,
     ) -> Result<InteractionResponse, HostKeyError> {
         let prompt = HostKeyPrompt {
@@ -95,7 +114,7 @@ impl KnownHostsVerifier {
             port,
             algorithm: key.algorithm().to_string(),
             sha256: key.fingerprint(HashAlg::Sha256).to_string(),
-            changed: false,
+            changed,
         };
         match tokio::time::timeout(
             self.timeout,
@@ -114,12 +133,17 @@ impl KnownHostsVerifier {
         host: &str,
         port: u16,
         key: &PublicKey,
+        replace: bool,
     ) -> Result<(), HostKeyError> {
         let _write_guard = self.write_lock.lock().await;
-        if self.is_known(host, port, key)? {
-            return Ok(());
+        match self.is_known(host, port, key) {
+            Ok(true) => Ok(()),
+            Ok(false) => storage::store(&self.path, host, port, key),
+            Err(HostKeyError::Changed { .. }) if replace => {
+                storage::replace(&self.path, host, port, key)
+            }
+            Err(error) => Err(error),
         }
-        storage::store(&self.path, host, port, key)
     }
 
     fn is_known(&self, host: &str, port: u16, key: &PublicKey) -> Result<bool, HostKeyError> {

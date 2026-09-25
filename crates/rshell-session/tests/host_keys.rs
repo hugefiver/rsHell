@@ -1,9 +1,11 @@
 use std::{fs, time::Duration};
 
-use rshell_core::{HostKeyDecision, InteractionRequest, InteractionResponse, SessionFailure};
+use rshell_core::{
+    HostKeyDecision, HostKeyPrompt, InteractionRequest, InteractionResponse, SessionFailure,
+};
 use rshell_platform::private_file_is_secure;
 use rshell_session::{HostKeyError, KnownHostsVerifier, interaction_channel};
-use russh::keys::{PublicKey, parse_public_key_base64};
+use russh::keys::{HashAlg, PublicKey, parse_public_key_base64};
 use tempfile::TempDir;
 
 const KEY_A: &str = "AAAAC3NzaC1lZDI1NTE5AAAAILagOJFgwaMNhBWQINinKOXmqS4Gh5NgxgriXwdOoINJ";
@@ -388,4 +390,102 @@ async fn concurrent_accepts_for_the_same_host_trust_exactly_one_key() {
             .is_err(),
         "the changed key must not receive a new acceptance prompt"
     );
+}
+
+/// Verifies `key`, answers its host-key prompt with `decision` and returns the prompt together
+/// with the verification result.
+async fn answer_prompt(
+    verifier: &KnownHostsVerifier,
+    key: &PublicKey,
+    host: &str,
+    port: u16,
+    decision: HostKeyDecision,
+) -> (HostKeyPrompt, Result<(), HostKeyError>) {
+    let (broker, mut requests) = interaction_channel();
+    let verification = verifier.verify(host, port, key, &broker);
+    tokio::pin!(verification);
+    let request = tokio::select! {
+        request = requests.recv() => request.expect("host-key request"),
+        result = &mut verification => panic!("unexpected verification result: {result:?}"),
+    };
+    let InteractionRequest::HostKey(prompt) = request.1 else {
+        panic!("expected host-key prompt");
+    };
+    broker
+        .respond(prompt.id, InteractionResponse::HostKey(decision))
+        .expect("host-key response accepted");
+    (prompt, verification.await)
+}
+
+async fn assert_known(verifier: &KnownHostsVerifier, key: &PublicKey, host: &str, port: u16) {
+    let (broker, mut requests) = interaction_channel();
+    verifier
+        .verify(host, port, key, &broker)
+        .await
+        .expect("recorded key is known");
+    assert!(
+        tokio::time::timeout(Duration::from_millis(20), requests.recv())
+            .await
+            .is_err(),
+        "known keys must not prompt"
+    );
+}
+
+#[tokio::test]
+async fn opted_in_changed_key_prompt_warns_and_rejection_keeps_the_file() {
+    let temp = TempDir::new().unwrap();
+    let verifier = verifier(&temp).with_changed_key_prompt();
+    accept_unknown(&verifier, &key_a(), "changed.test", 22).await;
+    let before = fs::read(verifier.path()).unwrap();
+
+    let (prompt, result) = answer_prompt(
+        &verifier,
+        &key_b(),
+        "changed.test",
+        22,
+        HostKeyDecision::Reject,
+    )
+    .await;
+    assert!(prompt.changed);
+    assert_eq!(
+        prompt.sha256,
+        key_b().fingerprint(HashAlg::Sha256).to_string()
+    );
+    let error = result.expect_err("a rejected changed key must fail");
+    assert!(matches!(&error, HostKeyError::Changed { .. }));
+    assert_eq!(error.failure(), SessionFailure::HostKeyChanged);
+    assert_eq!(fs::read(verifier.path()).unwrap(), before);
+}
+
+#[tokio::test]
+async fn accepting_a_changed_key_replaces_only_that_hosts_entries() {
+    let temp = TempDir::new().unwrap();
+    let verifier = verifier(&temp).with_changed_key_prompt();
+    accept_unknown(&verifier, &key_a(), "other.test", 22).await;
+    accept_unknown(&verifier, &key_a(), "changed.test", 22).await;
+    accept_unknown(&verifier, &key_a(), "changed.test", 2222).await;
+    // A comment must neither be dropped nor shift which entries are replaced.
+    let recorded = fs::read_to_string(verifier.path()).unwrap();
+    fs::write(verifier.path(), format!("# kept comment\n{recorded}")).unwrap();
+
+    let (prompt, result) = answer_prompt(
+        &verifier,
+        &key_b(),
+        "changed.test",
+        22,
+        HostKeyDecision::AcceptAndStore,
+    )
+    .await;
+    assert!(prompt.changed);
+    result.expect("an accepted changed key replaces the recorded one");
+
+    assert_known(&verifier, &key_b(), "changed.test", 22).await;
+    assert_known(&verifier, &key_a(), "other.test", 22).await;
+    assert_known(&verifier, &key_a(), "changed.test", 2222).await;
+    let content = fs::read_to_string(verifier.path()).unwrap();
+    assert!(content.starts_with("# kept comment\n"));
+    assert_eq!(content.matches(KEY_A).count(), 2);
+    assert_eq!(content.matches(KEY_B).count(), 1);
+    assert!(private_file_is_secure(verifier.path()).unwrap());
+    assert_no_known_hosts_temporary_files(&verifier);
 }
