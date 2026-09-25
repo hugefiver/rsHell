@@ -30,6 +30,9 @@ pub struct NativeSshTransport {
     auth: Option<AuthPlan>,
     verifier: KnownHostsVerifier,
     timeout: Duration,
+    /// Bound for `connect` (TCP, handshake, host-key confirmation and authentication, including
+    /// time spent waiting on interactions); the operation timeout when unset.
+    connect_timeout: Option<Duration>,
     handle: Option<client::Handle<StrictClientHandler>>,
     channel: Option<Channel<client::Msg>>,
     pending_events: VecDeque<TransportEvent>,
@@ -48,6 +51,7 @@ impl NativeSshTransport {
             auth: Some(auth),
             verifier,
             timeout: DEFAULT_OPERATION_TIMEOUT,
+            connect_timeout: None,
             handle: None,
             channel: None,
             pending_events: VecDeque::new(),
@@ -60,6 +64,17 @@ impl NativeSshTransport {
             return Err(TransportError::new(SessionFailure::Validation));
         }
         self.timeout = timeout;
+        Ok(self)
+    }
+
+    /// Bounds `connect` separately from other operations. Applications that bound the network
+    /// part of connecting themselves use a longer limit, so that time users spend answering
+    /// prompts (host keys, keyboard-interactive, hardware tokens) does not fail the connection.
+    pub fn with_connect_timeout(mut self, timeout: Duration) -> Result<Self, TransportError> {
+        if timeout.is_zero() {
+            return Err(TransportError::new(SessionFailure::Validation));
+        }
+        self.connect_timeout = Some(timeout);
         Ok(self)
     }
 
@@ -159,7 +174,8 @@ impl SessionTransport for NativeSshTransport {
         request: &TransportRequest,
         interactions: InteractionBroker,
     ) -> Result<(), TransportError> {
-        bounded(self.timeout, self.connect_inner(request, interactions)).await
+        let timeout = self.connect_timeout.unwrap_or(self.timeout);
+        bounded(timeout, self.connect_inner(request, interactions)).await
     }
 
     async fn next_event(&mut self) -> Result<TransportEvent, TransportError> {

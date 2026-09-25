@@ -627,6 +627,59 @@ async fn keyboard_interactive_cancel_wrong_count_and_timeout_fail_closed() {
     server.shutdown().await;
 }
 
+#[tokio::test]
+async fn connect_timeout_replaces_the_operation_timeout_while_connecting() {
+    let server = TestSshServer::start(ServerAuth::KeyboardInteractive).await;
+    let temp = TempDir::new().unwrap();
+    let connection = profile(server.address(), AuthenticationKind::KeyboardInteractive);
+    let auth = AuthPlan::from_profile(&connection, &MemoryCredentialVault::new()).unwrap();
+    let mut transport = transport(connection, auth, &temp)
+        .with_timeout(Duration::from_secs(5))
+        .and_then(|transport| transport.with_connect_timeout(Duration::from_secs(60)))
+        .expect("nonzero native timeouts");
+    let (broker, mut requests): (InteractionBroker, mpsc::Receiver<_>) = interaction_channel();
+    let response_broker = broker.clone();
+    let request = TransportRequest::new(size(80, 24));
+    let result = {
+        let connect = transport.connect(&request, broker);
+        tokio::pin!(connect);
+        loop {
+            tokio::select! {
+                result = &mut connect => break result,
+                request = requests.recv() => {
+                    let (id, request) = request.unwrap();
+                    match request {
+                        InteractionRequest::HostKey(_) => response_broker.respond(
+                            id,
+                            InteractionResponse::HostKey(HostKeyDecision::AcceptAndStore),
+                        ).unwrap(),
+                        InteractionRequest::KeyboardInteractive(_) => {
+                            // Longer than the operation timeout, shorter than the connect timeout
+                            // (and the test server's inactivity timeout).
+                            tokio::time::pause();
+                            tokio::time::advance(Duration::from_secs(6)).await;
+                            tokio::time::resume();
+                            response_broker.respond(
+                                id,
+                                InteractionResponse::Answers(
+                                    KBI_ANSWERS
+                                        .iter()
+                                        .map(|answer| SecretString::from((*answer).to_owned()))
+                                        .collect(),
+                                ),
+                            ).unwrap();
+                        }
+                        request => panic!("unexpected interaction: {request:?}"),
+                    }
+                }
+            }
+        }
+    };
+    result.expect("the connect timeout, not the operation timeout, bounds connecting");
+    transport.shutdown().await.unwrap();
+    server.shutdown().await;
+}
+
 fn contains(haystack: &[u8], needle: &[u8]) -> bool {
     haystack
         .windows(needle.len())
