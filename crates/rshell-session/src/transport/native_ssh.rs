@@ -33,6 +33,9 @@ pub struct NativeSshTransport {
     /// Bound for `connect` (TCP, handshake, host-key confirmation and authentication, including
     /// time spent waiting on interactions); the operation timeout when unset.
     connect_timeout: Option<Duration>,
+    /// Keepalive interval and the number of unanswered keepalives after which the connection
+    /// is considered lost; no keepalives when unset.
+    keepalive: Option<(Duration, usize)>,
     handle: Option<client::Handle<StrictClientHandler>>,
     channel: Option<Channel<client::Msg>>,
     pending_events: VecDeque<TransportEvent>,
@@ -52,6 +55,7 @@ impl NativeSshTransport {
             verifier,
             timeout: DEFAULT_OPERATION_TIMEOUT,
             connect_timeout: None,
+            keepalive: None,
             handle: None,
             channel: None,
             pending_events: VecDeque::new(),
@@ -75,6 +79,22 @@ impl NativeSshTransport {
             return Err(TransportError::new(SessionFailure::Validation));
         }
         self.connect_timeout = Some(timeout);
+        Ok(self)
+    }
+
+    /// Sends a keepalive after `interval` without anything received from the server and gives
+    /// the connection up after `max` unanswered keepalives, so that a peer that silently went
+    /// away (network change, suspended device) ends the session with a network failure instead
+    /// of hanging.
+    pub fn with_keepalive(
+        mut self,
+        interval: Duration,
+        max: usize,
+    ) -> Result<Self, TransportError> {
+        if interval.is_zero() || max == 0 {
+            return Err(TransportError::new(SessionFailure::Validation));
+        }
+        self.keepalive = Some((interval, max));
         Ok(self)
     }
 
@@ -106,10 +126,15 @@ impl NativeSshTransport {
             self.verifier.clone(),
             interactions.clone(),
         );
-        let config = Arc::new(client::Config {
+        let mut config = client::Config {
             nodelay: true,
             ..Default::default()
-        });
+        };
+        if let Some((interval, max)) = self.keepalive {
+            config.keepalive_interval = Some(interval);
+            config.keepalive_max = max;
+        }
+        let config = Arc::new(config);
         let mut handle = client::connect_stream(config, stream, handler)
             .await
             .map_err(TransportError::from)?;

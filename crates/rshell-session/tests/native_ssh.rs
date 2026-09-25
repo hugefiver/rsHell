@@ -680,6 +680,94 @@ async fn connect_timeout_replaces_the_operation_timeout_while_connecting() {
     server.shutdown().await;
 }
 
+/// Forwards one connection to `target` until `frozen` is set, after which bytes are dropped in
+/// both directions while both sockets stay open: a peer that silently went away.
+async fn freezable_proxy(target: SocketAddr) -> (SocketAddr, Arc<std::sync::atomic::AtomicBool>) {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let frozen = Arc::new(AtomicBool::new(false));
+    let flag = frozen.clone();
+    tokio::spawn(async move {
+        let (client, _) = listener.accept().await.unwrap();
+        let server = tokio::net::TcpStream::connect(target).await.unwrap();
+        let (mut client_read, mut client_write) = client.into_split();
+        let (mut server_read, mut server_write) = server.into_split();
+        let upstream_flag = flag.clone();
+        tokio::spawn(async move {
+            let mut buffer = [0; 4096];
+            while let Ok(read) = client_read.read(&mut buffer).await {
+                if read == 0 {
+                    break;
+                }
+                if !upstream_flag.load(Ordering::SeqCst) {
+                    let _ = server_write.write_all(&buffer[..read]).await;
+                }
+            }
+        });
+        let mut buffer = [0; 4096];
+        while let Ok(read) = server_read.read(&mut buffer).await {
+            if read == 0 {
+                break;
+            }
+            if !flag.load(Ordering::SeqCst) {
+                let _ = client_write.write_all(&buffer[..read]).await;
+            }
+        }
+        // Keep the client side open: the peer went silent, it did not close.
+        std::future::pending::<()>().await;
+    });
+    (address, frozen)
+}
+
+#[tokio::test]
+async fn unanswered_keepalives_end_the_session_with_a_network_failure() {
+    let server = TestSshServer::start(ServerAuth::Password).await;
+    let (proxy, frozen) = freezable_proxy(server.address()).await;
+    let temp = TempDir::new().unwrap();
+    let (connection, auth) = vault_plan(profile(proxy, AuthenticationKind::Password), PASSWORD);
+    let mut transport = transport(connection, auth, &temp)
+        .with_keepalive(Duration::from_secs(15), 3)
+        .expect("nonzero keepalive");
+    let request = TransportRequest::new(size(80, 24));
+    let (result, _) = connect_accepting_host(&mut transport, &request).await;
+    result.expect("connect through the proxy");
+
+    frozen.store(true, std::sync::atomic::Ordering::SeqCst);
+    // Virtual time: the paused clock jumps from one keepalive to the next.
+    tokio::time::pause();
+    let event = tokio::time::timeout(Duration::from_secs(300), async {
+        loop {
+            match transport.next_event().await {
+                Ok(TransportEvent::Output(_)) => {}
+                other => break other,
+            }
+        }
+    })
+    .await
+    .expect("keepalives notice the silent peer");
+    tokio::time::resume();
+    match event {
+        Ok(TransportEvent::Failure(error)) => assert_eq!(error.failure(), SessionFailure::Network),
+        other => panic!("expected a network failure, got {other:?}"),
+    }
+    assert_eq!(
+        NativeSshTransport::new(
+            profile(proxy, AuthenticationKind::Password),
+            vault_plan(profile(proxy, AuthenticationKind::Password), PASSWORD).1,
+            KnownHostsVerifier::new(temp.path().join("known_hosts")),
+        )
+        .and_then(|transport| transport.with_keepalive(Duration::ZERO, 3))
+        .err()
+        .map(|error| error.failure()),
+        Some(SessionFailure::Validation)
+    );
+    let _ = transport.shutdown().await;
+    server.shutdown().await;
+}
+
 fn contains(haystack: &[u8], needle: &[u8]) -> bool {
     haystack
         .windows(needle.len())
