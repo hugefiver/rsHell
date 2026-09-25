@@ -53,6 +53,10 @@ pub struct TerminalDisplayModes {
     pub application_cursor: bool,
     pub cursor_hidden: bool,
     pub stale_title: bool,
+    /// Bracketed paste (DECSET 2004) is on: the frontend must wrap pasted text in
+    /// `ESC [200~` … `ESC [201~`. Not residue — shells turn it on at the prompt.
+    #[serde(default)]
+    pub bracketed_paste: bool,
 }
 
 impl TerminalDisplayModes {

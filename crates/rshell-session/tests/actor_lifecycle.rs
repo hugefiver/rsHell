@@ -1342,6 +1342,7 @@ fn dirty_display_modes() -> TerminalDisplayModes {
         application_cursor: true,
         cursor_hidden: true,
         stale_title: true,
+        bracketed_paste: false,
     }
 }
 

@@ -143,6 +143,21 @@ fn display_recovery_preserves_primary_and_clears_modes() {
 }
 
 #[test]
+fn bracketed_paste_mode_is_exposed_and_is_not_residue() {
+    let mut engine = display_mode_fixture_engine();
+    assert!(!engine.display_modes().bracketed_paste);
+
+    engine.input(b"\x1b[?2004h").unwrap();
+    let modes = engine.display_modes();
+    assert!(modes.bracketed_paste);
+    // Shells turn it on at every prompt; it is not display residue.
+    assert!(!modes.has_residue());
+
+    engine.input(b"\x1b[?2004l").unwrap();
+    assert!(!engine.display_modes().bracketed_paste);
+}
+
+#[test]
 fn fixture_converts_styles_unicode_wrap_title_cursor_and_mouse_mode() {
     let mut engine = DefaultTerminalEngine::new(&profile(20_000), size(16, 8)).unwrap();
     engine.input(FIXTURE).unwrap();

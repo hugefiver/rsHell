@@ -170,6 +170,7 @@ mod tests {
             application_cursor: true,
             cursor_hidden: true,
             stale_title: true,
+            bracketed_paste: false,
         }
     }
 
