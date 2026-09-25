@@ -19,13 +19,18 @@ use rshell_core::{
     InteractionRequest, InteractionResponse, SessionFailure, TerminalSize, TransportKind,
 };
 use rshell_session::{
-    AuthPlan, InteractionBroker, NativeSshTransport, SessionTransport, SystemOpenSshTransport,
-    TransportError, TransportEvent, TransportRequest, interaction_channel,
+    AuthPlan, ExternalSigner, ExternalSignerError, InteractionBroker, NativeSshTransport,
+    SessionTransport, SystemOpenSshTransport, TransportError, TransportEvent, TransportRequest,
+    interaction_channel,
 };
 use rshell_storage::{CredentialVault, MemoryCredentialVault};
 use russh::{
     ChannelMsg, client,
-    keys::{PublicKey, decode_secret_key, parse_public_key_base64},
+    keys::{
+        Algorithm, HashAlg, PrivateKey, PublicKey, decode_secret_key, key::safe_rng,
+        parse_public_key_base64, signature::Signer as _, ssh_encoding::Encode as _,
+        ssh_key::Signature,
+    },
 };
 use secrecy::SecretString;
 use tempfile::TempDir;
@@ -589,6 +594,83 @@ async fn native_in_memory_key_authenticates_without_a_key_file() {
 
     let snapshot = shutdown_native(&mut transport, server).await;
     assert_eq!(snapshot.successful_authentications, 1);
+}
+
+/// Stands in for a hardware token: signs with a key the transport never sees.
+struct TokenSigner {
+    key: PrivateKey,
+    signatures: AtomicUsize,
+}
+
+#[async_trait::async_trait]
+impl ExternalSigner for TokenSigner {
+    async fn sign(
+        &self,
+        data: &[u8],
+        _hash: Option<HashAlg>,
+    ) -> Result<Vec<u8>, ExternalSignerError> {
+        self.signatures.fetch_add(1, Ordering::SeqCst);
+        let signature: Signature = self.key.try_sign(data).map_err(|_| ExternalSignerError)?;
+        signature.encode_vec().map_err(|_| ExternalSignerError)
+    }
+}
+
+#[tokio::test]
+async fn native_external_signer_authenticates_without_the_private_key() {
+    let temp = TempDir::new().expect("native SSH temp directory");
+    let key = PrivateKey::random(&mut safe_rng(), Algorithm::Ed25519).expect("client key");
+    let public_key = key.public_key().clone();
+    let server = TestSshServer::start(ServerAuth::PublicKey(public_key.clone())).await;
+    let profile = native_profile(server.address(), AuthenticationKind::PublicKey);
+    let signer = Arc::new(TokenSigner {
+        key,
+        signatures: AtomicUsize::new(0),
+    });
+    let auth = AuthPlan::from_signer(&profile, public_key, signer.clone()).expect("signer plan");
+    let mut transport = native_transport(profile, auth, &temp);
+
+    connect_accepting_host(&mut transport, &TransportRequest::new(size(80, 24)))
+        .await
+        .0
+        .expect("external signer authentication");
+
+    let snapshot = shutdown_native(&mut transport, server).await;
+    assert_eq!(snapshot.successful_authentications, 1);
+    assert_eq!(signer.signatures.load(Ordering::SeqCst), 1);
+}
+
+/// A signer that cannot sign (token removed, PIN refused) fails authentication cleanly.
+struct RefusingSigner;
+
+#[async_trait::async_trait]
+impl ExternalSigner for RefusingSigner {
+    async fn sign(
+        &self,
+        _data: &[u8],
+        _hash: Option<HashAlg>,
+    ) -> Result<Vec<u8>, ExternalSignerError> {
+        Err(ExternalSignerError)
+    }
+}
+
+#[tokio::test]
+async fn native_external_signer_failure_is_an_authentication_failure() {
+    let temp = TempDir::new().expect("native SSH temp directory");
+    let key = PrivateKey::random(&mut safe_rng(), Algorithm::Ed25519).expect("client key");
+    let public_key = key.public_key().clone();
+    let server = TestSshServer::start(ServerAuth::PublicKey(public_key.clone())).await;
+    let profile = native_profile(server.address(), AuthenticationKind::PublicKey);
+    let auth = AuthPlan::from_signer(&profile, public_key, Arc::new(RefusingSigner)).expect("plan");
+    let mut transport = native_transport(profile, auth, &temp);
+
+    let error = connect_accepting_host(&mut transport, &TransportRequest::new(size(80, 24)))
+        .await
+        .0
+        .expect_err("a refusing signer cannot authenticate");
+    assert_eq!(error.failure(), SessionFailure::Authentication);
+
+    let snapshot = shutdown_native(&mut transport, server).await;
+    assert_eq!(snapshot.successful_authentications, 0);
 }
 
 #[tokio::test]

@@ -3,9 +3,10 @@ mod keyboard_interactive;
 
 use std::{fmt, path::Path, sync::Arc};
 
+use async_trait::async_trait;
 use rshell_core::{AuthenticationKind, ConnectionProfile, TransportKind};
 use rshell_storage::CredentialVault;
-use russh::keys::PrivateKey;
+use russh::keys::{HashAlg, PrivateKey, PublicKey};
 use secrecy::SecretString;
 
 pub use error::AuthPlanError;
@@ -39,7 +40,41 @@ pub enum AuthPlan {
         host: String,
         key: Arc<PrivateKey>,
     },
+    /// Public-key authentication whose signature comes from an [`ExternalSigner`] (a hardware
+    /// token, a platform authenticator); the private key never enters this process.
+    Signer {
+        host: String,
+        public_key: PublicKey,
+        signer: Arc<dyn ExternalSigner>,
+    },
 }
+
+/// Signs public-key authentication data outside this process.
+#[async_trait]
+pub trait ExternalSigner: Send + Sync {
+    /// Signs `data`, the session data SSH authenticates with. `hash` is the SHA-2 variant chosen
+    /// for RSA keys and `None` for other algorithms. Returns the SSH signature blob:
+    /// `string(signature algorithm) || string(signature)`, followed by the flags byte and the
+    /// counter for `sk-*` keys.
+    async fn sign(
+        &self,
+        data: &[u8],
+        hash: Option<HashAlg>,
+    ) -> Result<Vec<u8>, ExternalSignerError>;
+}
+
+/// An external signer could not sign. The reason stays with the application that provided the
+/// signer; the transport reports an authentication failure.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ExternalSignerError;
+
+impl fmt::Display for ExternalSignerError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("external signer failed")
+    }
+}
+
+impl std::error::Error for ExternalSignerError {}
 
 impl AuthPlan {
     /// Builds an authentication plan from application-provided material without reading a vault.
@@ -88,18 +123,25 @@ impl AuthPlan {
         profile: &ConnectionProfile,
         key: Arc<PrivateKey>,
     ) -> Result<Self, AuthPlanError> {
-        if profile.authentication != AuthenticationKind::PublicKey
-            || !supported_combination(profile.transport, profile.authentication)
-        {
-            return Err(AuthPlanError::UnsupportedCombination {
-                host: profile.host.clone(),
-                transport: profile.transport,
-                authentication: profile.authentication,
-            });
-        }
+        require_public_key(profile)?;
         Ok(Self::PrivateKey {
             host: profile.host.clone(),
             key,
+        })
+    }
+
+    /// Builds a public-key plan that signs with an [`ExternalSigner`] holding the private key of
+    /// `public_key`; `identity_file` is not read.
+    pub fn from_signer(
+        profile: &ConnectionProfile,
+        public_key: PublicKey,
+        signer: Arc<dyn ExternalSigner>,
+    ) -> Result<Self, AuthPlanError> {
+        require_public_key(profile)?;
+        Ok(Self::Signer {
+            host: profile.host.clone(),
+            public_key,
+            signer,
         })
     }
 
@@ -145,7 +187,9 @@ impl AuthPlan {
     pub fn kind(&self) -> AuthenticationKind {
         match self {
             Self::Password { .. } => AuthenticationKind::Password,
-            Self::PublicKey { .. } | Self::PrivateKey { .. } => AuthenticationKind::PublicKey,
+            Self::PublicKey { .. } | Self::PrivateKey { .. } | Self::Signer { .. } => {
+                AuthenticationKind::PublicKey
+            }
             Self::Agent { .. } => AuthenticationKind::Agent,
             Self::KeyboardInteractive { .. } => AuthenticationKind::KeyboardInteractive,
         }
@@ -156,6 +200,7 @@ impl AuthPlan {
             Self::Password { host, .. }
             | Self::PublicKey { host, .. }
             | Self::PrivateKey { host, .. }
+            | Self::Signer { host, .. }
             | Self::Agent { host }
             | Self::KeyboardInteractive { host } => host,
         }
@@ -171,6 +216,19 @@ impl fmt::Debug for AuthPlan {
             .field("credential", &"[REDACTED]")
             .finish()
     }
+}
+
+fn require_public_key(profile: &ConnectionProfile) -> Result<(), AuthPlanError> {
+    if profile.authentication != AuthenticationKind::PublicKey
+        || !supported_combination(profile.transport, profile.authentication)
+    {
+        return Err(AuthPlanError::UnsupportedCombination {
+            host: profile.host.clone(),
+            transport: profile.transport,
+            authentication: profile.authentication,
+        });
+    }
+    Ok(())
 }
 
 fn supported_combination(transport: TransportKind, authentication: AuthenticationKind) -> bool {
