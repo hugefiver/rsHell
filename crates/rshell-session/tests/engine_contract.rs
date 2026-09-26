@@ -234,6 +234,46 @@ fn alternate_screen_is_isolated_and_restores_primary_screen() {
 }
 
 #[test]
+fn synchronized_update_shows_the_whole_frame_at_its_end() {
+    let mut engine = DefaultTerminalEngine::new(&profile(1_000), size(20, 4)).unwrap();
+    engine.input(b"before\r\n\x1b[?2026hinside").unwrap();
+    assert!(engine.sync_deadline().is_some());
+    assert!(!frame_text(&engine.snapshot(viewport(0, 4), None)).contains("inside"));
+
+    engine.input(b" frame\x1b[?2026l").unwrap();
+    assert!(engine.sync_deadline().is_none());
+    assert!(frame_text(&engine.snapshot(viewport(0, 4), None)).contains("inside frame"));
+}
+
+#[test]
+fn synchronized_update_ends_at_its_deadline_without_the_closing_sequence() {
+    let mut engine = DefaultTerminalEngine::new(&profile(1_000), size(20, 4)).unwrap();
+    engine.input(b"\x1b[?2026hstalled").unwrap();
+    let deadline = engine.sync_deadline().expect("pending synchronized update");
+    assert!(deadline > std::time::Instant::now());
+    assert!(!frame_text(&engine.snapshot(viewport(0, 4), None)).contains("stalled"));
+
+    let delta = engine.end_sync().unwrap();
+    assert!(delta.dirty);
+    assert!(engine.sync_deadline().is_none());
+    assert!(frame_text(&engine.snapshot(viewport(0, 4), None)).contains("stalled"));
+    assert!(!engine.end_sync().unwrap().dirty, "nothing left to end");
+}
+
+#[test]
+fn output_after_an_expired_synchronized_update_is_not_swallowed() {
+    let mut engine = DefaultTerminalEngine::new(&profile(1_000), size(20, 4)).unwrap();
+    engine.input(b"\x1b[?2026hframe").unwrap();
+    std::thread::sleep(std::time::Duration::from_millis(200));
+
+    engine.input(b"\r\nprompt$ ").unwrap();
+    let text = frame_text(&engine.snapshot(viewport(0, 4), None));
+    assert!(text.contains("frame"), "{text}");
+    assert!(text.contains("prompt$"), "{text}");
+    assert!(engine.sync_deadline().is_none());
+}
+
+#[test]
 fn same_chunk_primary_output_before_alternate_screen_keeps_stable_row_ids() {
     let mut engine = DefaultTerminalEngine::new(&profile(1_000), size(20, 3)).unwrap();
     engine.input(b"anchor\r\n").unwrap();

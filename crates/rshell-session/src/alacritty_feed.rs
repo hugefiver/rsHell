@@ -1,4 +1,9 @@
-use alacritty_terminal::{Term, grid::Dimensions, term::TermMode, vte::ansi::Processor};
+use alacritty_terminal::{
+    Term,
+    grid::Dimensions,
+    term::TermMode,
+    vte::ansi::{Processor, Timeout},
+};
 use rshell_core::ResolvedTerminalProfile;
 
 use crate::{
@@ -23,6 +28,20 @@ pub(crate) fn advance(
     tracker: &mut ScrollTracker,
     bytes: &[u8],
 ) -> Vec<u8> {
+    // A synchronized update whose deadline already passed ends before new output is parsed,
+    // exactly as if the caller's timer had fired first.
+    if sync_expired(processor) {
+        apply_window(
+            processor,
+            terminal,
+            settings,
+            primary_rows,
+            tracker,
+            0,
+            false,
+            |processor, terminal| processor.stop_sync(terminal),
+        );
+    }
     let mut remaining = bytes;
     while let Some(sequence) = next_alt_switch(remaining) {
         advance_segment(
@@ -139,6 +158,42 @@ fn advance_windows(
     }
 }
 
+/// Deadline of the synchronized update (DEC mode 2026) the processor is buffering, if any.
+pub(crate) fn sync_deadline(processor: &Processor) -> Option<std::time::Instant> {
+    processor.sync_timeout().sync_timeout()
+}
+
+fn sync_expired(processor: &Processor) -> bool {
+    sync_deadline(processor).is_some_and(|deadline| deadline <= std::time::Instant::now())
+}
+
+/// Ends a pending synchronized update: the buffered output is applied to the terminal with the
+/// same scrollback bookkeeping as regular output. Terminals give up waiting for the closing
+/// sequence after a short timeout, so a program that dies in the middle of a frame does not
+/// freeze the display.
+pub(crate) fn end_sync(
+    processor: &mut Processor,
+    terminal: &mut Term<EventSink>,
+    events: &EventSink,
+    settings: &ResolvedTerminalProfile,
+    primary_rows: &mut PrimaryRows,
+    tracker: &mut ScrollTracker,
+) -> Vec<u8> {
+    if processor.sync_timeout().pending_timeout() {
+        apply_window(
+            processor,
+            terminal,
+            settings,
+            primary_rows,
+            tracker,
+            0,
+            false,
+            |processor, terminal| processor.stop_sync(terminal),
+        );
+    }
+    events.take_outbound()
+}
+
 fn advance_window(
     processor: &mut Processor,
     terminal: &mut Term<EventSink>,
@@ -152,6 +207,29 @@ fn advance_window(
         maximum_shift,
         track_capacity,
     } = window;
+    apply_window(
+        processor,
+        terminal,
+        settings,
+        primary_rows,
+        tracker,
+        maximum_shift,
+        track_capacity,
+        |processor, terminal| processor.advance(terminal, bytes),
+    );
+}
+
+#[allow(clippy::too_many_arguments)]
+fn apply_window(
+    processor: &mut Processor,
+    terminal: &mut Term<EventSink>,
+    settings: &ResolvedTerminalProfile,
+    primary_rows: &mut PrimaryRows,
+    tracker: &mut ScrollTracker,
+    maximum_shift: usize,
+    track_capacity: bool,
+    apply: impl FnOnce(&mut Processor, &mut Term<EventSink>),
+) {
     let was_primary = !terminal.mode().contains(TermMode::ALT_SCREEN);
     let old_history = terminal.grid().history_size();
     let anchor_shift = if track_capacity { maximum_shift } else { 0 };
@@ -159,7 +237,7 @@ fn advance_window(
         .then(|| alacritty_rows::capture(terminal, anchor_shift))
         .flatten();
 
-    processor.advance(terminal, bytes);
+    apply(processor, terminal);
     let active_primary = !terminal.mode().contains(TermMode::ALT_SCREEN);
     let cursor = &terminal.grid().cursor;
     tracker.sync_cursor(
