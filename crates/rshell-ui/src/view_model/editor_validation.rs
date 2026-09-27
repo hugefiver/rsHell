@@ -74,7 +74,9 @@ impl fmt::Display for EditorValidationError {
             Self::InvalidPort => "port must be an integer from 1 to 65535",
             Self::UnsupportedAuthentication => "authentication is unsupported by this transport",
             Self::IdentityRequired => "an identity file is required for public-key authentication",
-            Self::SecretRequired => "a secret is required for password authentication",
+            Self::SecretRequired => {
+                "a saved password is required; enter one or use another authentication method"
+            }
             Self::InvalidTerminalOverride(error) => return error.fmt(formatter),
         })
     }
