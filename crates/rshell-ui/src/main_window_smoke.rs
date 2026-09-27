@@ -19,6 +19,7 @@ use crate::{
 };
 use std::collections::BTreeMap;
 
+pub(crate) mod diagnostics;
 #[path = "main_window_smoke_empty.rs"]
 pub(crate) mod empty;
 
@@ -86,6 +87,7 @@ pub(crate) struct SmokeUiState {
     pub visual_accent_paintable: Option<gtk::WidgetPaintable>,
     pub visual_stage_count: Option<usize>,
     pub window_resize: Option<crate::SmokeWindowResizeEvidence>,
+    pub(crate) resize_diagnostics: Option<diagnostics::ResizeDiagnostics>,
 }
 
 impl MainWindow {
@@ -131,6 +133,7 @@ impl MainWindow {
         if let Some(driver) = &mut self.smoke {
             driver.fail(&observation, code);
         }
+        self.snapshot_smoke_resize_terminal();
         if was_active {
             self.capture_smoke_png();
             relm4::main_application().quit();
@@ -154,6 +157,7 @@ impl MainWindow {
                 frame_contains(view_model, active_tab, needle)
             })
         });
+        self.snapshot_smoke_resize_terminal();
         let trace_resize = self.smoke_state.trace_first_resize
             && matches!(
                 &decision,
@@ -169,7 +173,7 @@ impl MainWindow {
         match decision {
             Some(SmokeDecision::Route(action)) => {
                 checkpoint_trace(trace_resize, "route_enter", "step=1 action=resize_window");
-                let result = self.route_smoke_action(action);
+                let result = self.route_smoke_action_with_resize_diagnostics(action);
                 checkpoint_trace(
                     trace_resize,
                     "route_return",

@@ -20,6 +20,7 @@ if (-not $IsWindows) {
 
 Add-Type -TypeDefinition @'
 using System;
+using System.Collections.Generic;
 using System.Runtime.InteropServices;
 
 public sealed class RshellDisplayMode {
@@ -89,13 +90,25 @@ public static class RshellDisplayConfiguration {
 
     public static RshellDisplayMode PreferredAtLeast(int width, int height) {
         DEVMODE? preferred = null;
+        var available = new SortedSet<(int Width, int Height)>();
         for (var index = 0; ; index++) {
             var candidate = NewMode();
             if (!EnumDisplaySettings(null, index, ref candidate)) break;
+            available.Add((candidate.dmPelsWidth, candidate.dmPelsHeight));
             if (candidate.dmPelsWidth < width || candidate.dmPelsHeight < height) continue;
             if (!preferred.HasValue || Better(candidate, preferred.Value)) preferred = candidate;
         }
-        if (!preferred.HasValue) throw new InvalidOperationException("The required display mode is unavailable.");
+        if (!preferred.HasValue) {
+            var sample = new List<string>();
+            foreach (var size in available) {
+                if (sample.Count == 64) break;
+                sample.Add($"{size.Width}x{size.Height}");
+            }
+            throw new InvalidOperationException(
+                $"The required display mode is unavailable: requested={width}x{height} " +
+                $"available_count={available.Count} available_sample=[{string.Join(",", sample)}] " +
+                $"truncated_count={available.Count - sample.Count}.");
+        }
         return ToInfo(preferred.Value);
     }
 

@@ -288,6 +288,7 @@ jobs:
             cargo test --locked -p rshell-storage --features test-support --test system_vault system_vault_cleanup_exact_parent_reference -- --ignored --exact --nocapture
             if ($LASTEXITCODE -ne 0) { throw "system vault cleanup failed" }
           }
+          $env:RSHELL_P0_RESIZE_DIAGNOSTICS = '1'
           pwsh -NoProfile -File scripts/qa/p0-smoke.ps1 -Mode All
           exit $LASTEXITCODE
           '@

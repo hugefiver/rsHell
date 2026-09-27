@@ -126,24 +126,20 @@ fn run(evidence_root: &Path) {
     let compact_resize_deadline = compact_resize_started + Duration::from_secs(8);
     let trace = std::env::var_os("CI").is_some()
         || std::env::var("RSHELL_CHECKPOINT_TRACE").as_deref() == Ok("1");
-    let mut next_trace = compact_resize_started;
+    let mut timing = trace.then(|| CompactPumpTrace::new(compact_resize_started));
     while report.report().steps[1].state != SmokeStepState::Passed {
-        let log_pump = trace && Instant::now() >= next_trace;
-        if log_pump {
-            eprintln!("CHECKPOINT_TRACE at={:?} pump_enter", Instant::now());
-        }
-        pump_once(
+        pump_once_timed(
             &main,
             &commands,
             &mut view,
             &mut generation,
             &target_profile,
+            timing.as_mut(),
         );
-        if log_pump {
-            eprintln!("CHECKPOINT_TRACE at={:?} pump_return", Instant::now());
-            next_trace = Instant::now() + Duration::from_millis(250);
-        }
         if Instant::now() >= compact_resize_deadline {
+            if let Some(timing) = &timing {
+                timing.report();
+            }
             let current = report.report();
             let window = main.widget();
             panic!(
@@ -169,6 +165,9 @@ fn run(evidence_root: &Path) {
                     .map(|surface| (surface.width(), surface.height())),
             );
         }
+    }
+    if let Some(timing) = &timing {
+        timing.report();
     }
     assert_empty_closes_bootstrap(
         &main,
@@ -1110,11 +1109,112 @@ fn pump_once(
     generation: &mut u64,
     target_profile: &ConnectionProfile,
 ) {
-    gtk::glib::MainContext::default().iteration(false);
-    for command in commands.drain() {
+    pump_once_timed(main, commands, view, generation, target_profile, None);
+}
+
+#[derive(Clone, Copy)]
+enum PumpStage {
+    Iteration,
+    Drain,
+    Command,
+    PublishFrame,
+    Pump,
+}
+
+impl PumpStage {
+    const NAMES: [&str; 5] = ["iteration", "drain", "command", "publish_frame", "pump"];
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+struct CallStats {
+    count: u64,
+    total: Duration,
+    max: Duration,
+}
+
+struct CompactPumpTrace {
+    started: Instant,
+    calls: [CallStats; 5],
+    slow_calls: u64,
+    logged_slow_calls: usize,
+}
+
+impl CompactPumpTrace {
+    fn new(started: Instant) -> Self {
+        Self {
+            started,
+            calls: [CallStats::default(); 5],
+            slow_calls: 0,
+            logged_slow_calls: 0,
+        }
+    }
+
+    fn record(&mut self, stage: PumpStage, duration: Duration) {
+        let calls = &mut self.calls[stage as usize];
+        calls.count = calls.count.saturating_add(1);
+        calls.total = calls.total.saturating_add(duration);
+        calls.max = calls.max.max(duration);
+        if duration >= Duration::from_millis(100) {
+            self.slow_calls = self.slow_calls.saturating_add(1);
+            if self.logged_slow_calls < 16 {
+                eprintln!(
+                    "CHECKPOINT_COMPACT_SLOW stage={} elapsed_ms={} duration_ms={} inclusive={}",
+                    PumpStage::NAMES[stage as usize],
+                    self.started.elapsed().as_millis(),
+                    duration.as_millis(),
+                    matches!(stage, PumpStage::Command | PumpStage::Pump),
+                );
+                self.logged_slow_calls += 1;
+            }
+        }
+    }
+
+    fn report(&self) {
+        eprintln!(
+            "CHECKPOINT_COMPACT_TIMING iteration={:?} drain={:?} command={:?} publish_frame={:?} pump={:?} slow_calls={} logged_slow_calls={} threshold_ms=100 command_includes_publish_frame=true pump_includes_all=true",
+            self.calls[0],
+            self.calls[1],
+            self.calls[2],
+            self.calls[3],
+            self.calls[4],
+            self.slow_calls,
+            self.logged_slow_calls,
+        );
+    }
+}
+
+fn time_call<T>(
+    trace: &mut Option<&mut CompactPumpTrace>,
+    stage: PumpStage,
+    call: impl FnOnce() -> T,
+) -> T {
+    let started = trace.is_some().then(Instant::now);
+    let result = call();
+    if let (Some(trace), Some(started)) = (trace.as_deref_mut(), started) {
+        trace.record(stage, started.elapsed());
+    }
+    result
+}
+
+fn pump_once_timed(
+    main: &relm4::Controller<MainWindow>,
+    commands: &RecordingPort,
+    view: &mut AppViewModel,
+    generation: &mut u64,
+    target_profile: &ConnectionProfile,
+    mut trace: Option<&mut CompactPumpTrace>,
+) {
+    let pump_started = trace.is_some().then(Instant::now);
+    time_call(&mut trace, PumpStage::Iteration, || {
+        gtk::glib::MainContext::default().iteration(false)
+    });
+    for command in time_call(&mut trace, PumpStage::Drain, || commands.drain()) {
+        let command_started = trace.is_some().then(Instant::now);
         match command {
             RecordedCommand::Resize(session, size) => {
-                publish_frame(main, view, generation, session, size);
+                time_call(&mut trace, PumpStage::PublishFrame, || {
+                    publish_frame(main, view, generation, session, size)
+                });
             }
             RecordedCommand::NewLocalTab => {
                 publish_new_local_tab(main, view, generation, target_profile);
@@ -1139,8 +1239,14 @@ fn pump_once(
                 main.emit(MainWindowMsg::AppEvent(AppEvent::ShutdownComplete));
             }
         }
+        if let (Some(trace), Some(started)) = (trace.as_deref_mut(), command_started) {
+            trace.record(PumpStage::Command, started.elapsed());
+        }
     }
     std::thread::yield_now();
+    if let (Some(trace), Some(started)) = (trace, pump_started) {
+        trace.record(PumpStage::Pump, started.elapsed());
+    }
 }
 
 fn publish_new_local_tab(
