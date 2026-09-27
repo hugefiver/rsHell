@@ -2,7 +2,7 @@ use rshell_core::SessionFailure;
 use secrecy::ExposeSecret;
 
 use crate::{
-    SessionCommand, SessionEvent, SessionTransport,
+    EngineError, SessionCommand, SessionEvent, SessionTransport,
     actor::{ActorControl, SessionActor},
 };
 
@@ -25,6 +25,7 @@ impl SessionActor {
             SessionCommand::Input(input) => {
                 let bytes = match self.engine.encode_input(input) {
                     Ok(bytes) => bytes,
+                    Err(EngineError::UnsupportedInput(_)) => return ActorControl::Continue,
                     Err(_) => return ActorControl::Failure(SessionFailure::Platform),
                 };
                 match transport.write(&bytes).await {
@@ -41,6 +42,7 @@ impl SessionActor {
             SessionCommand::Mouse(event) => {
                 let bytes = match self.engine.encode_mouse(event) {
                     Ok(bytes) => bytes,
+                    Err(EngineError::UnsupportedMouse(_)) => return ActorControl::Continue,
                     Err(_) => return ActorControl::Failure(SessionFailure::Platform),
                 };
                 match transport.write(&bytes).await {

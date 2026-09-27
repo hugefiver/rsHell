@@ -12,10 +12,15 @@ pub(crate) fn encode(
     if modifiers.super_key {
         return Err(EngineError::UnsupportedInput("super-modified key"));
     }
-    let protocol = csi_u || mode.contains(TermMode::DISAMBIGUATE_ESC_CODES);
+    let kitty = mode.contains(TermMode::DISAMBIGUATE_ESC_CODES);
+    let protocol = csi_u || kitty;
     match code {
-        KeyCode::Character(character) => encode_character(character, modifiers, protocol),
+        KeyCode::Character(character) => encode_character(character, modifiers, csi_u, kitty),
         KeyCode::Enter => Ok(prefixed(b"\r", modifiers.alt)),
+        KeyCode::Escape if kitty && no_modifiers(modifiers) => Ok(b"\x1b[27u".to_vec()),
+        KeyCode::Escape if kitty => {
+            Ok(format!("\x1b[27;{}u", modifier_parameter(modifiers)).into())
+        }
         KeyCode::Escape => Ok(prefixed(b"\x1b", modifiers.alt)),
         KeyCode::Tab => Ok(encode_tab(modifiers, protocol)),
         KeyCode::Backspace => Ok(prefixed(
@@ -40,15 +45,25 @@ pub(crate) fn encode(
 fn encode_character(
     character: char,
     modifiers: KeyModifiers,
-    protocol: bool,
+    csi_u: bool,
+    kitty: bool,
 ) -> Result<Vec<u8>, EngineError> {
-    if protocol && modifiers.control {
-        return Ok(format!(
-            "\x1b[{};{}u",
-            character as u32,
+    if (kitty && (modifiers.control || modifiers.alt)) || (csi_u && modifiers.control) {
+        let codepoint = if kitty {
+            character.to_ascii_lowercase()
+        } else {
+            character
+        };
+        // Fixterms encodes Shift in the resulting character, except for Space.
+        let parameter = if !kitty && modifiers.shift && character != ' ' {
+            modifier_parameter(KeyModifiers {
+                shift: false,
+                ..modifiers
+            })
+        } else {
             modifier_parameter(modifiers)
-        )
-        .into());
+        };
+        return Ok(format!("\x1b[{};{}u", codepoint as u32, parameter).into());
     }
 
     let mut bytes = Vec::new();
