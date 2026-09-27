@@ -32,8 +32,8 @@ mod text;
 mod transport;
 
 pub use auth::{
-    AuthPlan, AuthPlanError, KeyboardInteractiveResponseError, keyboard_interactive_request,
-    validate_keyboard_interactive_response,
+    AuthPlan, AuthPlanError, ExternalSigner, ExternalSignerError, KeyboardInteractiveResponseError,
+    keyboard_interactive_request, validate_keyboard_interactive_response,
 };
 pub use display_recovery::{DisplayRecoveryTracker, InterruptionObservation, RecoveryTransition};
 pub use engine::{DefaultTerminalEngine, EngineDelta, TerminalEngine};

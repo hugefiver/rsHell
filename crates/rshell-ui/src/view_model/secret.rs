@@ -76,13 +76,16 @@ impl SecretEditState {
             });
         }
         if authentication == AuthenticationKind::Password {
-            let usable = original.had_credential
-                && original.transport == TransportKind::NativeSsh
+            // This application asks for the password only while saving; it has no
+            // connect-time prompt. Letting a save clear the stored password would produce a
+            // profile this UI cannot connect with, so an emptied password must be re-entered.
+            let was_password = original.transport == TransportKind::NativeSsh
                 && original.authentication == AuthenticationKind::Password;
             return match self.kind() {
                 SecretEditKind::EditedValue => Ok(self.take_set()),
-                SecretEditKind::Untouched if usable => Ok(SecretUpdate::Unchanged),
-                SecretEditKind::EditedEmpty if usable => Ok(SecretUpdate::Clear),
+                SecretEditKind::Untouched if original.had_credential && was_password => {
+                    Ok(SecretUpdate::Unchanged)
+                }
                 SecretEditKind::Untouched | SecretEditKind::EditedEmpty => Err(()),
             };
         }

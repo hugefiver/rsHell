@@ -10,7 +10,7 @@ async-channel = "2.5"
 async-trait = "0.1"
 libc = "0.2"
 # WHY: upstream 0.9's Windows INHERIT_CURSOR DSR can deadlock; this API-compatible fork removes it.
-portable-pty = { package = "portable-pty-psmux", version = "=0.9.6" }
+portable-pty = { package = "portable-pty-psmux", path = "../../third_party/portable-pty-psmux", version = "=0.9.6" }
 regex = "1.11"
 rshell-core = { path = "../rshell-core" }
 rshell-platform = { path = "../rshell-platform" }
@@ -24,7 +24,7 @@ tokio = { version = "1", features = ["macros", "rt", "rt-multi-thread", "sync", 
 unicode-width = "0.2.2"
 
 [dev-dependencies]
-portable-pty = { package = "portable-pty-psmux", version = "=0.9.6", features = ["containment-test-support"] }
+portable-pty = { package = "portable-pty-psmux", path = "../../third_party/portable-pty-psmux", version = "=0.9.6", features = ["containment-test-support"] }
 rshell-platform = { path = "../rshell-platform", features = ["containment-test-support"] }
 sha2 = "0.10.9"
 tempfile = "3.23"

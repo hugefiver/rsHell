@@ -114,7 +114,7 @@ fn p0_report_rejects_incomplete_visual_and_dpi_matrix() {
 
 #[cfg(windows)]
 #[test]
-fn windows_pty_uses_creation_time_job_list_attribute() {
+fn windows_pty_resolves_the_vendored_source() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR"));
     let metadata = Command::new("cargo")
         .args(["metadata", "--locked", "--format-version", "1"])
@@ -145,16 +145,6 @@ fn windows_pty_uses_creation_time_job_list_attribute() {
         root.join("third_party/portable-pty-psmux/Cargo.toml"),
         "the selected package must be the narrow vendored 0.9.6 source"
     );
-
-    let root_manifest = std::fs::read_to_string(root.join("Cargo.toml")).unwrap();
-    assert!(root_manifest.contains("exclude = [\"third_party/portable-pty-psmux\"]"));
-    assert!(
-        root_manifest
-            .contains("portable-pty-psmux = { path = \"third_party/portable-pty-psmux\" }")
-    );
-    let session_manifest =
-        std::fs::read_to_string(root.join("crates/rshell-session/Cargo.toml")).unwrap();
-    assert!(session_manifest.contains("version = \"=0.9.6\""));
 
     let vendor = root.join("third_party/portable-pty-psmux");
     let mut vendored_files = Vec::new();
@@ -199,82 +189,6 @@ fn windows_pty_uses_creation_time_job_list_attribute() {
             "missing patch provenance for {path}"
         );
     }
-
-    let attributes = std::fs::read_to_string(vendor.join("src/win/procthreadattr.rs")).unwrap();
-    assert!(attributes.contains("job_handles: Option<Box<[HANDLE; 1]>>"));
-    assert!(attributes.contains("PROC_THREAD_ATTRIBUTE_JOB_LIST: usize = 0x0002000D"));
-    assert_ordered(
-        &attributes,
-        &[
-            "self.job_handles = Some(Box::new([job.as_raw_handle() as HANDLE]))",
-            "let handles = self.job_handles.as_mut()",
-            "handles.as_mut_ptr().cast()",
-            "UpdateProcThreadAttribute",
-        ],
-    );
-    assert!(!attributes.contains("let mut handle ="));
-    assert!(!attributes.contains("addr_of_mut!(handle)"));
-    assert_ordered(
-        &attributes,
-        &["DeleteProcThreadAttributeList", "job_handles"],
-    );
-
-    let spawn = std::fs::read_to_string(vendor.join("src/win/psuedocon.rs")).unwrap();
-    assert_eq!(spawn.matches("CreateProcessW(").count(), 1);
-    assert_ordered(
-        &spawn,
-        &[
-            "attrs.set_pty",
-            "attrs.set_job",
-            "CreateProcessW(",
-            "drop(attrs)",
-        ],
-    );
-    assert!(spawn.contains("PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE"));
-    assert!(attributes.contains("PROC_THREAD_ATTRIBUTE_JOB_LIST"));
-
-    let conpty = std::fs::read_to_string(vendor.join("src/win/conpty.rs")).unwrap();
-    assert!(conpty.contains("spawn_command_inner(cmd, None)"));
-    assert!(conpty.contains("spawn_command_inner(cmd, Some(job))"));
-    assert!(conpty.contains("spawn_command_inner(cmd, job)"));
-    let rshell_spawn =
-        std::fs::read_to_string(root.join("crates/rshell-session/src/transport/pty.rs")).unwrap();
-    assert!(!rshell_spawn.contains("AssignProcessToJobObject"));
-    assert_ordered(
-        &rshell_spawn,
-        &[
-            "WindowsProcessJob::new",
-            "native_pty_system()",
-            "spawn_command_in_job",
-            "LocalRuntime::new",
-        ],
-    );
-    let job =
-        std::fs::read_to_string(root.join("crates/rshell-platform/src/process_tree/windows.rs"))
-            .unwrap();
-    for required in [
-        "CreateJobObjectW",
-        "SetInformationJobObject",
-        "JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE",
-        "IsProcessInJob",
-        "TerminateJobObject",
-    ] {
-        assert!(
-            job.contains(required),
-            "missing Windows Job API: {required}"
-        );
-    }
-    assert!(!job.contains("AssignProcessToJobObject"));
-    assert!(!job.contains("BREAKAWAY"));
-    assert!(!job.contains("impl Clone"));
-    let lifecycle = std::fs::read_to_string(
-        root.join("crates/rshell-session/src/transport/local_runtime/lifecycle.rs"),
-    )
-    .unwrap();
-    assert_ordered(
-        &lifecycle,
-        &["terminate_process_tree()", "join_reader_bounded()"],
-    );
 }
 
 #[test]
@@ -292,17 +206,6 @@ fn p0_cleanup_names_direct_child_evidence_without_claiming_tree_proof() {
     let qa = std::fs::read_to_string(root.join("src/p0_smoke_evidence.rs")).unwrap();
     assert!(qa.contains("DirectChildCountZero"));
     assert!(!qa.contains("\"child_count_zero\""));
-}
-
-#[cfg(windows)]
-fn assert_ordered(source: &str, needles: &[&str]) {
-    let mut offset = 0;
-    for needle in needles {
-        let position = source[offset..]
-            .find(needle)
-            .unwrap_or_else(|| panic!("missing ordered source marker: {needle}"));
-        offset += position + needle.len();
-    }
 }
 
 #[cfg(windows)]

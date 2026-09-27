@@ -1,4 +1,9 @@
-use alacritty_terminal::{Term, grid::Dimensions, term::TermMode, vte::ansi::Processor};
+use alacritty_terminal::{
+    Term,
+    grid::Dimensions,
+    term::TermMode,
+    vte::ansi::{Processor, Timeout},
+};
 use rshell_core::ResolvedTerminalProfile;
 
 use crate::{
@@ -7,6 +12,9 @@ use crate::{
     alacritty_rows,
     alacritty_tracker::{ScrollTracker, Window},
 };
+
+#[path = "alacritty_feed_sync.rs"]
+mod sync;
 
 struct FeedWindow<'a> {
     bytes: &'a [u8],
@@ -23,6 +31,12 @@ pub(crate) fn advance(
     tracker: &mut ScrollTracker,
     bytes: &[u8],
 ) -> Vec<u8> {
+    // A synchronized update whose deadline already passed ends before new output is parsed,
+    // exactly as if the caller's timer had fired first.
+    if sync_expired(processor) {
+        sync::stop(processor, terminal, settings, primary_rows);
+        sync_cursor(processor, terminal, tracker);
+    }
     let mut remaining = bytes;
     while let Some(sequence) = next_alt_switch(remaining) {
         advance_segment(
@@ -102,6 +116,12 @@ fn advance_windows(
 ) {
     while !remaining.is_empty() {
         let was_primary = !terminal.mode().contains(TermMode::ALT_SCREEN);
+        if processor.sync_timeout().pending_timeout() {
+            tracker.consume(remaining, was_primary);
+            sync::advance(processor, terminal, settings, primary_rows, remaining);
+            sync_cursor(processor, terminal, tracker);
+            return;
+        }
         let (length, maximum_shift, track_capacity) = if was_primary {
             let grid = terminal.grid();
             let room = settings
@@ -139,6 +159,34 @@ fn advance_windows(
     }
 }
 
+/// Deadline of the synchronized update (DEC mode 2026) the processor is buffering, if any.
+pub(crate) fn sync_deadline(processor: &Processor) -> Option<std::time::Instant> {
+    processor.sync_timeout().sync_timeout()
+}
+
+fn sync_expired(processor: &Processor) -> bool {
+    sync_deadline(processor).is_some_and(|deadline| deadline <= std::time::Instant::now())
+}
+
+/// Ends a pending synchronized update: the buffered output is applied to the terminal with the
+/// same scrollback bookkeeping as regular output. Terminals give up waiting for the closing
+/// sequence after a short timeout, so a program that dies in the middle of a frame does not
+/// freeze the display.
+pub(crate) fn end_sync(
+    processor: &mut Processor,
+    terminal: &mut Term<EventSink>,
+    events: &EventSink,
+    settings: &ResolvedTerminalProfile,
+    primary_rows: &mut PrimaryRows,
+    tracker: &mut ScrollTracker,
+) -> Vec<u8> {
+    if processor.sync_timeout().pending_timeout() {
+        sync::stop(processor, terminal, settings, primary_rows);
+        sync_cursor(processor, terminal, tracker);
+    }
+    events.take_outbound()
+}
+
 fn advance_window(
     processor: &mut Processor,
     terminal: &mut Term<EventSink>,
@@ -152,14 +200,22 @@ fn advance_window(
         maximum_shift,
         track_capacity,
     } = window;
-    let was_primary = !terminal.mode().contains(TermMode::ALT_SCREEN);
-    let old_history = terminal.grid().history_size();
-    let anchor_shift = if track_capacity { maximum_shift } else { 0 };
-    let capacity_anchor = was_primary
-        .then(|| alacritty_rows::capture(terminal, anchor_shift))
-        .flatten();
+    alacritty_rows::apply(
+        terminal,
+        settings.scrollback_lines,
+        primary_rows,
+        maximum_shift,
+        track_capacity,
+        |terminal| processor.advance(terminal, bytes),
+    );
+    sync_cursor(processor, terminal, tracker);
+}
 
-    processor.advance(terminal, bytes);
+fn sync_cursor(processor: &Processor, terminal: &Term<EventSink>, tracker: &mut ScrollTracker) {
+    // The tracker has consumed the pending bytes, but the terminal has not.
+    if processor.sync_timeout().pending_timeout() {
+        return;
+    }
     let active_primary = !terminal.mode().contains(TermMode::ALT_SCREEN);
     let cursor = &terminal.grid().cursor;
     tracker.sync_cursor(
@@ -168,38 +224,6 @@ fn advance_window(
         cursor.point.column.0,
         cursor.input_needs_wrap,
     );
-
-    if active_primary {
-        let history = terminal.grid().history_size();
-        if was_primary {
-            let completed = if old_history == settings.scrollback_lines
-                || (!track_capacity && history == settings.scrollback_lines)
-            {
-                alacritty_rows::completed_shift(
-                    terminal,
-                    settings.scrollback_lines,
-                    capacity_anchor,
-                )
-            } else {
-                0
-            };
-            let shift = history
-                .saturating_sub(old_history)
-                .saturating_add(completed);
-            primary_rows.origin = primary_rows.origin.saturating_add(shift as i64);
-        } else if history >= primary_rows.history {
-            primary_rows.origin = primary_rows
-                .origin
-                .saturating_add(i64::try_from(history - primary_rows.history).unwrap_or(i64::MAX));
-        } else {
-            primary_rows.origin = primary_rows
-                .origin
-                .saturating_sub(i64::try_from(primary_rows.history - history).unwrap_or(i64::MAX));
-        }
-        primary_rows.history = history;
-    } else if was_primary {
-        primary_rows.history = old_history;
-    }
 }
 
 fn next_alt_switch(bytes: &[u8]) -> Option<std::ops::Range<usize>> {

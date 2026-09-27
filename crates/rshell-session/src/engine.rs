@@ -31,6 +31,21 @@ pub trait TerminalEngine: Send {
     fn viewport_bounds(&self) -> ViewportBounds;
     fn search(&self, query: &SearchQuery) -> Result<Vec<SearchMatch>, EngineError>;
     fn selected_text(&self, range: SelectionRange) -> Result<String, EngineError>;
+
+    /// While a synchronized update (DEC mode 2026) is buffering output, the moment it has to
+    /// end even without the closing sequence. The caller calls [`TerminalEngine::end_sync`]
+    /// once it passes; output that arrives later ends it on its own.
+    fn sync_deadline(&self) -> Option<std::time::Instant> {
+        None
+    }
+
+    /// Ends a pending synchronized update and applies the output buffered so far.
+    fn end_sync(&mut self) -> Result<EngineDelta, EngineError> {
+        Ok(EngineDelta {
+            outbound: Vec::new(),
+            dirty: false,
+        })
+    }
 }
 
 pub struct DefaultTerminalEngine {
@@ -105,6 +120,19 @@ impl TerminalEngine for DefaultTerminalEngine {
         Ok(EngineDelta {
             outbound,
             dirty: !bytes.is_empty(),
+        })
+    }
+
+    fn sync_deadline(&self) -> Option<std::time::Instant> {
+        self.adapter.sync_deadline()
+    }
+
+    fn end_sync(&mut self) -> Result<EngineDelta, EngineError> {
+        let pending = self.adapter.sync_deadline().is_some();
+        let outbound = self.adapter.end_sync();
+        Ok(EngineDelta {
+            outbound,
+            dirty: pending,
         })
     }
 

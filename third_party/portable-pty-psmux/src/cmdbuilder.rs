@@ -778,10 +778,13 @@ fn is_cwd_relative_path<P: AsRef<Path>>(p: P) -> bool {
     )
 }
 
+// The vendored package omits upstream test sources; rustfmt follows these paths even in non-test builds.
 #[cfg(test)]
+#[rustfmt::skip]
 #[path = "../../../tests-rs/test_cmdbuilder.rs"]
 mod tests;
 
 #[cfg(test)]
+#[rustfmt::skip]
 #[path = "../../../tests-rs/test_issue167_envblock.rs"]
 mod tests_issue167_envblock;

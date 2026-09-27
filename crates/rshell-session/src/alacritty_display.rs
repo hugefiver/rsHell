@@ -32,6 +32,7 @@ pub(crate) fn modes(terminal: &Term<EventSink>, events: &EventSink) -> TerminalD
         cursor_hidden: !mode.contains(TermMode::SHOW_CURSOR)
             || terminal.cursor_style().shape == CursorShape::Hidden,
         stale_title: events.title() != "rsHell",
+        bracketed_paste: mode.contains(TermMode::BRACKETED_PASTE),
     }
 }
 

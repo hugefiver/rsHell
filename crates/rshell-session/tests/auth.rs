@@ -1,15 +1,16 @@
-use std::path::PathBuf;
+use std::{path::PathBuf, sync::Arc};
 
 use rshell_core::{
     AuthenticationKind, ConnectionProfile, CredentialRef, InteractionResponse, TransportKind,
 };
 use rshell_session::{
-    AuthPlan, AuthPlanError, KeyboardInteractiveResponseError, keyboard_interactive_request,
-    validate_keyboard_interactive_response,
+    AuthPlan, AuthPlanError, ExternalSigner, ExternalSignerError, KeyboardInteractiveResponseError,
+    keyboard_interactive_request, validate_keyboard_interactive_response,
 };
 use rshell_storage::{
     CredentialVault, MemoryCredentialVault, MemoryVaultFault, VaultError, VaultOperation,
 };
+use russh::keys::{Algorithm, HashAlg, PrivateKey, key::safe_rng};
 use secrecy::{ExposeSecret, SecretString};
 
 const PASSWORD: &str = "password-sentinel-must-not-leak";
@@ -262,5 +263,55 @@ fn keyboard_interactive_preserves_labels_echo_flags_and_accepts_only_exact_answe
             InteractionResponse::HostKey(rshell_core::HostKeyDecision::Reject)
         ),
         Err(KeyboardInteractiveResponseError::UnexpectedResponse)
+    ));
+}
+
+#[test]
+fn in_memory_private_keys_build_public_key_plans_without_an_identity_file() {
+    let key = Arc::new(PrivateKey::random(&mut safe_rng(), Algorithm::Ed25519).unwrap());
+    let mut public_key = profile(TransportKind::NativeSsh, AuthenticationKind::PublicKey);
+    public_key.identity_file = None;
+
+    let plan = AuthPlan::from_private_key(&public_key, key.clone()).unwrap();
+    assert_eq!(plan.kind(), AuthenticationKind::PublicKey);
+    assert_eq!(plan.host(), "auth.test");
+    assert!(format!("{plan:?}").contains("[REDACTED]"));
+
+    let password = profile(TransportKind::NativeSsh, AuthenticationKind::Password);
+    assert!(matches!(
+        AuthPlan::from_private_key(&password, key),
+        Err(AuthPlanError::UnsupportedCombination { .. })
+    ));
+}
+
+struct NoSigner;
+
+#[async_trait::async_trait]
+impl ExternalSigner for NoSigner {
+    async fn sign(
+        &self,
+        _data: &[u8],
+        _hash: Option<HashAlg>,
+    ) -> Result<Vec<u8>, ExternalSignerError> {
+        Err(ExternalSignerError)
+    }
+}
+
+#[test]
+fn external_signers_build_public_key_plans_without_an_identity_file() {
+    let key = PrivateKey::random(&mut safe_rng(), Algorithm::Ed25519).unwrap();
+    let mut public_key = profile(TransportKind::NativeSsh, AuthenticationKind::PublicKey);
+    public_key.identity_file = None;
+
+    let plan =
+        AuthPlan::from_signer(&public_key, key.public_key().clone(), Arc::new(NoSigner)).unwrap();
+    assert_eq!(plan.kind(), AuthenticationKind::PublicKey);
+    assert_eq!(plan.host(), "auth.test");
+    assert!(format!("{plan:?}").contains("[REDACTED]"));
+
+    let password = profile(TransportKind::NativeSsh, AuthenticationKind::Password);
+    assert!(matches!(
+        AuthPlan::from_signer(&password, key.public_key().clone(), Arc::new(NoSigner)),
+        Err(AuthPlanError::UnsupportedCombination { .. })
     ));
 }

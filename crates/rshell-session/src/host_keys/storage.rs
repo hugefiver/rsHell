@@ -1,6 +1,7 @@
 use std::{
+    collections::BTreeSet,
     fs::{self, File, OpenOptions},
-    io::{self, Write},
+    io::{self, Read, Seek, SeekFrom, Write},
     path::Path,
     sync::atomic::{AtomicU64, Ordering},
 };
@@ -19,6 +20,28 @@ pub(super) fn store(
     key: &PublicKey,
 ) -> Result<(), HostKeyError> {
     store_with_copy(destination, host, port, key, copy_existing_file)
+}
+
+/// Learns `key` for `host`:`port` in place of every key recorded for them.
+pub(super) fn replace(
+    destination: &Path,
+    host: &str,
+    port: u16,
+    key: &PublicKey,
+) -> Result<(), HostKeyError> {
+    // russh numbers entries from 1, skipping comment lines, the same way `copy_without_endpoint`
+    // counts them, so the matched entries map directly onto the lines rewritten below.
+    let matched = known_hosts::known_host_keys_path(host, port, destination)
+        .map_err(|_| storage_error(host, port, HostKeyStorageStep::CopyExisting))?
+        .into_iter()
+        .map(|(entry, _)| entry)
+        .collect::<BTreeSet<_>>();
+    if matched.is_empty() {
+        return Err(storage_error(host, port, HostKeyStorageStep::CopyExisting));
+    }
+    store_with_copy(destination, host, port, key, |path, target| {
+        copy_without_endpoint(path, target, host, port, &matched)
+    })
 }
 
 fn store_with_copy(
@@ -41,6 +64,8 @@ fn store_with_copy(
         let mut temporary_file = temporary_file;
         copy(destination, &mut temporary_file)
             .map_err(|_| storage_error(host, port, HostKeyStorageStep::CopyExisting))?;
+        terminate_last_record(&mut temporary_file)
+            .map_err(|_| storage_error(host, port, HostKeyStorageStep::CopyExisting))?;
         temporary_file
             .flush()
             .and_then(|()| temporary_file.sync_all())
@@ -61,6 +86,21 @@ fn store_with_copy(
     Ok(())
 }
 
+// russh appends the learned record. An existing file without a final newline needs a delimiter
+// so the new record does not become part of its last (possibly shared) host-key entry.
+fn terminate_last_record(file: &mut File) -> io::Result<()> {
+    if file.stream_position()? == 0 {
+        return Ok(());
+    }
+    file.seek(SeekFrom::End(-1))?;
+    let mut last = [0];
+    file.read_exact(&mut last)?;
+    if last[0] != b'\n' {
+        file.write_all(b"\n")?;
+    }
+    Ok(())
+}
+
 fn storage_error(host: &str, port: u16, step: HostKeyStorageStep) -> HostKeyError {
     HostKeyError::storage(host, port, step)
 }
@@ -74,6 +114,102 @@ fn copy_existing_file(path: &Path, target: &mut File) -> io::Result<()> {
         Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
         Err(error) => Err(error),
     }
+}
+
+/// Copies the known-hosts file, removing only the `host`:`port` endpoint from the entries russh
+/// matched (numbered from 1, skipping comments). Other hostnames on a shared line keep their
+/// recorded key; a record whose only endpoint was the target is dropped. A matched hashed entry
+/// cannot be rewritten token-by-token, so replacing through one fails closed.
+fn copy_without_endpoint(
+    path: &Path,
+    target: &mut File,
+    host: &str,
+    port: u16,
+    matched: &BTreeSet<usize>,
+) -> io::Result<()> {
+    let content = fs::read(path)?;
+    let mut entry = 0;
+    let mut rewritten = BTreeSet::new();
+    for line in content.split_inclusive(|&byte| byte == b'\n') {
+        // russh numbers entries from 1 and skips only lines that begin with '#', so blank
+        // lines still advance the counter.
+        let is_comment = line.first() == Some(&b'#');
+        if !is_comment {
+            entry += 1;
+        }
+        if is_comment || !matched.contains(&entry) {
+            target.write_all(line)?;
+            continue;
+        }
+        rewritten.insert(entry);
+        match rewritten_endpoint_line(line, host, port) {
+            Rewrite::Rewritten(bytes) => target.write_all(&bytes)?,
+            Rewrite::Drop => {}
+            Rewrite::Unsafe => {
+                return Err(io::Error::other(
+                    "matched known-hosts endpoint cannot be isolated",
+                ));
+            }
+        }
+    }
+    if rewritten != *matched {
+        return Err(io::Error::other("matched known-hosts entries changed"));
+    }
+    Ok(())
+}
+
+enum Rewrite {
+    Rewritten(Vec<u8>),
+    Drop,
+    Unsafe,
+}
+
+fn rewritten_endpoint_line(line: &[u8], host: &str, port: u16) -> Rewrite {
+    let Some((hosts, rest)) = split_hosts_field(line) else {
+        return Rewrite::Unsafe;
+    };
+    let endpoint = if port == 22 {
+        host.to_string()
+    } else {
+        format!("[{host}]:{port}")
+    };
+    let mut kept = Vec::new();
+    let mut removed = false;
+    for token in split_comma_list(hosts) {
+        if token.is_empty()
+            || token.starts_with(b"|1|")
+            || token.starts_with(b"!")
+            || token.contains(&b'*')
+            || token.contains(&b'?')
+        {
+            // A hashed token may be the target endpoint, but cannot be verified or removed
+            // without recomputing its HMAC; patterns are also unsafe to rewrite.
+            return Rewrite::Unsafe;
+        }
+        if token == endpoint.as_bytes() {
+            removed = true;
+        } else {
+            kept.push(token);
+        }
+    }
+    if !removed {
+        return Rewrite::Unsafe;
+    }
+    if kept.is_empty() {
+        return Rewrite::Drop;
+    }
+    let mut kept = kept.join(&b","[..]);
+    kept.extend_from_slice(rest);
+    Rewrite::Rewritten(kept)
+}
+
+fn split_hosts_field(line: &[u8]) -> Option<(&[u8], &[u8])> {
+    let separator = line.iter().position(u8::is_ascii_whitespace)?;
+    Some(line.split_at(separator))
+}
+
+fn split_comma_list(bytes: &[u8]) -> impl Iterator<Item = &[u8]> {
+    bytes.split(|byte| *byte == b',')
 }
 
 fn create_private_temporary_file(

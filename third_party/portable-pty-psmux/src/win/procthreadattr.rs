@@ -101,7 +101,10 @@ impl ProcThreadAttributeList {
         ensure!(self.job_handles.is_none(), "JOB_LIST already configured");
         self.job_handles = Some(Box::new([job.as_raw_handle() as HANDLE]));
         let attribute_list = self.as_mut_ptr();
-        let handles = self.job_handles.as_mut().expect("job storage was just initialized");
+        let handles = self
+            .job_handles
+            .as_mut()
+            .expect("job storage was just initialized");
         let job_list_value = handles.as_mut_ptr().cast();
         let res = unsafe {
             UpdateProcThreadAttribute(

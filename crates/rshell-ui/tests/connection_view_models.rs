@@ -8,6 +8,7 @@ use rshell_ui::{
     AuthenticationCapabilities, ConnectionEditorDraft, ConnectionEditorMsg, EditorValidationError,
     SecretEditKind, SidebarAction, SidebarRow, SidebarViewModel,
 };
+use secrecy::ExposeSecret;
 
 fn profile(name: &str, host: &str) -> ConnectionProfile {
     let mut profile = ConnectionProfile::new(name, host);
@@ -67,10 +68,11 @@ fn editor_validates_before_send_and_preserves_secret_semantics() {
     ));
 
     editor.mark_secret_edited();
-    let command = editor
-        .save_command()
-        .expect("explicit clear is represented");
-    assert!(matches!(command.secret_update(), Some(SecretUpdate::Clear)));
+    assert_eq!(
+        editor.save_command().unwrap_err(),
+        EditorValidationError::SecretRequired,
+        "this application has no connect-time password prompt, so a save must not clear it"
+    );
 
     editor.view_mut().port = "0".into();
     assert_eq!(
@@ -112,6 +114,81 @@ fn new_password_profile_requires_an_explicit_nonempty_secret() {
 }
 
 #[test]
+fn edit_type_clear_save_rejects_without_a_command_and_allows_password_retry() {
+    let source = existing_password_profile();
+    let mut editor = ConnectionEditorDraft::edit(&source);
+    editor.set_secret("discarded-password");
+    assert_eq!(editor.secret_kind(), SecretEditKind::EditedValue);
+    editor.set_secret("");
+
+    for _ in 0..2 {
+        assert_eq!(editor.secret_kind(), SecretEditKind::EditedEmpty);
+        assert!(editor.secret_is_empty());
+        assert_eq!(
+            editor.save_command().unwrap_err(),
+            EditorValidationError::SecretRequired,
+            "neither the first Save nor a repeated Save may emit a credential mutation"
+        );
+    }
+
+    // Reopening a rejected/cancelled edit must still preserve the original credential.
+    let mut reopened = ConnectionEditorDraft::edit(&source);
+    assert!(matches!(
+        reopened.save_command().unwrap().secret_update(),
+        Some(SecretUpdate::Unchanged)
+    ));
+
+    editor.set_secret("replacement-password");
+    let UiCommand::ApplyCatalog {
+        mutation: CatalogMutation::Update(updated),
+        secret: SecretUpdate::Set(secret),
+    } = editor
+        .save_command()
+        .expect("re-entering a password allows retry")
+    else {
+        panic!("retry must update the same profile with a replacement password");
+    };
+    assert_eq!(updated.id, source.id);
+    assert_eq!(updated.authentication, AuthenticationKind::Password);
+    assert!(secret.expose_secret() == "replacement-password");
+    assert!(
+        editor.secret_is_empty(),
+        "replacement is moved into the command"
+    );
+}
+
+#[test]
+fn rejected_password_clear_can_retry_with_authentication_that_needs_no_password() {
+    for authentication in [
+        AuthenticationKind::PublicKey,
+        AuthenticationKind::KeyboardInteractive,
+    ] {
+        let mut editor = ConnectionEditorDraft::edit(&existing_password_profile());
+        editor.set_secret("discarded-password");
+        editor.set_secret("");
+        assert_eq!(
+            editor.save_command().unwrap_err(),
+            EditorValidationError::SecretRequired
+        );
+
+        editor.set_authentication(authentication);
+        if authentication == AuthenticationKind::PublicKey {
+            editor.view_mut().identity_file = "keys/id_ed25519".into();
+        }
+        let UiCommand::ApplyCatalog {
+            mutation: CatalogMutation::Update(updated),
+            secret: SecretUpdate::Clear,
+        } = editor
+            .save_command()
+            .expect("password-free authentication allows retry")
+        else {
+            panic!("auth switch must clear the old password rather than reuse it");
+        };
+        assert_eq!(updated.authentication, authentication);
+    }
+}
+
+#[test]
 fn existing_profile_secret_policy_never_reinterprets_or_retains_stale_credentials() {
     const SENTINEL: &str = "TASK15-TRANSITION-SENTINEL";
     let cases = [
@@ -143,6 +220,16 @@ fn existing_profile_secret_policy_never_reinterprets_or_retains_stale_credential
             resulting_transport: TransportKind::NativeSsh,
             resulting_authentication: AuthenticationKind::Password,
             input: SecretInput::Untouched,
+            expected: SecretOutcome::Required,
+        },
+        SecretPolicyCase {
+            name: "emptied saved password must be re-entered",
+            original_transport: TransportKind::NativeSsh,
+            original_authentication: AuthenticationKind::Password,
+            had_credential: true,
+            resulting_transport: TransportKind::NativeSsh,
+            resulting_authentication: AuthenticationKind::Password,
+            input: SecretInput::Empty,
             expected: SecretOutcome::Required,
         },
         SecretPolicyCase {

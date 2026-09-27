@@ -143,6 +143,21 @@ fn display_recovery_preserves_primary_and_clears_modes() {
 }
 
 #[test]
+fn bracketed_paste_mode_is_exposed_and_is_not_residue() {
+    let mut engine = display_mode_fixture_engine();
+    assert!(!engine.display_modes().bracketed_paste);
+
+    engine.input(b"\x1b[?2004h").unwrap();
+    let modes = engine.display_modes();
+    assert!(modes.bracketed_paste);
+    // Shells turn it on at every prompt; it is not display residue.
+    assert!(!modes.has_residue());
+
+    engine.input(b"\x1b[?2004l").unwrap();
+    assert!(!engine.display_modes().bracketed_paste);
+}
+
+#[test]
 fn fixture_converts_styles_unicode_wrap_title_cursor_and_mouse_mode() {
     let mut engine = DefaultTerminalEngine::new(&profile(20_000), size(16, 8)).unwrap();
     engine.input(FIXTURE).unwrap();
@@ -216,6 +231,268 @@ fn alternate_screen_is_isolated_and_restores_primary_screen() {
 
     engine.input(b"\x1b[?1002l").unwrap();
     assert!(!engine.snapshot(viewport(0, 4), None).mouse_reporting);
+}
+
+#[test]
+fn synchronized_update_shows_the_whole_frame_at_its_end() {
+    let mut engine = DefaultTerminalEngine::new(&profile(1_000), size(20, 4)).unwrap();
+    engine.input(b"before\r\n\x1b[?2026hinside").unwrap();
+    assert!(engine.sync_deadline().is_some());
+    assert!(!frame_text(&engine.snapshot(viewport(0, 4), None)).contains("inside"));
+
+    engine.input(b" frame\x1b[?2026l").unwrap();
+    assert!(engine.sync_deadline().is_none());
+    assert!(frame_text(&engine.snapshot(viewport(0, 4), None)).contains("inside frame"));
+}
+
+#[test]
+fn synchronized_update_ends_at_its_deadline_without_the_closing_sequence() {
+    let mut engine = DefaultTerminalEngine::new(&profile(1_000), size(20, 4)).unwrap();
+    engine.input(b"\x1b[?2026hstalled").unwrap();
+    let deadline = engine.sync_deadline().expect("pending synchronized update");
+    assert!(deadline > std::time::Instant::now());
+    assert!(!frame_text(&engine.snapshot(viewport(0, 4), None)).contains("stalled"));
+
+    let delta = engine.end_sync().unwrap();
+    assert!(delta.dirty);
+    assert!(engine.sync_deadline().is_none());
+    assert!(frame_text(&engine.snapshot(viewport(0, 4), None)).contains("stalled"));
+    assert!(!engine.end_sync().unwrap().dirty, "nothing left to end");
+}
+
+#[test]
+fn output_after_an_expired_synchronized_update_is_not_swallowed() {
+    let mut engine = DefaultTerminalEngine::new(&profile(1_000), size(20, 4)).unwrap();
+    engine.input(b"\x1b[?2026hframe").unwrap();
+    std::thread::sleep(std::time::Duration::from_millis(200));
+
+    engine.input(b"\r\nprompt$ ").unwrap();
+    let text = frame_text(&engine.snapshot(viewport(0, 4), None));
+    assert!(text.contains("frame"), "{text}");
+    assert!(text.contains("prompt$"), "{text}");
+    assert!(engine.sync_deadline().is_none());
+}
+
+#[test]
+fn saturated_synchronized_update_explicit_flush_preserves_exact_rows() {
+    assert_saturated_sync_flush(1, false);
+}
+
+#[test]
+fn saturated_synchronized_update_expired_flush_preserves_exact_rows() {
+    assert_saturated_sync_flush(1, true);
+}
+
+#[test]
+fn saturated_synchronized_update_multiple_windows_preserve_exact_rows() {
+    assert_saturated_sync_flush(206, false);
+    assert_saturated_sync_flush(206, true);
+}
+
+#[test]
+fn saturated_synchronized_update_closing_sequence_preserves_multiple_windows() {
+    let mut engine = saturated_scrollback_engine();
+    let mut expected = saturated_scrollback_engine();
+    let body = (104..310)
+        .map(|index| format!("\r\nline{index:03}"))
+        .collect::<String>();
+    expected.input(body.as_bytes()).unwrap();
+    // Begin, several bounded windows, end, and ordinary output all in one input call.
+    engine
+        .input(format!("\x1b[?2026h{body}\x1b[?2026l!").as_bytes())
+        .unwrap();
+    expected.input(b"!").unwrap();
+    assert_same_retained_rows(&engine, &expected);
+}
+
+#[test]
+fn synchronized_update_crossing_capacity_counts_the_whole_scroll_operation() {
+    // 1,001 crosses Alacritty's row-storage allocation boundary in the same operation.
+    for limit in [100, 1_001] {
+        for (operation, visible) in [
+            (b"\x1b[?2026h\x1b[3Stail".as_slice(), ["", "", "tail"]),
+            (b"\x1b[?2026h\x1b[H\x1b[3Mtail".as_slice(), ["tail", "", ""]),
+        ] {
+            let mut engine = DefaultTerminalEngine::new(&profile(limit), size(12, 3)).unwrap();
+            engine.input(&b"same\r\n".repeat(limit + 1)).unwrap();
+            assert_eq!(
+                engine.viewport_bounds().bottom_top_stable_row,
+                limit as i64 - 1
+            );
+            engine.input(operation).unwrap();
+            engine.end_sync().unwrap();
+            let bounds = engine.viewport_bounds();
+            assert_eq!(bounds.first_stable_row, 2, "history limit {limit}");
+            assert_eq!(bounds.bottom_top_stable_row, limit as i64 + 2);
+            let frame = engine.snapshot(viewport(bounds.bottom_top_stable_row, 3), None);
+            assert_eq!(trimmed_rows(&frame), visible);
+        }
+    }
+}
+
+#[test]
+fn synchronized_update_uses_actual_scrolls_not_overestimated_raw_byte_predictions() {
+    let mut engine = saturated_scrollback_engine();
+    let mut expected = saturated_scrollback_engine();
+    for terminal in [&mut engine, &mut expected] {
+        terminal.input(b"\x1b[?7l").unwrap();
+    }
+    let body = format!("{}\r\nlast", "X".repeat(2_500));
+    let before = engine.viewport_bounds();
+    engine
+        .input(format!("\x1b[?2026h{body}").as_bytes())
+        .unwrap();
+    engine.end_sync().unwrap();
+    expected.input(body.as_bytes()).unwrap();
+    assert_saturated_scroll(&engine, before, 1);
+    assert_same_retained_rows(&engine, &expected);
+}
+
+#[test]
+fn synchronized_update_fragmented_wraps_preserve_cursor_and_following_output() {
+    let mut engine = saturated_scrollback_engine();
+    let mut expected = saturated_scrollback_engine();
+    engine.input(b"\x1b[?2026h").unwrap();
+    for fragment in [b"\r".as_slice(), b"123456789012", b"X", b"\r\nnext"] {
+        engine.input(fragment).unwrap();
+        expected.input(fragment).unwrap();
+    }
+    engine.end_sync().unwrap();
+    engine.input(b"\r\nordinary").unwrap();
+    expected.input(b"\r\nordinary").unwrap();
+    assert_same_retained_rows(&engine, &expected);
+}
+
+#[test]
+fn synchronized_region_scroll_up_matches_unsynchronized_operation() {
+    assert_synchronized_region_operation(b"\x1b[4S");
+}
+
+#[test]
+fn synchronized_region_delete_lines_matches_unsynchronized_operation() {
+    assert_synchronized_region_operation(b"\x1b[4M");
+}
+
+fn assert_synchronized_region_operation(operation: &[u8]) {
+    for flush in ["explicit", "closing", "expired"] {
+        let mut expected = DefaultTerminalEngine::new(&profile(100), size(12, 4)).unwrap();
+        let mut engine = DefaultTerminalEngine::new(&profile(100), size(12, 4)).unwrap();
+        for terminal in [&mut expected, &mut engine] {
+            terminal.input(b"A\r\nB\r\nC\r\nD\x1b[1;2r").unwrap();
+        }
+        expected.input(operation).unwrap();
+        engine.input(b"\x1b[?2026h").unwrap();
+        engine.input(operation).unwrap();
+        assert_eq!(
+            trimmed_rows(&engine.snapshot(viewport(0, 4), None)),
+            ["A", "B", "C", "D"]
+        );
+        match flush {
+            "explicit" => {
+                engine.end_sync().unwrap();
+            }
+            "closing" => engine.input(b"\x1b[?2026l").unwrap(),
+            "expired" => {
+                let deadline = engine.sync_deadline().unwrap();
+                std::thread::sleep(deadline.saturating_duration_since(std::time::Instant::now()));
+                assert!(std::time::Instant::now() >= deadline);
+                engine.input(b"\x1b[0m").unwrap();
+            }
+            _ => unreachable!(),
+        }
+        assert!(engine.sync_deadline().is_none());
+        let reference = retained_region_rows(&expected);
+        assert_eq!(
+            reference,
+            [(0, "A"), (1, "B"), (2, ""), (3, ""), (4, "C"), (5, "D")]
+                .map(|(row, text)| (row, text.to_owned()))
+        );
+        let bottom = engine.viewport_bounds().bottom_top_stable_row;
+        assert_eq!(
+            trimmed_rows(&engine.snapshot(viewport(bottom, 4), None)),
+            ["", "", "C", "D"]
+        );
+        assert_eq!(
+            retained_region_rows(&engine),
+            reference,
+            "{flush}: {operation:?}"
+        );
+        assert_eq!(engine.viewport_bounds(), expected.viewport_bounds());
+    }
+}
+
+fn retained_region_rows(engine: &DefaultTerminalEngine) -> Vec<(i64, String)> {
+    let bounds = engine.viewport_bounds();
+    (bounds.first_stable_row..bounds.bottom_top_stable_row + 4)
+        .map(|row| {
+            let frame = engine.snapshot(viewport(row.min(bounds.bottom_top_stable_row), 4), None);
+            let offset = (row - frame.viewport_top) as usize;
+            (
+                frame.rows[offset].stable_row,
+                trimmed_rows(&frame)[offset].clone(),
+            )
+        })
+        .collect()
+}
+
+fn assert_same_retained_rows(engine: &DefaultTerminalEngine, expected: &DefaultTerminalEngine) {
+    let bounds = expected.viewport_bounds();
+    assert_eq!(engine.viewport_bounds(), bounds);
+    for top in bounds.first_stable_row..=bounds.bottom_top_stable_row {
+        assert_eq!(
+            engine.snapshot(viewport(top, 3), None),
+            expected.snapshot(viewport(top, 3), None)
+        );
+    }
+}
+
+fn assert_saturated_sync_flush(scrolls: usize, expired: bool) {
+    let mut engine = saturated_scrollback_engine();
+    let before = engine.viewport_bounds();
+    let frozen = engine.snapshot(viewport(before.bottom_top_stable_row, 3), None);
+    engine.input(b"\x1b[?2026h").unwrap();
+    // Separate input calls must not reset the predicted cursor from the frozen terminal.
+    for index in 104..104 + scrolls {
+        engine
+            .input(format!("\r\nline{index:03}").as_bytes())
+            .unwrap();
+    }
+    assert_eq!(engine.viewport_bounds(), before);
+    assert_eq!(
+        engine.snapshot(viewport(before.bottom_top_stable_row, 3), None),
+        frozen
+    );
+    if expired {
+        let deadline = engine.sync_deadline().unwrap();
+        std::thread::sleep(deadline.saturating_duration_since(std::time::Instant::now()));
+        assert!(std::time::Instant::now() >= deadline);
+        engine.input(b"!").unwrap();
+    } else {
+        assert!(engine.end_sync().unwrap().dirty);
+    }
+    assert!(engine.sync_deadline().is_none());
+    let after = engine.viewport_bounds();
+    // Check actual retained contents before checking the identities assigned to those rows.
+    let last = 103 + scrolls;
+    let first = last - 102;
+    let mut contents = Vec::new();
+    let mut identities = Vec::new();
+    for index in first..=last {
+        let top = after.first_stable_row + (index - first) as i64;
+        let frame = engine.snapshot(viewport(top.min(after.bottom_top_stable_row), 3), None);
+        let offset = (top - frame.viewport_top) as usize;
+        contents.push(trimmed_rows(&frame)[offset].clone());
+        identities.push(frame.rows[offset].stable_row);
+    }
+    let expected = (first..=last)
+        .map(|index| {
+            let suffix = if expired && index == last { "!" } else { "" };
+            format!("line{index:03}{suffix}")
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(contents, expected);
+    assert_eq!(identities, (first as i64..=last as i64).collect::<Vec<_>>());
+    assert_saturated_scroll(&engine, before, scrolls as i64);
 }
 
 #[test]

@@ -124,6 +124,21 @@ impl AlacrittyAdapter {
         )
     }
 
+    pub(crate) fn sync_deadline(&self) -> Option<std::time::Instant> {
+        alacritty_feed::sync_deadline(&self.processor)
+    }
+
+    pub(crate) fn end_sync(&mut self) -> Vec<u8> {
+        alacritty_feed::end_sync(
+            &mut self.processor,
+            &mut self.terminal,
+            &self.events,
+            &self.settings,
+            &mut self.primary_rows,
+            &mut self.scroll_tracker,
+        )
+    }
+
     pub(crate) fn resize(&mut self, size: TerminalSize) {
         let dimensions_changed = self.size.cols != size.cols || self.size.rows != size.rows;
         let old_lines = usize::from(self.size.rows);

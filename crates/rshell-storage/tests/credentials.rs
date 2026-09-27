@@ -280,19 +280,24 @@ fn public_key_without_passphrase_creates_and_updates_through_the_coordinator() {
 }
 
 #[test]
-fn password_clear_fails_core_validation_without_deleting_secret() {
+fn password_clear_forgets_the_saved_secret() {
     let (repository, vault, coordinator) = setup();
     let (profile, reference) =
-        create_with_secret(&coordinator, password_profile("password"), "keep-me");
-    let before = repository.load_catalog().unwrap();
+        create_with_secret(&coordinator, password_profile("password"), "forget-me");
+    let id = profile.id;
 
+    // The profile keeps password authentication; the password is asked for at connect time.
+    let catalog = coordinator
+        .apply_catalog(CatalogMutation::Update(profile), SecretUpdate::Clear)
+        .expect("clearing a saved password must be valid");
+    assert_eq!(catalog.connections[&id].credential_ref, None);
     assert_eq!(
-        coordinator.apply_catalog(CatalogMutation::Update(profile), SecretUpdate::Clear),
-        Err(CredentialOperationError::Validation)
+        catalog.connections[&id].authentication,
+        AuthenticationKind::Password
     );
-    assert_eq!(repository.load_catalog().unwrap(), before);
-    assert!(vault.contains(&reference));
-    assert_eq!(vault.call_counts().delete, 0);
+    assert_eq!(repository.load_catalog().unwrap(), catalog);
+    assert!(!vault.contains(&reference));
+    assert_eq!(vault.call_counts().delete, 1);
 }
 
 #[test]
