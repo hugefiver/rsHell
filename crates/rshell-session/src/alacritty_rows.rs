@@ -18,9 +18,10 @@ pub(crate) fn apply<T: EventListener>(
 ) {
     let was_primary = !terminal.mode().contains(TermMode::ALT_SCREEN);
     let old_history = terminal.grid().history_size();
-    let anchor_shift = if track_capacity { maximum_shift } else { 0 };
+    // A bounded operation may cross capacity in one call. Keep its shift bound
+    // even when history growth alone cannot account for the completed scroll.
     let capacity_anchor = was_primary
-        .then(|| capture(terminal, anchor_shift))
+        .then(|| capture(terminal, maximum_shift))
         .flatten();
     apply(terminal);
     let active_primary = !terminal.mode().contains(TermMode::ALT_SCREEN);
@@ -113,5 +114,7 @@ pub(crate) fn completed_shift<T: EventListener>(
 fn row_identity(grid: &Grid<Cell>, offset: usize) -> usize {
     let history = grid.history_size();
     let line = Line(offset as i32 - history as i32);
-    std::ptr::from_ref(&grid[line]) as usize
+    // The ring's Row storage can move while an operation grows history to its
+    // limit. Each retained row's cell allocation survives that reallocation.
+    grid[line][..].as_ptr() as usize
 }

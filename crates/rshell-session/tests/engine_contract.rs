@@ -307,16 +307,27 @@ fn saturated_synchronized_update_closing_sequence_preserves_multiple_windows() {
 
 #[test]
 fn synchronized_update_crossing_capacity_counts_the_whole_scroll_operation() {
-    let mut engine = DefaultTerminalEngine::new(&profile(100), size(12, 3)).unwrap();
-    engine.input(&b"same\r\n".repeat(101)).unwrap();
-    assert_eq!(engine.viewport_bounds().bottom_top_stable_row, 99);
-    engine.input(b"\x1b[?2026h\x1b[3Stail").unwrap();
-    engine.end_sync().unwrap();
-    let bounds = engine.viewport_bounds();
-    assert_eq!(bounds.first_stable_row, 2);
-    assert_eq!(bounds.bottom_top_stable_row, 102);
-    let frame = engine.snapshot(viewport(102, 3), None);
-    assert_eq!(trimmed_rows(&frame), ["", "", "tail"]);
+    // 1,001 crosses Alacritty's row-storage allocation boundary in the same operation.
+    for limit in [100, 1_001] {
+        for (operation, visible) in [
+            (b"\x1b[?2026h\x1b[3Stail".as_slice(), ["", "", "tail"]),
+            (b"\x1b[?2026h\x1b[H\x1b[3Mtail".as_slice(), ["tail", "", ""]),
+        ] {
+            let mut engine = DefaultTerminalEngine::new(&profile(limit), size(12, 3)).unwrap();
+            engine.input(&b"same\r\n".repeat(limit + 1)).unwrap();
+            assert_eq!(
+                engine.viewport_bounds().bottom_top_stable_row,
+                limit as i64 - 1
+            );
+            engine.input(operation).unwrap();
+            engine.end_sync().unwrap();
+            let bounds = engine.viewport_bounds();
+            assert_eq!(bounds.first_stable_row, 2, "history limit {limit}");
+            assert_eq!(bounds.bottom_top_stable_row, limit as i64 + 2);
+            let frame = engine.snapshot(viewport(bounds.bottom_top_stable_row, 3), None);
+            assert_eq!(trimmed_rows(&frame), visible);
+        }
+    }
 }
 
 #[test]
@@ -350,6 +361,78 @@ fn synchronized_update_fragmented_wraps_preserve_cursor_and_following_output() {
     engine.input(b"\r\nordinary").unwrap();
     expected.input(b"\r\nordinary").unwrap();
     assert_same_retained_rows(&engine, &expected);
+}
+
+#[test]
+fn synchronized_region_scroll_up_matches_unsynchronized_operation() {
+    assert_synchronized_region_operation(b"\x1b[4S");
+}
+
+#[test]
+fn synchronized_region_delete_lines_matches_unsynchronized_operation() {
+    assert_synchronized_region_operation(b"\x1b[4M");
+}
+
+fn assert_synchronized_region_operation(operation: &[u8]) {
+    for flush in ["explicit", "closing", "expired"] {
+        let mut expected = DefaultTerminalEngine::new(&profile(100), size(12, 4)).unwrap();
+        let mut engine = DefaultTerminalEngine::new(&profile(100), size(12, 4)).unwrap();
+        for terminal in [&mut expected, &mut engine] {
+            terminal.input(b"A\r\nB\r\nC\r\nD\x1b[1;2r").unwrap();
+        }
+        expected.input(operation).unwrap();
+        engine.input(b"\x1b[?2026h").unwrap();
+        engine.input(operation).unwrap();
+        assert_eq!(
+            trimmed_rows(&engine.snapshot(viewport(0, 4), None)),
+            ["A", "B", "C", "D"]
+        );
+        match flush {
+            "explicit" => {
+                engine.end_sync().unwrap();
+            }
+            "closing" => engine.input(b"\x1b[?2026l").unwrap(),
+            "expired" => {
+                let deadline = engine.sync_deadline().unwrap();
+                std::thread::sleep(deadline.saturating_duration_since(std::time::Instant::now()));
+                assert!(std::time::Instant::now() >= deadline);
+                engine.input(b"\x1b[0m").unwrap();
+            }
+            _ => unreachable!(),
+        }
+        assert!(engine.sync_deadline().is_none());
+        let reference = retained_region_rows(&expected);
+        assert_eq!(
+            reference,
+            [(0, "A"), (1, "B"), (2, ""), (3, ""), (4, "C"), (5, "D")]
+                .map(|(row, text)| (row, text.to_owned()))
+        );
+        let bottom = engine.viewport_bounds().bottom_top_stable_row;
+        assert_eq!(
+            trimmed_rows(&engine.snapshot(viewport(bottom, 4), None)),
+            ["", "", "C", "D"]
+        );
+        assert_eq!(
+            retained_region_rows(&engine),
+            reference,
+            "{flush}: {operation:?}"
+        );
+        assert_eq!(engine.viewport_bounds(), expected.viewport_bounds());
+    }
+}
+
+fn retained_region_rows(engine: &DefaultTerminalEngine) -> Vec<(i64, String)> {
+    let bounds = engine.viewport_bounds();
+    (bounds.first_stable_row..bounds.bottom_top_stable_row + 4)
+        .map(|row| {
+            let frame = engine.snapshot(viewport(row.min(bounds.bottom_top_stable_row), 4), None);
+            let offset = (row - frame.viewport_top) as usize;
+            (
+                frame.rows[offset].stable_row,
+                trimmed_rows(&frame)[offset].clone(),
+            )
+        })
+        .collect()
 }
 
 fn assert_same_retained_rows(engine: &DefaultTerminalEngine, expected: &DefaultTerminalEngine) {

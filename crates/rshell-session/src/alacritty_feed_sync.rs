@@ -85,17 +85,17 @@ impl Handler for SyncHandler<'_> {
     }
 
     fn scroll_up(&mut self, count: usize) {
-        // Keep each operation within the remaining history capacity as well as
-        // the anchor's range, even when a CSI scroll crosses the history limit.
-        for _ in 0..count.min(self.terminal.screen_lines()) {
-            self.apply(1, |terminal| terminal.scroll_up(1));
-        }
+        // Alacritty clamps the original count to the scroll region. Repeating
+        // single-row operations would instead scroll past that region's height.
+        self.apply(count.min(self.terminal.screen_lines()), |terminal| {
+            terminal.scroll_up(count)
+        });
     }
 
     fn delete_lines(&mut self, count: usize) {
-        for _ in 0..count.min(self.terminal.screen_lines()) {
-            self.apply(1, |terminal| terminal.delete_lines(1));
-        }
+        self.apply(count.min(self.terminal.screen_lines()), |terminal| {
+            terminal.delete_lines(count)
+        });
     }
 
     fn clear_screen(&mut self, mode: ClearMode) {
