@@ -210,14 +210,56 @@ pub(crate) fn verify(root: &gtk::Widget, modal: &gtk::Widget) {
 }
 
 fn font(widget: &gtk::Widget, size: i32) {
-    let font = widget.pango_context().font_description().unwrap();
+    let context = widget.pango_context();
+    let font = context.font_description().unwrap();
     assert!(font.is_size_absolute());
     assert_eq!(font.size(), size * gtk::pango::SCALE);
-    let resolved = widget.pango_context().load_font(&font).unwrap().describe();
+    let requested = font.family().unwrap();
     assert!(
-        resolved.family().unwrap().starts_with("Segoe UI"),
-        "resolved UI font family must retain Windows design authority"
+        requested_ui_stack(&requested),
+        "requested UI font stack must retain design order, got {requested}"
     );
+    let resolved = context.load_font(&font).unwrap().describe();
+    let resolved_family = resolved.family().unwrap();
+    let available = context.list_families();
+    if let Some(preferred) = ["Segoe UI Variable Text", "Segoe UI Variable", "Segoe UI"]
+        .into_iter()
+        .find(|name| {
+            available
+                .iter()
+                .any(|family| family.name().eq_ignore_ascii_case(name))
+        })
+    {
+        assert!(
+            resolved_family.eq_ignore_ascii_case(preferred),
+            "requested preferred UI font {preferred} is available, but resolved {resolved_family}"
+        );
+    }
+    // With no Segoe family installed, the requested system-ui/sans-serif fallback
+    // may resolve to any locally available font; load_font above still proves it loads.
+}
+
+fn requested_ui_stack(family: &str) -> bool {
+    family.split(',').map(str::trim).eq([
+        "Segoe UI Variable Text",
+        "Segoe UI Variable",
+        "Segoe UI",
+        "system-ui",
+        "sans-serif",
+    ])
+}
+
+#[test]
+fn requested_ui_stack_rejects_wrong_family_or_order() {
+    assert!(requested_ui_stack(
+        "Segoe UI Variable Text,Segoe UI Variable,Segoe UI,system-ui,sans-serif"
+    ));
+    assert!(!requested_ui_stack(
+        "Segoe UI Variable,Segoe UI Variable Text,Segoe UI,system-ui,sans-serif"
+    ));
+    assert!(!requested_ui_stack(
+        "Arial,Segoe UI Variable,Segoe UI,system-ui,sans-serif"
+    ));
 }
 
 fn children(parent: &gtk::Widget) -> Vec<gtk::Widget> {

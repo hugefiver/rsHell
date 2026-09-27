@@ -64,11 +64,20 @@ pub(super) fn run() {
                 .iter()
                 .any(|w| w.is_mapped() && w.has_css_class("tab-overflow-row"))
         });
-        state(&main, mode, "shell-tabs-overflow", &mut defects);
-        super::surface_capture::capture(
-            &menu.popover().unwrap(),
-            &format!("{mode}-shell-tabs-popover"),
+        let popover = menu.popover().unwrap();
+        let row = descendants(popover.upcast_ref())
+            .into_iter()
+            .find(|w| w.is_mapped() && w.has_css_class("tab-overflow-row"))
+            .expect("mapped overflow button in native popover");
+        let bounds = row
+            .compute_bounds(&row.parent().expect("overflow button parent"))
+            .expect("mapped overflow button bounds in its parent");
+        assert!(
+            bounds.width() >= 36.0 && bounds.height() >= 36.0,
+            "{mode} overflow button must have a 36px target: {bounds:?}"
         );
+        state(&main, mode, "shell-tabs-overflow", &mut defects);
+        super::surface_capture::capture(&popover, &format!("{mode}-shell-tabs-popover"));
         menu.popdown();
         if mode == "compact" {
             let drawer = descendants(main.widget().upcast_ref())
@@ -188,8 +197,8 @@ fn state(main: &relm4::Controller<MainWindow>, mode: &str, state: &str, defects:
             );
         }
         if w.is::<gtk::Button>() && w.ancestor(gtk::WindowControls::static_type()).is_none() {
-            let b = w.compute_bounds(root).unwrap();
-            if b.width() > 0.0 && b.height() > 0.0 && (b.width() < 36.0 || b.height() < 36.0) {
+            let b = button_bounds(&w, root.upcast_ref());
+            if b.width() < 36.0 || b.height() < 36.0 {
                 defects.push(format!(
                     "{mode}/{state} {:?} {}x{}",
                     w.css_classes(),
@@ -200,6 +209,16 @@ fn state(main: &relm4::Controller<MainWindow>, mode: &str, state: &str, defects:
         }
     }
     capture(root, mode, state);
+}
+
+fn button_bounds(button: &gtk::Widget, root: &gtk::Widget) -> gtk::graphene::Rect {
+    button
+        .compute_bounds(root)
+        .or_else(|| {
+            button.ancestor(gtk::Popover::static_type())?;
+            button.compute_bounds(&button.parent()?)
+        })
+        .expect("mapped button must have bounds in its window or popover parent")
 }
 
 fn within_class(widget: &gtk::Widget, class: &str) -> bool {
