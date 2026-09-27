@@ -15,7 +15,7 @@ use rshell_core::{
 use rshell_platform::{create_private_file, harden_private_file};
 
 use crate::{
-    StorageError,
+    ConfigurationChange, ConfigurationCommitOutcome, ConfigurationSnapshot, StorageError,
     command::{Command, CredentialCommand, CredentialReply},
     worker,
 };
@@ -179,6 +179,24 @@ impl SqliteRepository {
     pub fn save_settings(&self, settings: AppSettings) -> Result<(), StorageError> {
         self.worker
             .request(|reply| Command::SaveSettings(settings, reply))
+    }
+
+    /// 读取同一事务中的完整设置与终端配置。使用前需执行 `migrate`。
+    pub fn load_configuration(&self) -> Result<ConfigurationSnapshot, StorageError> {
+        self.worker.request(Command::LoadConfiguration)
+    }
+
+    /// 在单个 worker 请求及单个 IMMEDIATE 事务内检查版本并提交所有修改。
+    ///
+    /// 冲突返回 `Ok(ConfigurationCommitOutcome::Conflict { .. })`，不改变数据。
+    /// 无效内容或受保护的删除返回 `StorageError::Constraint`；事务内失败全部回滚。
+    /// 旧的单项保存接口仍可使用，但同样递增配置版本号。
+    pub fn commit_configuration(
+        &self,
+        change: ConfigurationChange,
+    ) -> Result<ConfigurationCommitOutcome, StorageError> {
+        self.worker
+            .request(|reply| Command::CommitConfiguration(Box::new(change), reply))
     }
 
     pub fn database_status(&self) -> Result<DatabaseStatus, StorageError> {

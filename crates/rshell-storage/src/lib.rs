@@ -3,6 +3,7 @@
 mod catalog;
 mod catalog_delete;
 mod command;
+mod configuration;
 mod credential_import;
 mod credential_journal;
 mod credential_mutation;
@@ -24,6 +25,7 @@ mod transaction;
 mod vault;
 mod worker;
 
+pub use configuration::{ConfigurationChange, ConfigurationCommitOutcome, ConfigurationSnapshot};
 pub use credentials::{
     CrashPoint, CredentialCoordinator, CredentialImportBatch, CredentialImportItem,
     CredentialOperationError, ReconcileReport,

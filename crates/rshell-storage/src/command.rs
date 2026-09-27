@@ -9,7 +9,10 @@ use rshell_core::{
 #[cfg(feature = "test-support")]
 use rshell_core::{ConnectionId, TerminalProfileId};
 
-use crate::{DatabaseStatus, StorageError};
+use crate::{
+    ConfigurationChange, ConfigurationCommitOutcome, ConfigurationSnapshot, DatabaseStatus,
+    StorageError,
+};
 
 pub(crate) use crate::credential_journal::{CredentialCommand, CredentialReply};
 
@@ -24,6 +27,8 @@ pub(crate) enum Command {
     SaveTerminalProfile(TerminalProfile, Reply<()>),
     LoadSettings(Reply<AppSettings>),
     SaveSettings(AppSettings, Reply<()>),
+    LoadConfiguration(Reply<ConfigurationSnapshot>),
+    CommitConfiguration(Box<ConfigurationChange>, Reply<ConfigurationCommitOutcome>),
     DatabaseStatus(Reply<DatabaseStatus>),
     Credential(CredentialCommand, Reply<CredentialReply>),
     Shutdown(Reply<()>),
