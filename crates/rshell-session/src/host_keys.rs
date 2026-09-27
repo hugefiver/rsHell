@@ -79,7 +79,9 @@ impl KnownHostsVerifier {
         let changed = match self.is_known(host, port, key) {
             Ok(true) => return Ok(()),
             Ok(false) => None,
-            Err(error @ HostKeyError::Changed { .. }) if self.changed_key_prompt => Some(error),
+            Err(error @ HostKeyError::Changed { .. }) if self.changed_key_prompt => {
+                Some((error, self.recorded_keys(host, port)?))
+            }
             Err(error) => return Err(error),
         };
 
@@ -88,15 +90,14 @@ impl KnownHostsVerifier {
             .await?;
         match response {
             InteractionResponse::HostKey(HostKeyDecision::AcceptAndStore) => {
-                self.store_after_acceptance(host, port, key, changed.is_some())
-                    .await
+                self.store_after_acceptance(host, port, key, changed).await
             }
             InteractionResponse::HostKey(HostKeyDecision::Reject)
             | InteractionResponse::Cancel
             | InteractionResponse::Secret(_)
-            | InteractionResponse::Answers(_) => {
-                Err(changed.unwrap_or_else(|| HostKeyError::rejected(host, port)))
-            }
+            | InteractionResponse::Answers(_) => Err(changed
+                .map(|(error, _)| error)
+                .unwrap_or_else(|| HostKeyError::rejected(host, port))),
         }
     }
 
@@ -128,20 +129,28 @@ impl KnownHostsVerifier {
         }
     }
 
+    /// Rechecks the endpoint's recorded keys under the shared write lock before replacing them.
+    /// Line numbers alone cannot identify the key state confirmed by a changed-key prompt.
     async fn store_after_acceptance(
         &self,
         host: &str,
         port: u16,
         key: &PublicKey,
-        replace: bool,
+        changed: Option<(HostKeyError, Vec<PublicKey>)>,
     ) -> Result<(), HostKeyError> {
         let _write_guard = self.write_lock.lock().await;
         match self.is_known(host, port, key) {
             Ok(true) => Ok(()),
-            Ok(false) => storage::store(&self.path, host, port, key),
-            Err(HostKeyError::Changed { .. }) if replace => {
-                storage::replace(&self.path, host, port, key)
-            }
+            Ok(false) => match changed {
+                None => storage::store(&self.path, host, port, key),
+                Some((error, _)) => Err(error),
+            },
+            Err(HostKeyError::Changed { line, .. }) => match changed {
+                Some((_, observed)) if observed == self.recorded_keys(host, port)? => {
+                    storage::replace(&self.path, host, port, key)
+                }
+                _ => Err(HostKeyError::changed(host, port, line)),
+            },
             Err(error) => Err(error),
         }
     }
@@ -157,6 +166,18 @@ impl KnownHostsVerifier {
             }
             Err(_) => Err(HostKeyError::verification(host, port)),
         }
+    }
+
+    fn recorded_keys(&self, host: &str, port: u16) -> Result<Vec<PublicKey>, HostKeyError> {
+        let keys = known_hosts::known_host_keys_path(host, port, &self.path)
+            .map_err(|_| HostKeyError::verification(host, port))?
+            .into_iter()
+            .map(|(_, key)| key)
+            .collect::<Vec<_>>();
+        if keys.is_empty() {
+            return Err(HostKeyError::verification(host, port));
+        }
+        Ok(keys)
     }
 }
 
