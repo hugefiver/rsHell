@@ -15,6 +15,7 @@ use crate::{
         MainWindowContent, MainWindowWidgets, build_command_bar, install_content,
     },
     main_window_smoke::SmokeUiState,
+    main_window_smoke_frame::checkpoint_trace_enabled,
     main_window_streams::spawn_live_forwarders,
     smoke_driver_state::SmokeDriver,
 };
@@ -144,6 +145,9 @@ impl SimpleComponent for MainWindow {
         let live_forwarders = live_sources
             .map(|sources| spawn_live_forwarders(sources, &sender))
             .unwrap_or_default();
+        let trace_first_resize = smoke.as_ref().is_some_and(|(init, _)| {
+            init.scenario.run_nonce == "checkpoint-lifecycle-native" && checkpoint_trace_enabled()
+        });
         let smoke_png_path = smoke.as_ref().and_then(|(init, _)| init.png_path.clone());
         let smoke_paintable = smoke_png_path
             .as_ref()
@@ -171,7 +175,10 @@ impl SimpleComponent for MainWindow {
             stable_sidebar_selection: None,
             startup_probe,
             smoke,
-            smoke_state: SmokeUiState::default(),
+            smoke_state: SmokeUiState {
+                trace_first_resize,
+                ..SmokeUiState::default()
+            },
             smoke_tick_pending: false,
             smoke_paintable,
             smoke_png_path,
@@ -187,6 +194,7 @@ impl SimpleComponent for MainWindow {
     fn update(&mut self, message: Self::Input, sender: ComponentSender<Self>) {
         let drive_smoke = matches!(&message, MainWindowMsg::SmokeTick);
         if drive_smoke {
+            self.trace_smoke_tick_consumed();
             self.smoke_tick_pending = false;
         }
         match message {

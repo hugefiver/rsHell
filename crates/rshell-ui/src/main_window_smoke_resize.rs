@@ -1,7 +1,8 @@
 use rshell_core::{RenderFrame, SessionId, TerminalSize};
 
 use crate::{
-    MainWindow, ShellLayoutMode, SmokeFrameEvidence, SmokeResizeEvidence, SmokeWindowResizeEvidence,
+    MainWindow, ShellLayoutMode, SmokeFrameEvidence, SmokeResizeEvidence,
+    SmokeWindowResizeEvidence, main_window_smoke_frame::checkpoint_trace,
 };
 use gtk::prelude::*;
 
@@ -57,6 +58,12 @@ impl MainWindow {
         height: i32,
         expected_mode: ShellLayoutMode,
     ) -> Result<(), &'static str> {
+        let trace = self.smoke_state.trace_first_resize
+            && self
+                .smoke
+                .as_ref()
+                .and_then(|driver| driver.current.as_ref())
+                .is_some_and(|step| step.index == 1);
         let window = self
             .shell
             .overlay
@@ -73,10 +80,18 @@ impl MainWindow {
             expected_layout: expected_mode,
             layout: self.shell.layout().mode,
         });
+        checkpoint_trace(trace, "default_size_enter", "");
         window.set_default_size(width, height);
+        checkpoint_trace(trace, "default_size_return", "");
+        checkpoint_trace(trace, "queue_resize_enter", "");
         window.queue_resize();
+        checkpoint_trace(trace, "queue_resize_return", "");
+        checkpoint_trace(trace, "present_enter", "");
         window.present();
+        checkpoint_trace(trace, "present_return", "");
+        checkpoint_trace(trace, "layout_enter", "");
         self.apply_shell_layout(width);
+        checkpoint_trace(trace, "layout_return", "");
         if self.shell.layout().mode != expected_mode {
             return Err("smoke_window_mode_mismatch");
         }

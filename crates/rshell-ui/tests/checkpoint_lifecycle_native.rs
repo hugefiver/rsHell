@@ -122,15 +122,54 @@ fn run(evidence_root: &Path) {
     main.widget().present();
 
     let mut generation = 1;
-    wait_for(
-        "compact resize",
-        &main,
-        &commands,
-        &mut view,
-        &mut generation,
-        &target_profile,
-        || report.report().steps[1].state == SmokeStepState::Passed,
-    );
+    let compact_resize_started = Instant::now();
+    let compact_resize_deadline = compact_resize_started + Duration::from_secs(8);
+    let trace = std::env::var_os("CI").is_some()
+        || std::env::var("RSHELL_CHECKPOINT_TRACE").as_deref() == Ok("1");
+    let mut next_trace = compact_resize_started;
+    while report.report().steps[1].state != SmokeStepState::Passed {
+        let log_pump = trace && Instant::now() >= next_trace;
+        if log_pump {
+            eprintln!("CHECKPOINT_TRACE at={:?} pump_enter", Instant::now());
+        }
+        pump_once(
+            &main,
+            &commands,
+            &mut view,
+            &mut generation,
+            &target_profile,
+        );
+        if log_pump {
+            eprintln!("CHECKPOINT_TRACE at={:?} pump_return", Instant::now());
+            next_trace = Instant::now() + Duration::from_millis(250);
+        }
+        if Instant::now() >= compact_resize_deadline {
+            let current = report.report();
+            let window = main.widget();
+            panic!(
+                "timed out waiting for compact resize: elapsed={:?} report_elapsed={:?} scenario={:?} step0={:?} step1={:?} step1_elapsed={:?} failure={:?} resize={:?} step1_resize={:?} window_mapped={} window_realized={} window_allocation={}x{} surface_size={:?}",
+                compact_resize_started.elapsed(),
+                current.elapsed,
+                current.state,
+                current.steps[0].state,
+                current.steps[1].state,
+                current.steps[1].elapsed,
+                current
+                    .failure
+                    .as_ref()
+                    .map(|failure| (failure.step, failure.code)),
+                current.counters.window_resize,
+                current.steps[1].evidence.window_resize,
+                window.is_mapped(),
+                window.is_realized(),
+                window.width(),
+                window.height(),
+                window
+                    .surface()
+                    .map(|surface| (surface.width(), surface.height())),
+            );
+        }
+    }
     assert_empty_closes_bootstrap(
         &main,
         &commands,

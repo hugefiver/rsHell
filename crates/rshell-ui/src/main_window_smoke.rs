@@ -7,6 +7,7 @@ use crate::{
     MainWindow, MainWindowMsg, SmokeImportEvidence, SmokeImportExpectation, SmokeTerminalEvidence,
     main_window_smoke_capture::capture_widget_png,
     main_window_smoke_evidence::{PendingSearch, PendingSelection},
+    main_window_smoke_frame::checkpoint_trace,
     main_window_smoke_observation::frame_contains,
     main_window_smoke_resize::{PendingResize, PreparedResize},
     main_window_smoke_terminal_effects::{
@@ -23,6 +24,8 @@ pub(crate) mod empty;
 
 #[derive(Default)]
 pub(crate) struct SmokeUiState {
+    pub trace_first_resize: bool,
+    pub trace_next_tick: bool,
     pub window_realized: bool,
     pub editor_open: bool,
     pub editor_revision: u64,
@@ -151,58 +154,56 @@ impl MainWindow {
                 frame_contains(view_model, active_tab, needle)
             })
         });
+        let trace_resize = self.smoke_state.trace_first_resize
+            && matches!(
+                &decision,
+                Some(SmokeDecision::Route(
+                    crate::SmokeAction::ResizeWindow { .. }
+                ))
+            )
+            && self
+                .smoke
+                .as_ref()
+                .and_then(|driver| driver.current.as_ref())
+                .is_some_and(|step| step.index == 1);
         match decision {
-            Some(SmokeDecision::Route(action)) => match self.route_smoke_action(action) {
-                Ok(true) => {}
-                Ok(false) => {
-                    if let Some(driver) = &mut self.smoke {
-                        driver.defer_current_route();
+            Some(SmokeDecision::Route(action)) => {
+                checkpoint_trace(trace_resize, "route_enter", "step=1 action=resize_window");
+                let result = self.route_smoke_action(action);
+                checkpoint_trace(
+                    trace_resize,
+                    "route_return",
+                    format_args!("result={result:?}"),
+                );
+                match result {
+                    Ok(true) => {}
+                    Ok(false) => {
+                        if let Some(driver) = &mut self.smoke {
+                            driver.defer_current_route();
+                        }
                     }
+                    Err(code) => self.fail_smoke(code),
                 }
-                Err(code) => self.fail_smoke(code),
-            },
+            }
             Some(SmokeDecision::Quit) => {
                 self.capture_smoke_png();
                 relm4::main_application().quit();
             }
             None => {}
         }
-        self.schedule_smoke_tick(sender);
-    }
-
-    fn schedule_smoke_tick(&mut self, sender: &ComponentSender<Self>) {
-        if self.smoke_tick_pending || !self.smoke.as_ref().is_some_and(SmokeDriver::is_active) {
-            return;
+        if trace_resize {
+            self.smoke_state.trace_next_tick = true;
+            checkpoint_trace(
+                true,
+                "schedule_enter",
+                format_args!("pending={}", self.smoke_tick_pending),
+            );
         }
-        self.smoke_tick_pending = true;
-        if queue_visual_completion_tick(
-            &mut self.smoke_state.visual_completion_tick_pending,
-            |message| sender.input(message),
-        ) {
-            return;
-        }
-        let sender = sender.input_sender().clone();
-        if self.smoke_state.window_resize.is_some_and(|evidence| {
-            evidence.realized_width == 0
-                || evidence.realized_height == 0
-                || evidence.layout != evidence.expected_layout
-        }) {
-            crate::main_window_smoke_frame::schedule_after_frame(&self.shell.overlay, sender);
-            return;
-        }
-        if self.smoke_state.visual_checkpoint == VisualCheckpointPhase::Opening
-            && self.smoke_state.visual_paintable.is_some()
-        {
-            crate::main_window_smoke_frame::schedule_after_frame(&self.shell.overlay, sender);
-            return;
-        }
-        gtk::glib::timeout_add_local_full(
-            std::time::Duration::from_millis(25),
-            gtk::glib::Priority::DEFAULT,
-            move || {
-                send_smoke_tick(&sender);
-                gtk::glib::ControlFlow::Break
-            },
+        self.schedule_smoke_tick(sender, trace_resize);
+        checkpoint_trace(
+            trace_resize,
+            "schedule_return",
+            format_args!("pending={}", self.smoke_tick_pending),
         );
     }
 
@@ -238,10 +239,6 @@ impl MainWindow {
             }
         }
     }
-}
-
-fn send_smoke_tick(sender: &relm4::Sender<MainWindowMsg>) {
-    let _ = sender.send(MainWindowMsg::SmokeTick);
 }
 
 pub(crate) fn queue_visual_completion_tick(

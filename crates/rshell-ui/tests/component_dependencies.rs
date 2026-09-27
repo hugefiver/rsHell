@@ -301,8 +301,11 @@ fn hosted_native_contracts_keep_selection_thread_and_geometry_boundaries() {
     assert!(!src.join("main_window_geometry.rs").exists());
     let smoke = fs::read_to_string(src.join("main_window_smoke.rs")).unwrap();
     assert!(smoke.contains("queue_visual_completion_tick("));
-    assert!(smoke.contains("|message| sender.input(message)"));
-    assert!(!smoke.contains("std::time::Duration::ZERO"));
+    assert!(smoke.contains("self.schedule_smoke_tick(sender, trace_resize);"));
+    let smoke_frame = fs::read_to_string(src.join("main_window_smoke_frame.rs")).unwrap();
+    assert!(smoke_frame.contains("queue_visual_completion_tick("));
+    assert!(smoke_frame.contains("|message| sender.input(message)"));
+    assert!(!smoke_frame.contains("Duration::ZERO"));
     let widgets = fs::read_to_string(src.join("terminal_view_widgets.rs")).unwrap();
     for required in [
         "canvas.set_draw_func",
