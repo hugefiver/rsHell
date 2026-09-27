@@ -3,6 +3,7 @@ use rshell_core::{RenderFrame, SessionId, TerminalSize};
 use crate::{
     MainWindow, ShellLayoutMode, SmokeFrameEvidence, SmokeResizeEvidence,
     SmokeWindowResizeEvidence, main_window_smoke_frame::checkpoint_trace,
+    smoke_driver_evidence::window_resize_pending,
 };
 use gtk::prelude::*;
 
@@ -102,21 +103,26 @@ impl MainWindow {
         self.smoke_state.resize_input = prepared_smoke_resize(width, height, scale);
     }
 
-    pub(crate) fn observe_smoke_window_allocation(&mut self, width: i32, height: i32) {
+    pub(crate) fn observe_smoke_window_allocation(&mut self, _width: i32, _height: i32) {
+        // Modal resize passes surface dimensions; sample the GTK widget for smoke evidence.
+        let Some(window) = self
+            .shell
+            .overlay
+            .root()
+            .and_then(|root| root.downcast::<gtk::ApplicationWindow>().ok())
+        else {
+            return;
+        };
         update_window_allocation(
             &mut self.smoke_state.window_resize,
-            width,
-            height,
+            window.width(),
+            window.height(),
             self.shell.layout().mode,
         );
     }
 
     pub(crate) fn refresh_smoke_window_allocation(&mut self) {
-        if !self.smoke_state.window_resize.is_some_and(|evidence| {
-            evidence.realized_width == 0
-                || evidence.realized_height == 0
-                || evidence.layout != evidence.expected_layout
-        }) {
+        if !window_resize_pending(self.smoke_state.window_resize) {
             return;
         }
         let Some(window) = self
@@ -127,11 +133,17 @@ impl MainWindow {
         else {
             return;
         };
-        let Some((width, height)) = window_surface_size(&window) else {
+        let (width, height) = (window.width(), window.height());
+        if width <= 0 || height <= 0 {
             return;
-        };
+        }
         self.apply_shell_layout(width);
-        self.observe_smoke_window_allocation(width, height);
+        update_window_allocation(
+            &mut self.smoke_state.window_resize,
+            width,
+            height,
+            self.shell.layout().mode,
+        );
     }
 
     pub(crate) fn observe_smoke_resize_command(
@@ -220,47 +232,5 @@ fn frame_evidence(generation: u64, size: TerminalSize) -> SmokeFrameEvidence {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn window_resize_waits_for_a_positive_real_allocation() {
-        let mut evidence = Some(SmokeWindowResizeEvidence {
-            sequence: 1,
-            requested_width: 800,
-            requested_height: 600,
-            realized_width: 0,
-            realized_height: 0,
-            expected_layout: ShellLayoutMode::Compact,
-            layout: ShellLayoutMode::Compact,
-        });
-        update_window_allocation(&mut evidence, 0, 0, ShellLayoutMode::Compact);
-        assert_eq!(evidence.as_ref().unwrap().realized_width, 0);
-        update_window_allocation(&mut evidence, 798, 598, ShellLayoutMode::Compact);
-        let evidence = evidence.unwrap();
-        assert_eq!(
-            (evidence.realized_width, evidence.realized_height),
-            (798, 598)
-        );
-    }
-
-    #[test]
-    fn window_resize_records_the_realized_mode_instead_of_the_requested_mode() {
-        let mut evidence = Some(SmokeWindowResizeEvidence {
-            sequence: 1,
-            requested_width: 1_920,
-            requested_height: 1_080,
-            realized_width: 0,
-            realized_height: 0,
-            expected_layout: ShellLayoutMode::Wide,
-            layout: ShellLayoutMode::Wide,
-        });
-        update_window_allocation(&mut evidence, 1_358, 811, ShellLayoutMode::Standard);
-        let evidence = evidence.unwrap();
-        assert_eq!(
-            (evidence.realized_width, evidence.realized_height),
-            (1_358, 811)
-        );
-        assert_eq!(evidence.layout, ShellLayoutMode::Standard);
-    }
-}
+#[path = "main_window_smoke_resize_tests.rs"]
+mod tests;

@@ -68,6 +68,27 @@ pub struct SmokeWindowResizeEvidence {
     pub layout: ShellLayoutMode,
 }
 
+pub(crate) fn window_resize_matches(evidence: SmokeWindowResizeEvidence) -> bool {
+    window_resize_matches_with_tolerance(evidence, if cfg!(windows) { 2 } else { 0 })
+}
+
+fn window_resize_matches_with_tolerance(
+    evidence: SmokeWindowResizeEvidence,
+    tolerance: u32,
+) -> bool {
+    evidence.requested_width > 0
+        && evidence.requested_height > 0
+        && evidence.realized_width > 0
+        && evidence.realized_height > 0
+        && evidence.layout == evidence.expected_layout
+        && evidence.realized_width.abs_diff(evidence.requested_width) <= tolerance
+        && evidence.realized_height.abs_diff(evidence.requested_height) <= tolerance
+}
+
+pub(crate) fn window_resize_pending(evidence: Option<SmokeWindowResizeEvidence>) -> bool {
+    evidence.is_some_and(|evidence| !window_resize_matches(evidence))
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct SmokeVisualCheckpointEvidence {
     pub checkpoint_id: String,
@@ -213,3 +234,7 @@ pub struct SmokeFrameEvidence {
     pub pixel_height: u32,
     pub dpi: u32,
 }
+
+#[cfg(test)]
+#[path = "smoke_driver_evidence_tests.rs"]
+mod tests;

@@ -3,6 +3,7 @@ use rshell_core::{ConnectionId, InteractionId};
 use crate::smoke_driver_completion_evidence::{
     commit_complete, host_key_outcome_complete, preview_complete,
 };
+use crate::smoke_driver_evidence::window_resize_matches;
 use crate::smoke_driver_recovery::{interrupt_complete, reset_complete};
 use crate::smoke_driver_sequences::{
     clipboard_sequence, color_sequence, paste_sequence, reconnect_sequence, resize_sequence,
@@ -188,10 +189,8 @@ pub(crate) fn action_is_complete(
             evidence.sequence > before.window_resize.map_or(0, |prior| prior.sequence)
                 && evidence.requested_width == *width
                 && evidence.requested_height == *height
-                && evidence.realized_width > 0
-                && evidence.realized_height > 0
                 && evidence.expected_layout == *expected_mode
-                && evidence.layout == *expected_mode
+                && window_resize_matches(evidence)
         }),
         SmokeAction::WaitFrameContains(text) => contains(text),
         SmokeAction::SplitHorizontal | SmokeAction::SplitVertical => {

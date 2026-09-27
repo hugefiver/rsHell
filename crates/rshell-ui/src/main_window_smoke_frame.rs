@@ -10,7 +10,8 @@ use relm4::{ComponentSender, gtk};
 
 use crate::{
     MainWindow, MainWindowMsg, main_window_smoke::queue_visual_completion_tick,
-    main_window_smoke_visual::VisualCheckpointPhase, smoke_driver_state::SmokeDriver,
+    main_window_smoke_visual::VisualCheckpointPhase, smoke_driver_evidence::window_resize_pending,
+    smoke_driver_state::SmokeDriver,
 };
 
 pub(crate) fn checkpoint_trace_enabled() -> bool {
@@ -86,11 +87,7 @@ impl MainWindow {
             return;
         }
         let sender = sender.input_sender().clone();
-        if self.smoke_state.window_resize.is_some_and(|evidence| {
-            evidence.realized_width == 0
-                || evidence.realized_height == 0
-                || evidence.layout != evidence.expected_layout
-        }) {
+        if window_resize_pending(self.smoke_state.window_resize) {
             checkpoint_trace(trace, "schedule_frame", "pending=true reason=window_resize");
             schedule_after_frame(&self.shell.overlay, sender, trace);
             return;

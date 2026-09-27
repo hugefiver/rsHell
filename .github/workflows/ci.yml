@@ -171,7 +171,7 @@ jobs:
           $displayLedger = Join-Path $displayRoot 'display-mode.json'
           Add-Content -LiteralPath $env:GITHUB_ENV -Value "RSHELL_WORKSPACE_DISPLAY_ROOT=$displayRoot" -ErrorAction Stop
           Add-Content -LiteralPath $env:GITHUB_ENV -Value 'RSHELL_WORKSPACE_DISPLAY_APPLY_STARTED=1' -ErrorAction Stop
-          pwsh -NoProfile -File scripts/qa/windows-display.ps1 -Mode Apply -Ledger $displayLedger -Width 2560 -Height 1440
+          pwsh -NoProfile -File scripts/qa/windows-display.ps1 -Mode Apply -Ledger $displayLedger -Width 1920 -Height 1080
           if ($LASTEXITCODE -ne 0) { throw "Windows workspace display setup failed." }
 
       - name: Run required workspace gates

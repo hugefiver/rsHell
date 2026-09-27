@@ -7,7 +7,7 @@ param(
     [AllowEmptyString()][string]$ReleaseText = "",
     [AllowEmptyString()][string]$P0Text = "",
     [AllowEmptyString()][string]$PackageText = "",
-    [ValidateSet("", "dead-workspace-gate", "missing-workspace-display-setup", "undersized-workspace-display", "conditional-workspace-display-restore", "missing-workspace-display-restore", "mismatched-workspace-display-ledger", "missing-workspace-display-restore-check", "dead-terminal-engine-gate", "conditional-terminal-engine-gate", "continue-terminal-engine-gate", "missing-terminal-engine-gate", "duplicate-terminal-engine-gate", "misplaced-terminal-engine-gate", "skipped-p0-gate", "conditional-p0-gate", "continued-p0-gate", "missing-fatal-gtk-warnings", "missing-package-startup-field", "missing-platform-matrix-member", "weakened-cleanup-secret-ordering")]
+    [ValidateSet("", "dead-workspace-gate", "missing-workspace-display-setup", "undersized-workspace-display", "skipped-native-workspace-test", "conditional-workspace-display-restore", "missing-workspace-display-restore", "mismatched-workspace-display-ledger", "missing-workspace-display-restore-check", "dead-terminal-engine-gate", "conditional-terminal-engine-gate", "continue-terminal-engine-gate", "missing-terminal-engine-gate", "duplicate-terminal-engine-gate", "misplaced-terminal-engine-gate", "skipped-p0-gate", "conditional-p0-gate", "continued-p0-gate", "missing-fatal-gtk-warnings", "missing-package-startup-field", "missing-platform-matrix-member", "weakened-cleanup-secret-ordering")]
     [string]$RegressionProbe = ""
 )
 
@@ -243,7 +243,18 @@ if ($RegressionProbe.Length -gt 0) {
             $probeCi = $ci.Remove($steps[0].Index, $steps[0].Length)
         }
         "undersized-workspace-display" {
-            $probeCi = $ci.Replace('-Ledger $displayLedger -Width 2560 -Height 1440', '-Ledger $displayLedger -Width 1920 -Height 1080')
+            $steps = @(Get-NamedStepBlock -Text $ci -Name "Prepare workspace display (Windows)")
+            if ($steps.Count -ne 1) { throw "Workflow regression probe could not locate workspace display setup." }
+            $undersized = $steps[0].Value.Replace('-Ledger $displayLedger -Width 1920 -Height 1080', '-Ledger $displayLedger -Width 1600 -Height 900')
+            if ($undersized -ceq $steps[0].Value) { throw "Workflow regression probe could not lower workspace display resolution." }
+            $probeCi = $ci.Remove($steps[0].Index, $steps[0].Length).Insert($steps[0].Index, $undersized)
+        }
+        "skipped-native-workspace-test" {
+            $steps = @(Get-NamedStepBlock -Text $ci -Name "Run required workspace gates")
+            if ($steps.Count -ne 1) { throw "Workflow regression probe could not locate workspace gates." }
+            $skipped = $steps[0].Value.Replace('cargo test --workspace --all-features --locked', 'cargo test --workspace --all-features --locked -- --skip actor_panic_keeps_realized_main_window_alive')
+            if ($skipped -ceq $steps[0].Value) { throw "Workflow regression probe could not filter native workspace tests." }
+            $probeCi = $ci.Remove($steps[0].Index, $steps[0].Length).Insert($steps[0].Index, $skipped)
         }
         "conditional-workspace-display-restore" {
             $steps = @(Get-NamedStepBlock -Text $ci -Name "Restore workspace display (Windows)")
@@ -429,7 +440,7 @@ foreach ($pattern in @(
         '\$displayLedger = Join-Path \$displayRoot ''display-mode\.json''',
         'Add-Content -LiteralPath \$env:GITHUB_ENV -Value "RSHELL_WORKSPACE_DISPLAY_ROOT=\$displayRoot"',
         'Add-Content -LiteralPath \$env:GITHUB_ENV -Value ''RSHELL_WORKSPACE_DISPLAY_APPLY_STARTED=1''',
-        'windows-display\.ps1 -Mode Apply -Ledger \$displayLedger -Width 2560 -Height 1440',
+        'windows-display\.ps1 -Mode Apply -Ledger \$displayLedger -Width 1920 -Height 1080',
         'if \(\$LASTEXITCODE -ne 0\) \{ throw "Windows workspace display setup failed\." \}'
     )) {
     Assert-StepPattern -Step $displaySetup -Pattern $pattern -Name $displaySetupName -Failures $failures

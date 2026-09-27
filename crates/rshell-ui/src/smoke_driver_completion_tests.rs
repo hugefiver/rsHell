@@ -226,3 +226,6 @@ fn stale_exact_resize_evidence_cannot_complete_a_new_resize_action() {
     fresh.terminal.resize.as_mut().expect("resize").sequence = 8;
     assert!(complete(&action, &before, &observation(fresh)));
 }
+
+#[path = "smoke_driver_window_resize_tests.rs"]
+mod window_resize_tests;
