@@ -53,13 +53,21 @@ pub(crate) fn apply<T: EventListener>(
     }
 }
 
-const ANCHOR_ROWS: usize = 3;
-
 pub(crate) struct CapacityAnchor {
     start: usize,
     maximum_shift: usize,
-    identities: [usize; ANCHOR_ROWS],
+    identity: usize,
     oldest_history_identity: Option<usize>,
+}
+
+/// Maximum eviction count that leaves the chosen row retained in the grid.
+pub(crate) fn window_capacity<T: EventListener>(terminal: &Term<T>) -> usize {
+    let grid = terminal.grid();
+    match grid.history_size() {
+        0 => grid.total_lines().saturating_sub(1),
+        1 => 1,
+        history => history - 1,
+    }
 }
 
 pub(crate) fn capture<T: EventListener>(
@@ -67,14 +75,17 @@ pub(crate) fn capture<T: EventListener>(
     maximum_shift: usize,
 ) -> Option<CapacityAnchor> {
     let grid = terminal.grid();
-    if grid.total_lines() < ANCHOR_ROWS {
+    if grid.total_lines() == 0 {
         return None;
     }
-    let start = grid.total_lines() - ANCHOR_ROWS;
+    // Prefer the newest history row: unlike bottom screen rows, it moves even
+    // when a top-anchored short region leaves most of the screen fixed. With
+    // only one history row, the first screen row is the next retainable anchor.
+    let start = window_capacity(terminal);
     Some(CapacityAnchor {
         start,
         maximum_shift: maximum_shift.min(start),
-        identities: std::array::from_fn(|offset| row_identity(grid, start + offset)),
+        identity: row_identity(grid, start),
         oldest_history_identity: (grid.history_size() != 0).then(|| row_identity(grid, 0)),
     })
 }
@@ -91,21 +102,24 @@ pub(crate) fn completed_shift<T: EventListener>(
     if grid.history_size() != history_limit {
         return 0;
     }
+    let history_moved = anchor
+        .oldest_history_identity
+        .is_some_and(|identity| row_identity(grid, 0) != identity);
     let lower = anchor.start.saturating_sub(anchor.maximum_shift);
     for candidate in (lower..=anchor.start).rev() {
-        let identities = std::array::from_fn(|offset| row_identity(grid, candidate + offset));
-        if identities == anchor.identities {
+        // A screen fallback can return to its old position after local edits;
+        // it cannot prove zero eviction if the oldest history row changed.
+        if row_identity(grid, candidate) == anchor.identity
+            && (candidate != anchor.start || !history_moved)
+        {
             return anchor.start - candidate;
         }
     }
-    if anchor
-        .oldest_history_identity
-        .is_some_and(|identity| row_identity(grid, 0) == identity)
-    {
+    if anchor.oldest_history_identity.is_some() && !history_moved {
         return 0;
     }
 
-    // The bounded window cannot evict an anchored active row and reuse its slot.
+    // A bounded window cannot evict the anchored row and reuse its allocation.
     // Addresses are copied before feeding and compared only in this window. If no
     // retained row is observable, reserve a disjoint stable range rather than reuse IDs.
     grid.total_lines()

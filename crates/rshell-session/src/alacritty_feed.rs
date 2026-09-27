@@ -128,7 +128,7 @@ fn advance_windows(
                 .scrollback_lines
                 .saturating_sub(grid.history_size());
             let maximum = if room == 0 {
-                grid.total_lines().saturating_sub(3)
+                alacritty_rows::window_capacity(terminal)
             } else {
                 room
             };
@@ -137,7 +137,10 @@ fn advance_windows(
                     length,
                     maximum_shift,
                 } => (length, maximum_shift, true),
-                Window::Unsafe { length } => (length, 0, false),
+                // An indivisible command can exceed the remaining history room,
+                // but its scrolling is still bounded by the screen height (or a
+                // replacement character plus a control byte on a one-row grid).
+                Window::Unsafe { length } => (length, grid.screen_lines().max(2), false),
             }
         } else {
             tracker.consume(remaining, false);

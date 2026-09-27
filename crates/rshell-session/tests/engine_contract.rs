@@ -373,6 +373,185 @@ fn synchronized_region_delete_lines_matches_unsynchronized_operation() {
     assert_synchronized_region_operation(b"\x1b[4M");
 }
 
+#[test]
+fn saturated_top_region_scroll_preserves_exact_history_ids_without_sync() {
+    assert_saturated_short_region_scroll("ordinary");
+}
+
+#[test]
+fn saturated_top_region_scroll_preserves_exact_history_ids_with_explicit_flush() {
+    assert_saturated_short_region_scroll("explicit");
+}
+
+#[test]
+fn saturated_top_region_scroll_preserves_exact_history_ids_with_closing_sequence() {
+    assert_saturated_short_region_scroll("closing");
+}
+
+#[test]
+fn saturated_top_region_scroll_preserves_exact_history_ids_with_expired_flush() {
+    assert_saturated_short_region_scroll("expired");
+}
+
+#[test]
+fn saturated_top_region_multi_window_operations_count_every_eviction() {
+    for (prefix, output, shift, history_text, visible) in [
+        (b"".as_slice(), b"\x1b[2S".repeat(105), 210, "", ["", ""]),
+        (b"".as_slice(), b"\x1b[2M".repeat(105), 210, "", ["", ""]),
+        (
+            b"\x1b[2;1H".as_slice(),
+            b"\n".repeat(105),
+            105,
+            "",
+            ["", ""],
+        ),
+        (
+            b"\x1b[2;1H".as_slice(),
+            b"X".repeat(12 * 105 + 1),
+            105,
+            "XXXXXXXXXXXX",
+            ["XXXXXXXXXXXX", "X"],
+        ),
+    ] {
+        let mut engine = saturated_short_region_engine();
+        engine.input(b"\x1b[1;2r").unwrap();
+        engine.input(prefix).unwrap();
+        engine.input(&output).unwrap();
+        let bounds = engine.viewport_bounds();
+        assert_eq!(bounds.first_stable_row, shift);
+        assert_eq!(bounds.bottom_top_stable_row, 100 + shift);
+        let oldest = engine.snapshot(viewport(shift, 5), None);
+        assert_eq!(trimmed_rows(&oldest), [history_text; 5]);
+        let bottom = engine.snapshot(viewport(100 + shift, 5), None);
+        assert_eq!(
+            trimmed_rows(&bottom),
+            [visible[0], visible[1], "line102", "line103", "line104"]
+        );
+    }
+}
+
+#[test]
+fn top_region_scroll_crossing_capacity_preserves_retained_rows() {
+    for synchronized in [false, true] {
+        let mut engine = DefaultTerminalEngine::new(&profile(100), size(12, 5)).unwrap();
+        let initial = (0..104)
+            .map(|row| format!("line{row:03}"))
+            .collect::<Vec<_>>()
+            .join("\r\n");
+        engine.input(initial.as_bytes()).unwrap();
+        assert_eq!(engine.viewport_bounds().bottom_top_stable_row, 99);
+        engine.input(b"\x1b[1;2r").unwrap();
+        if synchronized {
+            engine.input(b"\x1b[?2026h").unwrap();
+        }
+        engine.input(b"\x1b[2S").unwrap();
+        if synchronized {
+            engine.end_sync().unwrap();
+        }
+        let bounds = engine.viewport_bounds();
+        let oldest = engine.snapshot(viewport(bounds.first_stable_row, 5), None);
+        assert_eq!(
+            trimmed_rows(&oldest),
+            ["line001", "line002", "line003", "line004", "line005"]
+        );
+        assert_eq!(bounds.first_stable_row, 1, "synchronized: {synchronized}");
+        assert_eq!(bounds.bottom_top_stable_row, 101);
+        assert_eq!(oldest.rows[1].stable_row, 2);
+    }
+}
+
+#[test]
+fn tiny_history_screen_edits_cannot_hide_an_eviction() {
+    let mut settings = profile(100);
+    settings.scrollback_lines = 1;
+    let mut engine = DefaultTerminalEngine::new(&settings, size(12, 3)).unwrap();
+    engine.input(b"A\r\nB\r\nC\r\nD").unwrap();
+    let before = engine.viewport_bounds();
+    // Insertion followed by scrolling returns B's allocation to its old screen
+    // position, but A has still been evicted from the one-row history.
+    engine.input(b"\x1b[H\x1b[L\x1b[S").unwrap();
+    let after = engine.viewport_bounds();
+    assert_eq!(
+        trimmed_rows(&engine.snapshot(viewport(after.first_stable_row, 3), None)),
+        ["", "B", "C"]
+    );
+    assert!(after.first_stable_row > before.first_stable_row);
+    assert!(after.bottom_top_stable_row > before.bottom_top_stable_row);
+}
+
+fn saturated_short_region_engine() -> DefaultTerminalEngine {
+    let mut engine = DefaultTerminalEngine::new(&profile(100), size(12, 5)).unwrap();
+    // No trailing CRLF: exactly 100 history rows and five visible rows.
+    let initial = (0..105)
+        .map(|row| format!("line{row:03}"))
+        .collect::<Vec<_>>()
+        .join("\r\n");
+    engine.input(initial.as_bytes()).unwrap();
+    let bounds = engine.viewport_bounds();
+    assert_eq!(bounds.first_stable_row, 0);
+    assert_eq!(bounds.bottom_top_stable_row, 100);
+    engine
+}
+
+fn assert_saturated_short_region_scroll(flush: &str) {
+    for top in [2, 1] {
+        let mut engine = saturated_short_region_engine();
+        let before = engine.viewport_bounds();
+        engine
+            .input(format!("\x1b[{top};{}r", top + 1).as_bytes())
+            .unwrap();
+        if flush != "ordinary" {
+            engine.input(b"\x1b[?2026h").unwrap();
+        }
+        engine.input(b"\x1b[2S").unwrap();
+        match flush {
+            "ordinary" => {}
+            "explicit" => {
+                engine.end_sync().unwrap();
+            }
+            "closing" => engine.input(b"\x1b[?2026l").unwrap(),
+            "expired" => {
+                let deadline = engine.sync_deadline().unwrap();
+                std::thread::sleep(deadline.saturating_duration_since(std::time::Instant::now()));
+                assert!(std::time::Instant::now() >= deadline);
+                engine.input(b"\x1b[0m").unwrap();
+            }
+            _ => unreachable!(),
+        }
+        assert!(engine.sync_deadline().is_none());
+        let after = engine.viewport_bounds();
+        let oldest = engine.snapshot(viewport(after.first_stable_row, 5), None);
+        let first_line = if top == 1 { 2 } else { 0 };
+        assert_eq!(
+            trimmed_rows(&oldest),
+            (first_line..first_line + 5)
+                .map(|row| format!("line{row:03}"))
+                .collect::<Vec<_>>()
+        );
+        let bottom = engine.snapshot(viewport(after.bottom_top_stable_row, 5), None);
+        let visible = if top == 1 {
+            ["", "", "line102", "line103", "line104"]
+        } else {
+            ["line100", "", "", "line103", "line104"]
+        };
+        assert_eq!(trimmed_rows(&bottom), visible);
+        let query = SearchQuery {
+            needle: "line002".into(),
+            case_sensitive: true,
+            regex: false,
+        };
+        let retained = engine.search(&query);
+        assert_eq!(retained.len(), 1);
+        assert_eq!(retained[0].start.stable_row, 2, "{flush}, region top {top}");
+        let shift = if top == 1 { 2 } else { 0 };
+        assert_eq!(after.first_stable_row, before.first_stable_row + shift);
+        assert_eq!(
+            after.bottom_top_stable_row,
+            before.bottom_top_stable_row + shift
+        );
+    }
+}
+
 fn assert_synchronized_region_operation(operation: &[u8]) {
     for flush in ["explicit", "closing", "expired"] {
         let mut expected = DefaultTerminalEngine::new(&profile(100), size(12, 4)).unwrap();

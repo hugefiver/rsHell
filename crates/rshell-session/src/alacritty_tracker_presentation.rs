@@ -174,8 +174,8 @@ impl Presentation {
                 (amount - 1).min(self.lines - 1),
                 (csi.parameter(1, 1) - 1).min(self.columns - 1),
             ),
-            b'M' if self.row == 0 && self.full_margin() => amount.min(self.lines),
-            b'S' if self.full_margin() => amount.min(self.bottom - self.top),
+            b'M' if self.row == 0 && self.top_anchored() => amount.min(self.bottom - self.top),
+            b'S' if self.top_anchored() => amount.min(self.bottom - self.top),
             b'r' => self.margins(csi),
             b's' => self.save_cursor_return(),
             b'u' => self.restore_cursor_return(),
@@ -239,11 +239,11 @@ impl Presentation {
         }
     }
 
-    fn full_margin(&self) -> bool {
-        self.top == 0 && self.bottom == self.lines
+    fn top_anchored(&self) -> bool {
+        self.top == 0
     }
 
     fn scrolls_primary(&self, primary: bool) -> bool {
-        primary && self.full_margin()
+        primary && self.top_anchored()
     }
 }
