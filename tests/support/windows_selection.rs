@@ -135,7 +135,9 @@ pub(super) fn run() {
         main.widget().set_default_size(width, height);
         wait_for_frame(
             main.widget(),
-            "selection breakpoint real allocation",
+            &format!(
+                "selection breakpoint real allocation requested_mode={mode} requested={width}x{height}"
+            ),
             move |w| {
                 find(w, &format!("shell-{mode}")).is_some()
                     && (w.width() - width).abs() <= 2

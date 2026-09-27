@@ -466,14 +466,20 @@ fn workflow_contract_requires_recovery_hidpi_and_native_matrix() {
         ],
     );
 
-    for probe in [
-        "skipped-p0-gate",
-        "conditional-p0-gate",
-        "continued-p0-gate",
-        "missing-fatal-gtk-warnings",
-        "missing-platform-matrix-member",
-        "weakened-cleanup-secret-ordering",
-    ] {
+    let contract = include_str!("../scripts/qa/workflow-contract.ps1");
+    let probes = contract
+        .lines()
+        .find_map(|line| {
+            line.trim()
+                .strip_prefix("[ValidateSet(")
+                .and_then(|choices| choices.strip_suffix(")]"))
+        })
+        .expect("workflow contract must declare regression probes");
+    for probe in probes
+        .split(", ")
+        .map(|probe| probe.trim_matches('"'))
+        .filter(|probe| !probe.is_empty())
+    {
         assert_workflow_contract_probe(probe);
     }
 }
@@ -631,6 +637,13 @@ fn hosted_gui_tests_use_linux_xvfb_and_a_supported_macos_runner() {
 #[test]
 fn hosted_windows_p0_provisions_and_restores_a_wide_display() {
     let ci = include_str!("../.github/workflows/ci.yml");
+    let windows_p0 = ci
+        .split_once("      - name: Run Credential Manager vault probe and P0 All smoke (Windows)")
+        .expect("Windows P0 gate")
+        .1
+        .split_once("      - name: Validate failed P0 artifacts are redacted")
+        .expect("Windows P0 gate end")
+        .0;
     let display = include_str!("../scripts/qa/windows-display.ps1");
     let harness = include_str!("../scripts/qa/p0-smoke.ps1").replace("\r\n", "\n");
 
@@ -640,14 +653,19 @@ fn hosted_windows_p0_provisions_and_restores_a_wide_display() {
         "scripts/qa/windows-display.ps1 -Mode Restore",
         "Windows display restoration failed.",
     ] {
-        assert!(ci.contains(marker), "Windows P0 is missing {marker}");
+        assert!(
+            windows_p0.contains(marker),
+            "Windows P0 is missing {marker}"
+        );
     }
-    let apply = ci.find("windows-display.ps1 -Mode Apply").unwrap();
+    let apply = windows_p0.find("windows-display.ps1 -Mode Apply").unwrap();
     let smoke = apply
-        + ci[apply..]
+        + windows_p0[apply..]
             .find("pwsh -NoProfile -File scripts/qa/p0-smoke.ps1 -Mode All")
             .unwrap();
-    let restore = ci.find("windows-display.ps1 -Mode Restore").unwrap();
+    let restore = windows_p0
+        .find("windows-display.ps1 -Mode Restore")
+        .unwrap();
     assert!(apply < smoke && smoke < restore);
 
     for marker in [

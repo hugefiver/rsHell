@@ -7,7 +7,7 @@ param(
     [AllowEmptyString()][string]$ReleaseText = "",
     [AllowEmptyString()][string]$P0Text = "",
     [AllowEmptyString()][string]$PackageText = "",
-    [ValidateSet("", "dead-workspace-gate", "dead-terminal-engine-gate", "conditional-terminal-engine-gate", "continue-terminal-engine-gate", "missing-terminal-engine-gate", "duplicate-terminal-engine-gate", "misplaced-terminal-engine-gate", "skipped-p0-gate", "conditional-p0-gate", "continued-p0-gate", "missing-fatal-gtk-warnings", "missing-package-startup-field", "missing-platform-matrix-member", "weakened-cleanup-secret-ordering")]
+    [ValidateSet("", "dead-workspace-gate", "missing-workspace-display-setup", "undersized-workspace-display", "conditional-workspace-display-restore", "missing-workspace-display-restore", "mismatched-workspace-display-ledger", "missing-workspace-display-restore-check", "dead-terminal-engine-gate", "conditional-terminal-engine-gate", "continue-terminal-engine-gate", "missing-terminal-engine-gate", "duplicate-terminal-engine-gate", "misplaced-terminal-engine-gate", "skipped-p0-gate", "conditional-p0-gate", "continued-p0-gate", "missing-fatal-gtk-warnings", "missing-package-startup-field", "missing-platform-matrix-member", "weakened-cleanup-secret-ordering")]
     [string]$RegressionProbe = ""
 )
 
@@ -237,6 +237,31 @@ if ($RegressionProbe.Length -gt 0) {
             $stepHeader = "      - name: Run required workspace gates"
             $probeCi = $ci.Replace($stepHeader, "$stepHeader`n        if: false")
         }
+        "missing-workspace-display-setup" {
+            $steps = @(Get-NamedStepBlock -Text $ci -Name "Prepare workspace display (Windows)")
+            if ($steps.Count -ne 1) { throw "Workflow regression probe could not locate workspace display setup." }
+            $probeCi = $ci.Remove($steps[0].Index, $steps[0].Length)
+        }
+        "undersized-workspace-display" {
+            $probeCi = $ci.Replace('-Ledger $displayLedger -Width 2560 -Height 1440', '-Ledger $displayLedger -Width 1920 -Height 1080')
+        }
+        "conditional-workspace-display-restore" {
+            $steps = @(Get-NamedStepBlock -Text $ci -Name "Restore workspace display (Windows)")
+            if ($steps.Count -ne 1) { throw "Workflow regression probe could not locate workspace display restore." }
+            $conditional = [regex]::Replace($steps[0].Value, "(?m)^ {8}if: always\(\) && runner\.os == 'Windows'", "        if: runner.os == 'Windows'")
+            $probeCi = $ci.Remove($steps[0].Index, $steps[0].Length).Insert($steps[0].Index, $conditional)
+        }
+        "missing-workspace-display-restore" {
+            $steps = @(Get-NamedStepBlock -Text $ci -Name "Restore workspace display (Windows)")
+            if ($steps.Count -ne 1) { throw "Workflow regression probe could not locate workspace display restore." }
+            $probeCi = $ci.Remove($steps[0].Index, $steps[0].Length)
+        }
+        "mismatched-workspace-display-ledger" {
+            $probeCi = $ci.Replace("pwsh -NoProfile -File scripts/qa/windows-display.ps1 -Mode Restore -Ledger `$displayLedger", "pwsh -NoProfile -File scripts/qa/windows-display.ps1 -Mode Restore -Ledger `$otherLedger")
+        }
+        "missing-workspace-display-restore-check" {
+            $probeCi = $ci.Replace('if ($LASTEXITCODE -ne 0) { throw "Windows workspace display restoration failed; ledger retained at $displayLedger." }', 'Write-Output "Restore result unchecked"')
+        }
         "dead-terminal-engine-gate" {
             $stepHeader = "      - name: Run terminal engine gate"
             $probeCi = $ci.Replace($stepHeader, "$stepHeader`n        if: false")
@@ -391,6 +416,54 @@ Assert-Absent -Text $ci -Pattern "(?im)^ {8}if:\s*false\s*(?:#.*)?$" -Label "CI 
 $failureCheck = 'if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }'
 $workspaceStep = Assert-NamedStep -Text $ci -Name "Run required workspace gates" -Failures $failures
 Assert-StepHasNoYamlCondition -Step $workspaceStep -Name "Run required workspace gates" -Failures $failures
+$displaySetupName = "Prepare workspace display (Windows)"
+$displayRestoreName = "Restore workspace display (Windows)"
+$displaySetup = Assert-NamedStep -Text $ci -Name $displaySetupName -Failures $failures
+$displayRestore = Assert-NamedStep -Text $ci -Name $displayRestoreName -Failures $failures
+foreach ($pattern in @(
+        "(?m)^ {8}if: runner\.os == 'Windows'\s*$",
+        'Test-Path -LiteralPath \$env:RUNNER_TEMP -PathType Container',
+        'rshell-workspace-display-\$\(\[Guid\]::NewGuid\(\)\.ToString\(''N''\)\)',
+        'Test-Path -LiteralPath \$displayRoot',
+        'New-Item -ItemType Directory -Path \$displayRoot',
+        '\$displayLedger = Join-Path \$displayRoot ''display-mode\.json''',
+        'Add-Content -LiteralPath \$env:GITHUB_ENV -Value "RSHELL_WORKSPACE_DISPLAY_ROOT=\$displayRoot"',
+        'Add-Content -LiteralPath \$env:GITHUB_ENV -Value ''RSHELL_WORKSPACE_DISPLAY_APPLY_STARTED=1''',
+        'windows-display\.ps1 -Mode Apply -Ledger \$displayLedger -Width 2560 -Height 1440',
+        'if \(\$LASTEXITCODE -ne 0\) \{ throw "Windows workspace display setup failed\." \}'
+    )) {
+    Assert-StepPattern -Step $displaySetup -Pattern $pattern -Name $displaySetupName -Failures $failures
+}
+foreach ($pattern in @(
+        "(?m)^ {8}if: always\(\) && runner\.os == 'Windows'\s*$",
+        '\$displayRoot = \$env:RSHELL_WORKSPACE_DISPLAY_ROOT',
+        '\$applyStarted = \$env:RSHELL_WORKSPACE_DISPLAY_APPLY_STARTED',
+        'GetDirectoryName\(\$ownedRoot\) -ne \$runnerTemp',
+        'rshell-workspace-display-\[0-9a-f\]\{32\}',
+        '\$displayLedger = Join-Path \$ownedRoot ''display-mode\.json''',
+        'if \(\$applyStarted -eq ''1''\) \{ throw "Workspace display restore ledger is missing after Apply started\." \}',
+        'windows-display\.ps1 -Mode Restore -Ledger \$displayLedger',
+        'if \(\$LASTEXITCODE -ne 0\) \{ throw "Windows workspace display restoration failed; ledger retained at \$displayLedger\." \}',
+        'Remove-Item -LiteralPath \$displayLedger -Force',
+        'Remove-Item -LiteralPath \$ownedRoot -ErrorAction Stop',
+        'if \(\$applyStarted -ne ''1''\) \{ throw "Workspace display ledger existed before Apply was recorded; restored but ownership state was inconsistent\." \}'
+    )) {
+    Assert-StepPattern -Step $displayRestore -Pattern $pattern -Name $displayRestoreName -Failures $failures
+}
+$displaySetupMatches = @(Get-NamedStepBlock -Text $ci -Name $displaySetupName)
+$displayRestoreMatches = @(Get-NamedStepBlock -Text $ci -Name $displayRestoreName)
+$workspaceMatches = @(Get-NamedStepBlock -Text $ci -Name "Run required workspace gates")
+$windowsP0Matches = @(Get-NamedStepBlock -Text $ci -Name "Run Credential Manager vault probe and P0 All smoke (Windows)")
+if ($displaySetupMatches.Count -eq 1 -and $displayRestoreMatches.Count -eq 1 -and $workspaceMatches.Count -eq 1 -and $windowsP0Matches.Count -eq 1 -and
+    -not ($displaySetupMatches[0].Index -lt $workspaceMatches[0].Index -and $workspaceMatches[0].Index -lt $displayRestoreMatches[0].Index -and $displayRestoreMatches[0].Index -lt $windowsP0Matches[0].Index)) {
+    Add-ContractFailure -Failures $failures -Message "Windows workspace display setup, gate, restoration, and P0 display must remain ordered."
+}
+if ($null -ne $displaySetup -and -not [regex]::IsMatch($displaySetup, '(?s)RSHELL_WORKSPACE_DISPLAY_ROOT=\$displayRoot.*RSHELL_WORKSPACE_DISPLAY_APPLY_STARTED=1.*windows-display\.ps1 -Mode Apply')) {
+    Add-ContractFailure -Failures $failures -Message "Workspace display ownership and restore obligation must be published before Apply."
+}
+if ($null -ne $displayRestore -and -not [regex]::IsMatch($displayRestore, '(?s)windows-display\.ps1 -Mode Restore -Ledger \$displayLedger\s+if \(\$LASTEXITCODE -ne 0\) \{ throw[^\r\n]+\}\s+Remove-Item -LiteralPath \$displayLedger -Force[^\r\n]*\s+Remove-Item -LiteralPath \$ownedRoot')) {
+    Add-ContractFailure -Failures $failures -Message "Workspace display restore must succeed before exact ledger cleanup."
+}
 foreach ($gate in @(
         "cargo fmt --all -- --check",
         "cargo check --workspace --all-targets --all-features --locked",
