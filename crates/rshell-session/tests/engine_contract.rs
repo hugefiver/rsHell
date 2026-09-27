@@ -274,6 +274,145 @@ fn output_after_an_expired_synchronized_update_is_not_swallowed() {
 }
 
 #[test]
+fn saturated_synchronized_update_explicit_flush_preserves_exact_rows() {
+    assert_saturated_sync_flush(1, false);
+}
+
+#[test]
+fn saturated_synchronized_update_expired_flush_preserves_exact_rows() {
+    assert_saturated_sync_flush(1, true);
+}
+
+#[test]
+fn saturated_synchronized_update_multiple_windows_preserve_exact_rows() {
+    assert_saturated_sync_flush(206, false);
+    assert_saturated_sync_flush(206, true);
+}
+
+#[test]
+fn saturated_synchronized_update_closing_sequence_preserves_multiple_windows() {
+    let mut engine = saturated_scrollback_engine();
+    let mut expected = saturated_scrollback_engine();
+    let body = (104..310)
+        .map(|index| format!("\r\nline{index:03}"))
+        .collect::<String>();
+    expected.input(body.as_bytes()).unwrap();
+    // Begin, several bounded windows, end, and ordinary output all in one input call.
+    engine
+        .input(format!("\x1b[?2026h{body}\x1b[?2026l!").as_bytes())
+        .unwrap();
+    expected.input(b"!").unwrap();
+    assert_same_retained_rows(&engine, &expected);
+}
+
+#[test]
+fn synchronized_update_crossing_capacity_counts_the_whole_scroll_operation() {
+    let mut engine = DefaultTerminalEngine::new(&profile(100), size(12, 3)).unwrap();
+    engine.input(&b"same\r\n".repeat(101)).unwrap();
+    assert_eq!(engine.viewport_bounds().bottom_top_stable_row, 99);
+    engine.input(b"\x1b[?2026h\x1b[3Stail").unwrap();
+    engine.end_sync().unwrap();
+    let bounds = engine.viewport_bounds();
+    assert_eq!(bounds.first_stable_row, 2);
+    assert_eq!(bounds.bottom_top_stable_row, 102);
+    let frame = engine.snapshot(viewport(102, 3), None);
+    assert_eq!(trimmed_rows(&frame), ["", "", "tail"]);
+}
+
+#[test]
+fn synchronized_update_uses_actual_scrolls_not_overestimated_raw_byte_predictions() {
+    let mut engine = saturated_scrollback_engine();
+    let mut expected = saturated_scrollback_engine();
+    for terminal in [&mut engine, &mut expected] {
+        terminal.input(b"\x1b[?7l").unwrap();
+    }
+    let body = format!("{}\r\nlast", "X".repeat(2_500));
+    let before = engine.viewport_bounds();
+    engine
+        .input(format!("\x1b[?2026h{body}").as_bytes())
+        .unwrap();
+    engine.end_sync().unwrap();
+    expected.input(body.as_bytes()).unwrap();
+    assert_saturated_scroll(&engine, before, 1);
+    assert_same_retained_rows(&engine, &expected);
+}
+
+#[test]
+fn synchronized_update_fragmented_wraps_preserve_cursor_and_following_output() {
+    let mut engine = saturated_scrollback_engine();
+    let mut expected = saturated_scrollback_engine();
+    engine.input(b"\x1b[?2026h").unwrap();
+    for fragment in [b"\r".as_slice(), b"123456789012", b"X", b"\r\nnext"] {
+        engine.input(fragment).unwrap();
+        expected.input(fragment).unwrap();
+    }
+    engine.end_sync().unwrap();
+    engine.input(b"\r\nordinary").unwrap();
+    expected.input(b"\r\nordinary").unwrap();
+    assert_same_retained_rows(&engine, &expected);
+}
+
+fn assert_same_retained_rows(engine: &DefaultTerminalEngine, expected: &DefaultTerminalEngine) {
+    let bounds = expected.viewport_bounds();
+    assert_eq!(engine.viewport_bounds(), bounds);
+    for top in bounds.first_stable_row..=bounds.bottom_top_stable_row {
+        assert_eq!(
+            engine.snapshot(viewport(top, 3), None),
+            expected.snapshot(viewport(top, 3), None)
+        );
+    }
+}
+
+fn assert_saturated_sync_flush(scrolls: usize, expired: bool) {
+    let mut engine = saturated_scrollback_engine();
+    let before = engine.viewport_bounds();
+    let frozen = engine.snapshot(viewport(before.bottom_top_stable_row, 3), None);
+    engine.input(b"\x1b[?2026h").unwrap();
+    // Separate input calls must not reset the predicted cursor from the frozen terminal.
+    for index in 104..104 + scrolls {
+        engine
+            .input(format!("\r\nline{index:03}").as_bytes())
+            .unwrap();
+    }
+    assert_eq!(engine.viewport_bounds(), before);
+    assert_eq!(
+        engine.snapshot(viewport(before.bottom_top_stable_row, 3), None),
+        frozen
+    );
+    if expired {
+        let deadline = engine.sync_deadline().unwrap();
+        std::thread::sleep(deadline.saturating_duration_since(std::time::Instant::now()));
+        assert!(std::time::Instant::now() >= deadline);
+        engine.input(b"!").unwrap();
+    } else {
+        assert!(engine.end_sync().unwrap().dirty);
+    }
+    assert!(engine.sync_deadline().is_none());
+    let after = engine.viewport_bounds();
+    // Check actual retained contents before checking the identities assigned to those rows.
+    let last = 103 + scrolls;
+    let first = last - 102;
+    let mut contents = Vec::new();
+    let mut identities = Vec::new();
+    for index in first..=last {
+        let top = after.first_stable_row + (index - first) as i64;
+        let frame = engine.snapshot(viewport(top.min(after.bottom_top_stable_row), 3), None);
+        let offset = (top - frame.viewport_top) as usize;
+        contents.push(trimmed_rows(&frame)[offset].clone());
+        identities.push(frame.rows[offset].stable_row);
+    }
+    let expected = (first..=last)
+        .map(|index| {
+            let suffix = if expired && index == last { "!" } else { "" };
+            format!("line{index:03}{suffix}")
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(contents, expected);
+    assert_eq!(identities, (first as i64..=last as i64).collect::<Vec<_>>());
+    assert_saturated_scroll(&engine, before, scrolls as i64);
+}
+
+#[test]
 fn same_chunk_primary_output_before_alternate_screen_keeps_stable_row_ids() {
     let mut engine = DefaultTerminalEngine::new(&profile(1_000), size(20, 3)).unwrap();
     engine.input(b"anchor\r\n").unwrap();

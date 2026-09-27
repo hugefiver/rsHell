@@ -3,8 +3,54 @@ use alacritty_terminal::{
     event::EventListener,
     grid::{Dimensions, Grid},
     index::Line,
-    term::cell::Cell,
+    term::{TermMode, cell::Cell},
 };
+
+use crate::alacritty_primary_rows::PrimaryRows;
+
+pub(crate) fn apply<T: EventListener>(
+    terminal: &mut Term<T>,
+    history_limit: usize,
+    primary_rows: &mut PrimaryRows,
+    maximum_shift: usize,
+    track_capacity: bool,
+    apply: impl FnOnce(&mut Term<T>),
+) {
+    let was_primary = !terminal.mode().contains(TermMode::ALT_SCREEN);
+    let old_history = terminal.grid().history_size();
+    let anchor_shift = if track_capacity { maximum_shift } else { 0 };
+    let capacity_anchor = was_primary
+        .then(|| capture(terminal, anchor_shift))
+        .flatten();
+    apply(terminal);
+    let active_primary = !terminal.mode().contains(TermMode::ALT_SCREEN);
+    if active_primary {
+        let history = terminal.grid().history_size();
+        if was_primary {
+            let completed =
+                if old_history == history_limit || (!track_capacity && history == history_limit) {
+                    completed_shift(terminal, history_limit, capacity_anchor)
+                } else {
+                    0
+                };
+            let shift = history
+                .saturating_sub(old_history)
+                .saturating_add(completed);
+            primary_rows.origin = primary_rows.origin.saturating_add(shift as i64);
+        } else if history >= primary_rows.history {
+            primary_rows.origin = primary_rows
+                .origin
+                .saturating_add(i64::try_from(history - primary_rows.history).unwrap_or(i64::MAX));
+        } else {
+            primary_rows.origin = primary_rows
+                .origin
+                .saturating_sub(i64::try_from(primary_rows.history - history).unwrap_or(i64::MAX));
+        }
+        primary_rows.history = history;
+    } else if was_primary {
+        primary_rows.history = old_history;
+    }
+}
 
 const ANCHOR_ROWS: usize = 3;
 
