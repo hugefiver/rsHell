@@ -147,6 +147,133 @@ fn full_configuration_round_trip_updates_deletes_and_survives_reopen() {
 }
 
 #[test]
+fn unknown_profile_extensions_survive_reopen_copy_rename_legacy_saves_and_stale_cas() {
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join("extensions.sqlite3");
+    let repository = SqliteRepository::open(&path).unwrap();
+    repository.migrate().unwrap();
+    let initial = repository.load_configuration().unwrap();
+    assert_eq!(initial.revision, 0);
+    assert_eq!(initial.profiles, vec![TerminalProfile::p0_default()]);
+    let schema_versions = repository.schema_versions().unwrap();
+    #[cfg(feature = "test-support")]
+    let schema = repository.test_schema().unwrap();
+    repository.shutdown().unwrap();
+
+    let extensions = serde_json::json!({
+        "example.app": {"version": 999, "future": [null, true, 42, "元数据", [], {}]},
+        "unknown.scalar": "保留",
+        "unknown.null": null
+    });
+    let mut settings_json = serde_json::to_value(&initial.profiles[0].settings).unwrap();
+    settings_json["extensions"] = extensions.clone();
+    let sqlite = rusqlite::Connection::open(&path).unwrap();
+    assert_eq!(
+        sqlite
+            .execute(
+                "UPDATE terminal_profiles SET settings_json=?1 WHERE id=?2",
+                rusqlite::params![
+                    settings_json.to_string(),
+                    initial.profiles[0].id.0.to_string()
+                ],
+            )
+            .unwrap(),
+        1
+    );
+    drop(sqlite);
+
+    let repository = SqliteRepository::open(&path).unwrap();
+    repository.migrate().unwrap();
+    let before = repository.load_configuration().unwrap();
+    assert_eq!(before.revision, 0);
+    assert_eq!(before.settings, initial.settings);
+    assert_eq!(
+        serde_json::to_value(&before.profiles[0].settings).unwrap(),
+        settings_json
+    );
+    let mut renamed = before.profiles[0].clone();
+    renamed.name = "重命名配置".into();
+    let mut copied = renamed.clone();
+    copied.id = TerminalProfileId::new();
+    copied.name = "复制配置".into();
+    let mut proposal = change(&before);
+    proposal.settings.default_terminal_profile = copied.id;
+    proposal.upsert_profiles = vec![renamed.clone(), copied.clone()];
+    applied(&repository, proposal, 1);
+    let saved = repository.load_configuration().unwrap();
+    assert_eq!(saved.profiles.len(), 2);
+    assert!(saved.profiles.contains(&renamed));
+    assert!(saved.profiles.contains(&copied));
+    repository.shutdown().unwrap();
+
+    let repository = SqliteRepository::open(&path).unwrap();
+    repository.migrate().unwrap();
+    let reopened = repository.load_configuration().unwrap();
+    assert_eq!(reopened, saved);
+    assert_eq!(repository.load_terminal_profiles().unwrap(), saved.profiles);
+    assert_eq!(repository.load_settings().unwrap(), saved.settings);
+    for profile in &reopened.profiles {
+        assert_eq!(
+            serde_json::to_value(&profile.settings).unwrap()["extensions"],
+            extensions
+        );
+    }
+
+    let mut legacy_copy = reopened
+        .profiles
+        .iter()
+        .find(|profile| profile.id == copied.id)
+        .unwrap()
+        .clone();
+    legacy_copy.name = "旧接口保存".into();
+    repository
+        .save_terminal_profile(legacy_copy.clone())
+        .unwrap();
+    let legacy_saved = repository.load_configuration().unwrap();
+    assert_eq!(legacy_saved.revision, 2);
+    assert!(legacy_saved.profiles.contains(&legacy_copy));
+    legacy_copy.settings.extensions.insert(
+        "example.app".into(),
+        serde_json::json!({"version": 1000, "future": {"new": [false, null, "保留"]}}),
+    );
+    let mut update = change(&legacy_saved);
+    update.upsert_profiles.push(legacy_copy.clone());
+    applied(&repository, update, 3);
+    let mut app_settings = saved.settings.clone();
+    app_settings.color_scheme = ColorScheme::Nord;
+    repository.save_settings(app_settings.clone()).unwrap();
+    let latest = repository.load_configuration().unwrap();
+    assert_eq!(latest.revision, 4);
+    assert_eq!(latest.settings, app_settings);
+    assert!(latest.profiles.contains(&legacy_copy));
+    assert!(latest.profiles.contains(&renamed));
+
+    let mut stale = change(&saved);
+    copied.settings.extensions.clear();
+    stale.upsert_profiles.push(copied);
+    #[cfg(feature = "test-support")]
+    let before_tables = repository.test_visible_tables().unwrap();
+    assert_eq!(
+        repository.commit_configuration(stale),
+        Ok(ConfigurationCommitOutcome::Conflict { actual_revision: 4 })
+    );
+    assert_eq!(repository.load_configuration().unwrap(), latest);
+    #[cfg(feature = "test-support")]
+    {
+        assert_eq!(repository.test_visible_tables().unwrap(), before_tables);
+        assert_eq!(repository.test_schema().unwrap(), schema);
+    }
+    assert_eq!(repository.schema_versions().unwrap(), schema_versions);
+    repository.shutdown().unwrap();
+
+    let reopened = SqliteRepository::open(&path).unwrap();
+    reopened.migrate().unwrap();
+    assert_eq!(reopened.load_configuration().unwrap(), latest);
+    assert_eq!(reopened.schema_versions().unwrap(), schema_versions);
+    reopened.shutdown().unwrap();
+}
+
+#[test]
 fn concurrent_commits_on_one_worker_have_one_winner_and_one_conflict() {
     let repository = Arc::new(SqliteRepository::open_in_memory().unwrap());
     repository.migrate().unwrap();

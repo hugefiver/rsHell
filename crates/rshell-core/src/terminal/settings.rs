@@ -1,3 +1,5 @@
+use std::collections::BTreeMap;
+
 use serde::{Deserialize, Serialize, de::Error as _};
 
 use crate::connection::TerminalProfileId;
@@ -109,6 +111,9 @@ pub struct TerminalSettingsV1 {
     pub scroll_on_output: bool,
     pub scroll_on_keypress: bool,
     pub answerback: String,
+    /// 应用按命名空间存放的可选元数据；core 仅透传，不解释其内容或版本。
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub extensions: BTreeMap<String, serde_json::Value>,
 }
 
 impl Default for TerminalSettingsV1 {
@@ -131,6 +136,7 @@ impl Default for TerminalSettingsV1 {
             scroll_on_output: true,
             scroll_on_keypress: false,
             answerback: "rsHell".into(),
+            extensions: BTreeMap::new(),
         }
     }
 }
