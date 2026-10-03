@@ -5,10 +5,15 @@ use crate::{
     MainWindow, ShellLayoutMode, SmokeAction, SmokeStepState, smoke_driver_state::SmokeDriver,
 };
 
+#[path = "resize_trace.rs"]
+pub(crate) mod resize_trace;
+use resize_trace::{Event, ResizeTrace, Snapshot};
+
 pub(crate) struct ResizeDiagnostics {
     width: i32,
     height: i32,
     expected: ShellLayoutMode,
+    trace: ResizeTrace,
 }
 
 impl ResizeDiagnostics {
@@ -28,6 +33,7 @@ impl ResizeDiagnostics {
             width: *width,
             height: *height,
             expected: *expected_mode,
+            trace: ResizeTrace::new((*width, *height), *expected_mode),
         })
     }
 
@@ -97,6 +103,31 @@ impl ResizeDiagnostics {
 }
 
 impl MainWindow {
+    pub(super) fn refresh_smoke_window_allocation_traced(&mut self) {
+        self.observe_smoke_resize_trace(Event::TickEnter);
+        self.observe_smoke_resize_trace(Event::RefreshEnter);
+        self.refresh_smoke_window_allocation();
+        self.observe_smoke_resize_trace(Event::RefreshExit);
+    }
+
+    pub(super) fn finish_smoke_resize_tick(&mut self) {
+        self.observe_smoke_resize_trace(Event::TickExit);
+        self.snapshot_smoke_resize_terminal();
+    }
+
+    pub(crate) fn observe_smoke_resize_trace(&self, event: Event) {
+        let Some(diagnostic) = &self.smoke_state.resize_diagnostics else {
+            return;
+        };
+        let root = self
+            .shell
+            .overlay
+            .root()
+            .and_then(|root| root.downcast::<gtk::ApplicationWindow>().ok());
+        let snapshot = Snapshot::read(root.as_ref(), Some(self.shell.layout().mode));
+        diagnostic.trace.record(event, snapshot);
+    }
+
     pub(super) fn route_smoke_action_with_resize_diagnostics(
         &mut self,
         action: SmokeAction,
@@ -105,7 +136,8 @@ impl MainWindow {
             .smoke
             .as_ref()
             .and_then(|driver| driver.current.as_ref().map(|step| step.index));
-        let first = self.smoke_state.resize_diagnostics.is_none()
+        let first = !self.smoke_state.resize_trace_armed
+            && self.smoke_state.resize_diagnostics.is_none()
             && ResizeDiagnostics::for_route(
                 &action,
                 index,
@@ -113,18 +145,35 @@ impl MainWindow {
                     && std::env::var("RSHELL_P0_RESIZE_DIAGNOSTICS").as_deref() == Ok("1"),
             )
             .map(|diagnostic| {
+                #[cfg(target_os = "linux")]
+                let mut diagnostic = diagnostic;
+                self.smoke_state.resize_trace_armed = true;
+                #[cfg(target_os = "linux")]
+                if let Some(root) = self
+                    .shell
+                    .overlay
+                    .root()
+                    .and_then(|root| root.downcast::<gtk::ApplicationWindow>().ok())
+                {
+                    diagnostic.trace.attach(&root);
+                }
                 diagnostic.snapshot(self, "before");
                 self.smoke_state.resize_diagnostics = Some(diagnostic);
+                self.observe_smoke_resize_trace(Event::Before);
             })
             .is_some();
         let result = self.route_smoke_action(action);
         if first && let Some(diagnostic) = &self.smoke_state.resize_diagnostics {
             diagnostic.snapshot(self, "after_route");
+            self.observe_smoke_resize_trace(Event::AfterRoute);
         }
         if result.is_err()
-            && let Some(diagnostic) = self.smoke_state.resize_diagnostics.take()
+            && let Some(mut diagnostic) = self.smoke_state.resize_diagnostics.take()
         {
             diagnostic.snapshot(self, "terminal_route_error");
+            diagnostic
+                .trace
+                .terminal("terminal_route_error", self.smoke_resize_trace_snapshot());
         }
         result
     }
@@ -133,132 +182,26 @@ impl MainWindow {
         let Some(driver) = self.smoke.as_ref() else {
             return;
         };
-        if let Some((diagnostic, phase)) =
+        if let Some((mut diagnostic, phase)) =
             ResizeDiagnostics::terminal_snapshot(&mut self.smoke_state.resize_diagnostics, driver)
         {
             diagnostic.snapshot(self, phase);
+            diagnostic
+                .trace
+                .terminal(phase, self.smoke_resize_trace_snapshot());
         }
+    }
+
+    fn smoke_resize_trace_snapshot(&self) -> Snapshot {
+        let root = self
+            .shell
+            .overlay
+            .root()
+            .and_then(|root| root.downcast::<gtk::ApplicationWindow>().ok());
+        Snapshot::read(root.as_ref(), Some(self.shell.layout().mode))
     }
 }
 
 #[cfg(test)]
-mod tests {
-    use std::{
-        collections::BTreeSet,
-        time::{Duration, Instant},
-    };
-
-    use super::*;
-    use crate::{
-        SmokeCounters, SmokeDriverInit, SmokeReportHandle, SmokeScenario, SmokeScenarioState,
-        SmokeWindowResizeEvidence, smoke_driver_observation::SmokeObservation,
-        smoke_driver_state::SmokeDecision,
-    };
-
-    fn observed() -> SmokeObservation {
-        SmokeObservation {
-            window_realized: true,
-            editor_open: false,
-            sidebar_selection: None,
-            connection_panes: BTreeSet::new(),
-            import_preview_ready: false,
-            active_tab: None,
-            tab_ids: Vec::new(),
-            shutdown_complete: false,
-            active_interaction: None,
-            answered_prompts: Vec::new(),
-            last_interaction_response: None,
-            binding: None,
-            counters: SmokeCounters::default(),
-        }
-    }
-
-    fn resize_driver() -> (SmokeDriver, SmokeObservation, Option<ResizeDiagnostics>) {
-        let resize = SmokeAction::ResizeWindow {
-            width: 800,
-            height: 600,
-            expected_mode: ShellLayoutMode::Compact,
-        };
-        let init = SmokeDriverInit::new(SmokeScenario::new(vec![
-            SmokeAction::WaitWindowRealized,
-            resize.clone(),
-            SmokeAction::CloseAll,
-        ]));
-        let report = SmokeReportHandle::new(&init);
-        let mut driver = SmokeDriver::new(init, report.clone());
-        let observed = observed();
-        assert!(driver.tick(&observed, |_| false).is_none());
-        assert!(matches!(
-            driver.tick(&observed, |_| false),
-            Some(SmokeDecision::Route(SmokeAction::ResizeWindow { .. }))
-        ));
-        let pending = ResizeDiagnostics::for_route(&resize, Some(1), true);
-        (driver, observed, pending)
-    }
-
-    #[test]
-    fn first_resize_timeout_keeps_the_failure_and_yields_one_terminal_snapshot() {
-        let (mut driver, observed, mut pending) = resize_driver();
-        let action = &driver.current.as_ref().unwrap().action;
-        assert!(ResizeDiagnostics::for_route(action, Some(1), false).is_none());
-        driver.current.as_mut().unwrap().started = Instant::now() - Duration::from_secs(11);
-        assert!(matches!(
-            driver.tick(&observed, |_| false),
-            Some(SmokeDecision::Quit)
-        ));
-        let terminal = ResizeDiagnostics::terminal_snapshot(&mut pending, &driver)
-            .expect("timeout must produce the terminal diagnostic before Quit");
-        assert_eq!(terminal.1, "terminal_failed");
-        assert_eq!((terminal.0.width, terminal.0.height), (800, 600));
-        assert!(ResizeDiagnostics::terminal_snapshot(&mut pending, &driver).is_none());
-        let report = driver.report.report();
-        assert_eq!(
-            report.failure.as_ref().map(|failure| failure.code),
-            Some("step_timeout")
-        );
-        assert_eq!(
-            report.failure.as_ref().and_then(|failure| failure.step),
-            Some(1)
-        );
-    }
-
-    #[test]
-    fn asynchronous_failure_flushes_first_resize_terminal_snapshot_once() {
-        let (mut driver, observed, mut pending) = resize_driver();
-        assert!(ResizeDiagnostics::terminal_snapshot(&mut pending, &driver).is_none());
-        driver.fail(&observed, "command_rejected");
-        let (_, phase) = ResizeDiagnostics::terminal_snapshot(&mut pending, &driver)
-            .expect("asynchronous failure must flush before Quit");
-        assert_eq!(phase, "terminal_failed");
-        assert!(ResizeDiagnostics::terminal_snapshot(&mut pending, &driver).is_none());
-        let report = driver.report.report();
-        assert_eq!(report.state, SmokeScenarioState::Failed);
-        assert_eq!(
-            report.failure.as_ref().map(|failure| failure.code),
-            Some("command_rejected")
-        );
-    }
-
-    #[test]
-    fn first_resize_success_is_reported_after_driver_advances() {
-        let (mut driver, mut observed, mut pending) = resize_driver();
-        observed.counters.window_resize = Some(SmokeWindowResizeEvidence {
-            sequence: 1,
-            requested_width: 800,
-            requested_height: 600,
-            realized_width: 800,
-            realized_height: 600,
-            expected_layout: ShellLayoutMode::Compact,
-            layout: ShellLayoutMode::Compact,
-        });
-        assert!(matches!(
-            driver.tick(&observed, |_| false),
-            Some(SmokeDecision::Route(SmokeAction::CloseAll))
-        ));
-        assert_eq!(driver.current.as_ref().map(|step| step.index), Some(2));
-        assert_eq!(
-            ResizeDiagnostics::terminal_snapshot(&mut pending, &driver).map(|(_, phase)| phase),
-            Some("terminal_passed")
-        );
-    }
-}
+#[path = "diagnostics_tests.rs"]
+mod tests;

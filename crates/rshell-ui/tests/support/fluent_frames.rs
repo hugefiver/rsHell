@@ -6,6 +6,10 @@ use std::{
     time::{Duration, Instant},
 };
 
+#[cfg(windows)]
+#[path = "windows_geometry.rs"]
+mod windows_geometry;
+
 #[derive(Clone, Copy, Default)]
 struct FrameObservation {
     after_paint_callbacks: usize,
@@ -41,8 +45,15 @@ pub(crate) fn wait_for_frame(
 ) {
     let deadline = Instant::now() + Duration::from_secs(2);
     let widget = widget.as_ref();
+    let clock_ready = iterate_until(deadline, || widget.frame_clock().is_some());
+    #[cfg(windows)]
+    windows_geometry::report_if_failed(
+        clock_ready,
+        windows_geometry::FailurePhase::FrameClock,
+        widget,
+    );
     assert!(
-        iterate_until(deadline, || widget.frame_clock().is_some()),
+        clock_ready,
         "{description}: frame clock unavailable before deadline"
     );
     let clock = widget.frame_clock().unwrap();
@@ -70,6 +81,12 @@ pub(crate) fn wait_for_frame(
     clock.request_phase(gtk::gdk::FrameClockPhase::PAINT | gtk::gdk::FrameClockPhase::AFTER_PAINT);
     let completed = iterate_until(deadline, || painted.get());
     clock.disconnect(signal);
+    #[cfg(windows)]
+    windows_geometry::report_if_failed(
+        completed,
+        windows_geometry::FailurePhase::AfterPaint,
+        widget,
+    );
     let observed = observation.get();
     assert!(
         completed,

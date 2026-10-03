@@ -105,6 +105,9 @@ impl MainWindow {
 
     pub(crate) fn observe_smoke_window_allocation(&mut self, _width: i32, _height: i32) {
         // Modal resize passes surface dimensions; sample the GTK widget for smoke evidence.
+        self.observe_smoke_resize_trace(
+            crate::main_window_smoke::diagnostics::resize_trace::Event::Allocation,
+        );
         let Some(window) = self
             .shell
             .overlay

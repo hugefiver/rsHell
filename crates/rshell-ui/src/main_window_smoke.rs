@@ -88,6 +88,7 @@ pub(crate) struct SmokeUiState {
     pub visual_stage_count: Option<usize>,
     pub window_resize: Option<crate::SmokeWindowResizeEvidence>,
     pub(crate) resize_diagnostics: Option<diagnostics::ResizeDiagnostics>,
+    pub(crate) resize_trace_armed: bool,
 }
 
 impl MainWindow {
@@ -141,7 +142,7 @@ impl MainWindow {
     }
 
     pub(crate) fn drive_smoke(&mut self, sender: &ComponentSender<Self>) {
-        self.refresh_smoke_window_allocation();
+        self.refresh_smoke_window_allocation_traced();
         let binding = self
             .smoke
             .as_ref()
@@ -157,7 +158,7 @@ impl MainWindow {
                 frame_contains(view_model, active_tab, needle)
             })
         });
-        self.snapshot_smoke_resize_terminal();
+        self.finish_smoke_resize_tick();
         let trace_resize = self.smoke_state.trace_first_resize
             && matches!(
                 &decision,
