@@ -3,6 +3,10 @@ use super::{FrameFailure, measurements, wait_for_frame_with_failure_report};
 use relm4::gtk;
 use std::{cell::RefCell, rc::Rc, time::Instant};
 
+#[cfg(any(windows, test))]
+#[path = "fluent_interaction_measurement.rs"]
+mod measurement;
+
 #[derive(Clone, Debug, Default, PartialEq)]
 pub(super) struct State {
     pub modal: Option<(bool, i32, i32)>,
@@ -118,6 +122,8 @@ impl Observation {
                 .borrow()
                 .failure_lines(self.mode, self.case, failure, final_sample);
         eprint!("{output}");
+        #[cfg(windows)]
+        measurement::report(root, self.mode, self.case, failure);
     }
 }
 
