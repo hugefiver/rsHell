@@ -671,15 +671,37 @@ fn hosted_gui_tests_use_linux_xvfb_and_a_supported_macos_runner() {
 }
 
 #[test]
-fn hosted_windows_p0_provisions_and_restores_a_wide_display() {
+fn hosted_windows_display_lifecycle_spans_workspace_terminal_and_p0() {
     let ci = include_str!("../.github/workflows/ci.yml");
+    let setup = ci
+        .split_once("      - name: Prepare workspace display (Windows)")
+        .expect("Windows display setup")
+        .1
+        .split("      - name:")
+        .next()
+        .unwrap();
+    let workspace = ci
+        .split_once("      - name: Run required workspace gates")
+        .expect("workspace gates")
+        .1
+        .split("      - name:")
+        .next()
+        .unwrap();
     let windows_p0 = ci
         .split_once("      - name: Run Credential Manager vault probe and P0 All smoke (Windows)")
         .expect("Windows P0 gate")
         .1
-        .split_once("      - name: Validate failed P0 artifacts are redacted")
+        .split_once("      - name: Restore workspace display (Windows)")
         .expect("Windows P0 gate end")
         .0;
+    let restore = ci
+        .split_once("      - name: Restore workspace display (Windows)")
+        .expect("Windows display restore")
+        .1
+        .split("      - name:")
+        .next()
+        .unwrap();
+    let coordinator = include_str!("../scripts/qa/windows-display-experiment.ps1");
     let display = format!(
         "{}\n{}",
         include_str!("../scripts/qa/windows-display.ps1"),
@@ -687,26 +709,142 @@ fn hosted_windows_p0_provisions_and_restores_a_wide_display() {
     );
     let harness = include_str!("../scripts/qa/p0-smoke.ps1").replace("\r\n", "\n");
 
-    for marker in [
-        "scripts/qa/windows-display.ps1 -Mode Apply",
-        "-Width 1920 -Height 1080",
-        "scripts/qa/windows-display.ps1 -Mode Restore",
-        "Windows display restoration failed.",
-    ] {
+    assert_source_ordered(
+        ci,
+        &[
+            "      - name: Prepare workspace display (Windows)",
+            "      - name: Run required workspace gates",
+            "      - name: Run terminal engine gate",
+            "      - name: Run Credential Manager vault probe and P0 All smoke (Windows)",
+            "      - name: Restore workspace display (Windows)",
+        ],
+    );
+    assert_eq!(ci.matches("Invoke-WorkspaceDisplaySetup ").count(), 1);
+    assert_eq!(ci.matches("Invoke-WorkspaceDisplayRestore ").count(), 1);
+    assert!(setup.contains("if: runner.os == 'Windows'"));
+    assert!(setup.contains(
+        "Invoke-WorkspaceDisplaySetup -RunnerTemp $env:RUNNER_TEMP -Width 1920 -Height 1080"
+    ));
+    assert!(restore.contains("if: always() && runner.os == 'Windows'"));
+    assert!(restore.contains("$displayRoot = $env:RSHELL_WORKSPACE_DISPLAY_ROOT"));
+    assert!(restore.contains(
+        "$displayLedger = if ([string]::IsNullOrWhiteSpace($displayRoot)) { '' } else { Join-Path $displayRoot 'display-mode.json' }"
+    ));
+    assert!(restore.contains(
+        "Invoke-WorkspaceDisplayRestore -Root $displayRoot -RunnerTemp $env:RUNNER_TEMP -Ledger $displayLedger -Started $env:RSHELL_WORKSPACE_DISPLAY_STARTED"
+    ));
+    assert!(restore.contains(
+        "catch { [Console]::Error.WriteLine('Windows workspace display restoration failed; owned state retained.'); exit 1 }"
+    ));
+    for forbidden in ["exit 0", "Test-Path", "apply-started", "return"] {
         assert!(
-            windows_p0.contains(marker),
-            "Windows P0 is missing {marker}"
+            !restore.contains(forbidden),
+            "the always caller must not bypass the published started handoff: {forbidden}"
         );
     }
-    let apply = windows_p0.find("windows-display.ps1 -Mode Apply").unwrap();
-    let smoke = apply
-        + windows_p0[apply..]
-            .find("pwsh -NoProfile -File scripts/qa/p0-smoke.ps1 -Mode All")
-            .unwrap();
-    let restore = windows_p0
-        .find("windows-display.ps1 -Mode Restore")
-        .unwrap();
-    assert!(apply < smoke && smoke < restore);
+    assert!(!ci.contains("scripts/qa/windows-display.ps1"));
+    assert!(workspace.contains("if ('${{ runner.os }}' -eq 'Windows')"));
+    for (step, phase, gate) in [
+        (workspace, "before_workspace", "cargo fmt --all -- --check"),
+        (
+            windows_p0,
+            "before_p0",
+            "pwsh -NoProfile -File scripts/qa/p0-smoke.ps1 -Mode All",
+        ),
+    ] {
+        assert_source_ordered(
+            step,
+            &[
+                ". scripts/qa/windows-display-experiment.ps1",
+                "$displayMode = Get-WorkspaceDisplayCurrent",
+                "$displayWorkArea = Get-WorkspaceDisplayWorkArea",
+                "$displayTarget = Get-WorkspaceDisplayPrimaryMonitorRect",
+                &format!(
+                    "RSHELL_WORKSPACE_DISPLAY_CURRENT phase={phase} target_width=1920 target_height=1080"
+                ),
+                gate,
+            ],
+        );
+        for query in [
+            "Get-WorkspaceDisplayCurrent",
+            "Get-WorkspaceDisplayWorkArea",
+            "Get-WorkspaceDisplayPrimaryMonitorRect",
+        ] {
+            assert_eq!(step.matches(query).count(), 1);
+        }
+        for actual in [
+            "mode=$($displayMode | ConvertTo-Json -Compress)",
+            "workarea=$($displayWorkArea | ConvertTo-Json -Compress)",
+            "target=$($displayTarget | ConvertTo-Json -Compress)",
+        ] {
+            assert!(step.contains(actual));
+        }
+        for forbidden in [
+            "Invoke-WorkspaceDisplaySetup",
+            "Invoke-WorkspaceDisplayRestore",
+            "Invoke-WorkspaceDisplayChild",
+            "Set-WorkspaceWorkArea",
+            "Write-DisplayNewFile",
+            "Read-DisplayBaseline",
+            "Read-DisplayWorkAreaBaseline",
+        ] {
+            assert!(!step.contains(forbidden), "observation must be read-only");
+        }
+    }
+    for forbidden in [
+        "$displayRoot",
+        "$displayLedger",
+        "workarea.json",
+        "apply-started",
+    ] {
+        assert!(
+            !windows_p0.contains(forbidden),
+            "display recovery must remain outside recursively cleaned P0 roots"
+        );
+    }
+    assert!(windows_p0.replace("\r\n", "\n").contains(concat!(
+        "          finally {\n",
+        "            if (Test-Path -LiteralPath $vaultRoot -PathType Container) {\n",
+        "              Remove-Item -LiteralPath $vaultRoot -Recurse -Force\n",
+        "            }\n",
+        "          }"
+    )));
+
+    // Source wiring only: hosted mode/workarea readback and GTK geometry remain required.
+    assert_source_ordered(
+        coordinator
+            .split_once("function Invoke-WorkspaceDisplaySetup {")
+            .unwrap()
+            .1,
+        &[
+            "Publish-WorkspaceDisplayRoot $displayRoot",
+            "$baseline = Get-WorkspaceDisplayCurrent",
+            "$workAreaBaseline = Get-WorkspaceDisplayWorkArea",
+            "Write-DisplayNewFile $displayLedger",
+            "Write-DisplayNewFile (Join-Path $displayRoot 'workarea.json')",
+            "Assert-DisplayEqual (Read-DisplayBaseline $displayLedger) $baseline",
+            "Assert-DisplayRectEqual (Read-DisplayWorkAreaBaseline (Join-Path $displayRoot 'workarea.json')) $workAreaBaseline",
+            "Write-DisplayRectObservation 'baseline' 'setup' $workAreaBaseline",
+            "Write-DisplayNewFile (Join-Path $displayRoot 'apply-started') $started",
+            "Publish-WorkspaceDisplayStarted $displayRoot",
+            "Invoke-WorkspaceDisplayChild",
+        ],
+    );
+    assert_source_ordered(
+        coordinator
+            .split_once("function Restore-WorkspaceDisplayBaselines {")
+            .unwrap()
+            .1,
+        &[
+            "Invoke-WorkspaceDisplayChild $Root $Ledger 'Restore' 'Dynamic' $Baseline",
+            "$current = Get-WorkspaceDisplayCurrent",
+            "Assert-DisplayEqual $current $Baseline",
+            "Invoke-WorkspaceDisplayChild $Root (Join-Path $Root 'workarea.json') 'Restore' 'Dynamic' $WorkAreaBaseline -Operation Workarea",
+            "$current = Get-WorkspaceDisplayWorkArea",
+            "Write-DisplayRectObservation 'restore_after_exit' $Arm $current",
+            "Assert-DisplayRectEqual $current $WorkAreaBaseline",
+        ],
+    );
 
     for marker in [
         "EnumDisplaySettings",
@@ -739,6 +877,15 @@ fn hosted_windows_p0_provisions_and_restores_a_wide_display() {
         );
     }
     assert!(harness.contains("else {\n            Add-WindowResize $actions 1920 1080 \"wide\""));
+    let geometry = include_str!("../crates/rshell-ui/src/smoke_driver_evidence.rs");
+    assert!(geometry.contains(
+        "window_resize_matches_with_tolerance(evidence, if cfg!(windows) { 2 } else { 0 })"
+    ));
+    for dimension in ["width", "height"] {
+        assert!(geometry.contains(&format!(
+            "evidence.realized_{dimension}.abs_diff(evidence.requested_{dimension}) <= tolerance"
+        )));
+    }
 }
 
 #[test]
@@ -758,10 +905,32 @@ fn display_lifetime_coordinator_runs_without_native_display_calls() {
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
     );
+    assert!(String::from_utf8_lossy(&output.stdout).contains(
+        "DISPLAY_LIFETIME_NO_NATIVE_PASS arms=2 final_flags=0 workarea_flags=0 timeout_reaped=2"
+    ));
+}
+
+#[test]
+fn workarea_boundary_runs_without_native_display_calls() {
+    let output = Command::new("pwsh")
+        .args([
+            "-NoProfile",
+            "-File",
+            "scripts/qa/windows-workarea-test.ps1",
+        ])
+        .current_dir(env!("CARGO_MANIFEST_DIR"))
+        .output()
+        .expect("PowerShell must launch the no-native workarea boundary tests");
     assert!(
-        String::from_utf8_lossy(&output.stdout)
-            .contains("DISPLAY_LIFETIME_NO_NATIVE_PASS arms=2 final_flags=0 timeout_reaped=1")
+        output.status.success(),
+        "workarea boundary regression failed: {}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
     );
+    assert!(String::from_utf8_lossy(&output.stdout).lines().any(|line| {
+        line.starts_with("RSHELL_WORKAREA_BOUNDARY_TEST checks=")
+            && line.ends_with(" native_initialized=0 native_calls=0")
+    }));
 }
 
 #[test]

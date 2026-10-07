@@ -5,6 +5,8 @@ function Initialize-RshellDisplayNative {
     Add-Type -TypeDefinition @'
 using System;
 using System.Collections.Generic;
+using System.ComponentModel;
+using System.Runtime.ExceptionServices;
 using System.Runtime.InteropServices;
 
 public sealed class RshellDisplayMode {
@@ -151,6 +153,155 @@ public static class RshellDisplayConfiguration {
             Height = mode.dmPelsHeight,
             BitsPerPixel = mode.dmBitsPerPel,
             Frequency = mode.dmDisplayFrequency,
+        };
+    }
+}
+
+public sealed class RshellWorkAreaRect {
+    public int Left { get; set; }
+    public int Top { get; set; }
+    public int Right { get; set; }
+    public int Bottom { get; set; }
+}
+
+public static class RshellWorkAreaConfiguration {
+    private const uint SPI_GETWORKAREA = 0x0030;
+    private const uint SPI_SETWORKAREA = 0x002F;
+    private const uint MONITOR_DEFAULTTOPRIMARY = 1;
+    private const uint MONITORINFOF_PRIMARY = 1;
+    private static readonly IntPtr PER_MONITOR_AWARE_V2 = new IntPtr(-4);
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct RECT {
+        public int Left;
+        public int Top;
+        public int Right;
+        public int Bottom;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct POINT {
+        public int X;
+        public int Y;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct MONITORINFO {
+        public uint cbSize;
+        public RECT rcMonitor;
+        public RECT rcWork;
+        public uint dwFlags;
+    }
+
+    [DllImport("user32.dll", CharSet = CharSet.Unicode, ExactSpelling = true, SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool SystemParametersInfoW(uint action, uint uiParam, ref RECT rect, uint flags);
+
+    [DllImport("user32.dll", ExactSpelling = true)]
+    private static extern IntPtr MonitorFromPoint(POINT point, uint flags);
+
+    [DllImport("user32.dll", CharSet = CharSet.Unicode, ExactSpelling = true, SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool GetMonitorInfoW(IntPtr monitor, ref MONITORINFO info);
+
+    [DllImport("user32.dll", ExactSpelling = true, SetLastError = true)]
+    private static extern IntPtr SetThreadDpiAwarenessContext(IntPtr context);
+
+    public static RshellWorkAreaRect GetWorkArea() {
+        // SPI_GETWORKAREA always reports physical pixels, regardless of caller DPI awareness.
+        var rect = new RECT();
+        if (!SystemParametersInfoW(SPI_GETWORKAREA, 0, ref rect, 0)) {
+            throw new Win32Exception(Marshal.GetLastWin32Error(), "The primary work area query failed.");
+        }
+        return ToInfo(rect);
+    }
+
+    public static RshellWorkAreaRect GetPrimaryMonitorRect() {
+        var previous = UsePhysicalCoordinates();
+        Exception operationError = null;
+        try {
+            var monitor = MonitorFromPoint(new POINT { X = 0, Y = 0 }, MONITOR_DEFAULTTOPRIMARY);
+            if (monitor == IntPtr.Zero) {
+                throw new InvalidOperationException("The primary monitor is unavailable.");
+            }
+            var info = new MONITORINFO { cbSize = (uint)Marshal.SizeOf<MONITORINFO>() };
+            if (!GetMonitorInfoW(monitor, ref info)) {
+                throw new Win32Exception(Marshal.GetLastWin32Error(), "The primary monitor query failed.");
+            }
+            if ((info.dwFlags & MONITORINFOF_PRIMARY) == 0) {
+                throw new InvalidOperationException("The queried monitor is not primary.");
+            }
+            return ToInfo(info.rcMonitor);
+        }
+        catch (Exception error) {
+            operationError = error;
+            throw;
+        }
+        finally {
+            try { RestoreDpiContext(previous); }
+            catch (Exception restoreError) { ThrowDpiRestoreFailure(operationError, restoreError); }
+        }
+    }
+
+    public static void SetWorkArea(RshellWorkAreaRect info) {
+        // Also protect direct managed callers, before any P/Invoke (including DPI awareness).
+        if (!RuntimeInformation.IsOSPlatform(OSPlatform.Windows) ||
+            !string.Equals(Environment.GetEnvironmentVariable("GITHUB_ACTIONS"), "true", StringComparison.Ordinal) ||
+            !string.Equals(Environment.GetEnvironmentVariable("RUNNER_ENVIRONMENT"), "github-hosted", StringComparison.Ordinal)) {
+            throw new InvalidOperationException("Work area changes require a GitHub-hosted Windows runner.");
+        }
+        if (info == null) { throw new ArgumentNullException(nameof(info)); }
+        var rect = new RECT { Left = info.Left, Top = info.Top, Right = info.Right, Bottom = info.Bottom };
+        Validate(rect);
+        var previous = UsePhysicalCoordinates();
+        Exception operationError = null;
+        try {
+            // Fixed zero parameters: no user-profile/registry persistence and no broadcast.
+            if (!SystemParametersInfoW(SPI_SETWORKAREA, 0, ref rect, 0)) {
+                throw new Win32Exception(Marshal.GetLastWin32Error(), "The work area change failed.");
+            }
+        }
+        catch (Exception error) {
+            operationError = error;
+            throw;
+        }
+        finally {
+            try { RestoreDpiContext(previous); }
+            catch (Exception restoreError) { ThrowDpiRestoreFailure(operationError, restoreError); }
+        }
+    }
+
+    private static void ThrowDpiRestoreFailure(Exception operationError, Exception restoreError) {
+        if (operationError != null) {
+            throw new AggregateException("The work area operation and thread DPI awareness restore both failed.", operationError, restoreError);
+        }
+        ExceptionDispatchInfo.Capture(restoreError).Throw();
+    }
+
+    private static IntPtr UsePhysicalCoordinates() {
+        var previous = SetThreadDpiAwarenessContext(PER_MONITOR_AWARE_V2);
+        if (previous == IntPtr.Zero) {
+            throw new Win32Exception(Marshal.GetLastWin32Error(), "Per-monitor-v2 DPI awareness is unavailable.");
+        }
+        return previous;
+    }
+
+    private static void RestoreDpiContext(IntPtr previous) {
+        if (SetThreadDpiAwarenessContext(previous) == IntPtr.Zero) {
+            throw new Win32Exception(Marshal.GetLastWin32Error(), "The thread DPI awareness restore failed.");
+        }
+    }
+
+    private static void Validate(RECT rect) {
+        if (rect.Right <= rect.Left || rect.Bottom <= rect.Top) {
+            throw new ArgumentException("The work area rectangle must have positive extent.");
+        }
+    }
+
+    private static RshellWorkAreaRect ToInfo(RECT rect) {
+        Validate(rect);
+        return new RshellWorkAreaRect {
+            Left = rect.Left, Top = rect.Top, Right = rect.Right, Bottom = rect.Bottom,
         };
     }
 }
