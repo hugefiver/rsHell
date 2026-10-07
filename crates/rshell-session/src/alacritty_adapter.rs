@@ -1,6 +1,7 @@
 use alacritty_terminal::{Term, grid::Dimensions, index::Line, term::Config, vte::ansi::Processor};
 use rshell_core::{
-    KeyCode, KeyModifiers, ResolvedTerminalProfile, TerminalMouseEvent, TerminalSize,
+    KeyCode, KeyModifiers, ResolvedTerminalProfile, TerminalKeyEvent, TerminalMouseEvent,
+    TerminalSize,
     render::{DisplayRecovery, TerminalDisplayModes},
 };
 
@@ -101,6 +102,15 @@ impl AlacrittyAdapter {
 
     pub(crate) fn encode_mouse(&self, event: TerminalMouseEvent) -> Result<Vec<u8>, EngineError> {
         alacritty_mouse::encode(event, *self.terminal.mode())
+    }
+
+    pub(crate) fn encode_key_event(&self, event: TerminalKeyEvent) -> Result<Vec<u8>, EngineError> {
+        alacritty_key::encode_event(
+            event,
+            *self.terminal.mode(),
+            self.settings.enable_csi_u,
+            self.settings.enable_kitty_keyboard,
+        )
     }
 
     pub(crate) fn viewport_bounds(&self) -> ViewportBounds {

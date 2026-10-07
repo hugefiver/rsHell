@@ -5,7 +5,7 @@ edition = "2024"
 license = "MIT"
 
 [dependencies]
-alacritty_terminal = "=0.26.0"
+alacritty_terminal = { version = "=0.26.0", git = "https://github.com/MoyuTeams/alacritty", rev = "78f36350907b9145a16a6f12e01bfec34ad5b3dd" }
 async-channel = "2.5"
 async-trait = "0.1"
 libc = "0.2"

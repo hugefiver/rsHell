@@ -1,7 +1,11 @@
 use alacritty_terminal::term::TermMode;
-use rshell_core::{KeyCode, KeyModifiers};
+use rshell_core::{KeyCode, KeyEventPhase, KeyModifiers, TerminalKeyEvent};
 
 use crate::EngineError;
+
+const FUNCTION_CODES: [u8; 20] = [
+    15, 17, 18, 19, 20, 21, 23, 24, 25, 26, 28, 29, 31, 32, 33, 34, 42, 43, 44, 45,
+];
 
 pub(crate) fn encode(
     code: KeyCode,
@@ -82,6 +86,106 @@ fn encode_character(
     Ok(bytes)
 }
 
+pub(crate) fn encode_event(
+    event: TerminalKeyEvent,
+    mode: TermMode,
+    csi_u: bool,
+    kitty_allowed: bool,
+) -> Result<Vec<u8>, EngineError> {
+    let disambiguate = kitty_allowed && mode.contains(TermMode::DISAMBIGUATE_ESC_CODES);
+    let report_events = kitty_allowed && mode.contains(TermMode::REPORT_EVENT_TYPES);
+    if event.modifiers.super_key && !(disambiguate || report_events) {
+        return Err(EngineError::UnsupportedInput("super-modified key"));
+    }
+    if matches!(event.code, KeyCode::F(0 | 25..=u8::MAX)) {
+        return Err(EngineError::UnsupportedInput("function key outside F1-F24"));
+    }
+
+    let recovery_key = matches!(
+        event.code,
+        KeyCode::Enter | KeyCode::Tab | KeyCode::Backspace
+    );
+    if event.phase == KeyEventPhase::Release
+        && (!report_events || (recovery_key && !mode.contains(TermMode::REPORT_ALL_KEYS_AS_ESC)))
+    {
+        return Ok(Vec::new());
+    }
+
+    // 先选择协议，后选择键表示。仅 flag 2 的字符 Press 仍须走原适配码。
+    let event_sequence = report_events && event.phase != KeyEventPhase::Press;
+    let kitty = match event.code {
+        KeyCode::Character(_) => {
+            (event.modifiers.control || event.modifiers.alt || event.modifiers.super_key)
+                && (disambiguate || event_sequence || event.modifiers.super_key)
+        }
+        KeyCode::Escape => disambiguate || event_sequence || event.modifiers.super_key,
+        KeyCode::Enter | KeyCode::Tab | KeyCode::Backspace => {
+            event_sequence || event.modifiers.super_key
+        }
+        _ => disambiguate || report_events,
+    };
+    if !kitty {
+        return if event.phase == KeyEventPhase::Release {
+            Ok(Vec::new())
+        } else {
+            encode(event.legacy_code, event.modifiers, mode, csi_u)
+        };
+    }
+
+    let phase = if report_events {
+        event.phase
+    } else {
+        KeyEventPhase::Press
+    };
+    let (number, final_byte) = match event.code {
+        KeyCode::Character(character) => (character as u32, 'u'),
+        KeyCode::Escape => (27, 'u'),
+        KeyCode::Enter => (13, 'u'),
+        KeyCode::Tab => (9, 'u'),
+        KeyCode::Backspace => (127, 'u'),
+        KeyCode::Insert => (2, '~'),
+        KeyCode::Delete => (3, '~'),
+        KeyCode::PageUp => (5, '~'),
+        KeyCode::PageDown => (6, '~'),
+        KeyCode::Home => (1, 'H'),
+        KeyCode::End => (1, 'F'),
+        KeyCode::ArrowUp => (1, 'A'),
+        KeyCode::ArrowDown => (1, 'B'),
+        KeyCode::ArrowRight => (1, 'C'),
+        KeyCode::ArrowLeft => (1, 'D'),
+        KeyCode::F(1) => (1, 'P'),
+        KeyCode::F(2) => (1, 'Q'),
+        // Kitty 的 F3 不使用与光标位置报告冲突的 R；F13 起使用专用码点。
+        KeyCode::F(3) => (13, '~'),
+        KeyCode::F(4) => (1, 'S'),
+        KeyCode::F(number @ 5..=12) => (u32::from(FUNCTION_CODES[usize::from(number - 5)]), '~'),
+        KeyCode::F(number @ 13..=24) => (57376 + u32::from(number - 13), 'u'),
+        KeyCode::F(_) => return Err(EngineError::UnsupportedInput("function key outside F1-F24")),
+    };
+    Ok(kitty_sequence(number, final_byte, event.modifiers, phase))
+}
+
+fn kitty_sequence(
+    number: u32,
+    final_byte: char,
+    modifiers: KeyModifiers,
+    phase: KeyEventPhase,
+) -> Vec<u8> {
+    let parameter = modifier_parameter(modifiers) + 8 * u8::from(modifiers.super_key);
+    if parameter == 1 && phase == KeyEventPhase::Press {
+        if number == 1 && final_byte != 'u' && final_byte != '~' {
+            return format!("\x1b[{final_byte}").into();
+        }
+        return format!("\x1b[{number}{final_byte}").into();
+    }
+    let event_type = match phase {
+        KeyEventPhase::Press => "",
+        KeyEventPhase::Repeat => ":2",
+        KeyEventPhase::Release => ":3",
+    };
+    format!("\x1b[{number};{parameter}{event_type}{final_byte}").into()
+}
+
 fn encode_tab(modifiers: KeyModifiers, protocol: bool) -> Vec<u8> {
     if modifiers.control && protocol {
         return format!("\x1b[9;{}u", modifier_parameter(modifiers)).into();
@@ -133,10 +237,7 @@ fn function_key(number: u8, modifiers: KeyModifiers) -> Vec<u8> {
         )
         .into();
     }
-    const CODES: [u8; 20] = [
-        15, 17, 18, 19, 20, 21, 23, 24, 25, 26, 28, 29, 31, 32, 33, 34, 42, 43, 44, 45,
-    ];
-    tilde(CODES[usize::from(number - 5)], modifiers)
+    tilde(FUNCTION_CODES[usize::from(number - 5)], modifiers)
 }
 
 fn modifier_parameter(modifiers: KeyModifiers) -> u8 {

@@ -27,10 +27,10 @@ pub use protocol::{
     SessionUiEvent, UiCommand,
 };
 pub use render::{
-    CellAttributes, CellPosition, Color, CursorShape, DisplayRecovery, ExitStatus, MouseButton,
-    MouseEventKind, RenderCell, RenderCursor, RenderFrame, RenderRow, SearchMatch, SearchQuery,
-    SelectionRange, SessionFailure, SessionState, TerminalDisplayModes, TerminalInput,
-    TerminalMouseEvent, TerminalSize, Viewport,
+    CellAttributes, CellPosition, Color, CursorShape, DisplayRecovery, ExitStatus, KeyEventPhase,
+    MouseButton, MouseEventKind, RenderCell, RenderCursor, RenderFrame, RenderRow, SearchMatch,
+    SearchQuery, SelectionRange, SessionFailure, SessionState, TerminalDisplayModes, TerminalInput,
+    TerminalKeyEvent, TerminalMouseEvent, TerminalSize, Viewport,
 };
 pub use terminal::{
     AppSettings, ColorScheme, KeyBinding, KeyCode, KeyModifiers, ResolvedTerminalProfile,
