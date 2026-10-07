@@ -644,7 +644,11 @@ fn hosted_windows_p0_provisions_and_restores_a_wide_display() {
         .split_once("      - name: Validate failed P0 artifacts are redacted")
         .expect("Windows P0 gate end")
         .0;
-    let display = include_str!("../scripts/qa/windows-display.ps1");
+    let display = format!(
+        "{}\n{}",
+        include_str!("../scripts/qa/windows-display.ps1"),
+        include_str!("../scripts/qa/windows-display-native.ps1")
+    );
     let harness = include_str!("../scripts/qa/p0-smoke.ps1").replace("\r\n", "\n");
 
     for marker in [
@@ -699,6 +703,29 @@ fn hosted_windows_p0_provisions_and_restores_a_wide_display() {
         );
     }
     assert!(harness.contains("else {\n            Add-WindowResize $actions 1920 1080 \"wide\""));
+}
+
+#[test]
+fn display_lifetime_coordinator_runs_without_native_display_calls() {
+    let output = Command::new("pwsh")
+        .args([
+            "-NoProfile",
+            "-File",
+            "scripts/qa/windows-display-experiment-test.ps1",
+        ])
+        .current_dir(env!("CARGO_MANIFEST_DIR"))
+        .output()
+        .expect("PowerShell must launch the no-native display lifetime tests");
+    assert!(
+        output.status.success(),
+        "display lifetime regression failed: {}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        String::from_utf8_lossy(&output.stdout)
+            .contains("DISPLAY_LIFETIME_NO_NATIVE_PASS arms=2 final_flags=0 timeout_reaped=1")
+    );
 }
 
 #[test]

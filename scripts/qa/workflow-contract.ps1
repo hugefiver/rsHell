@@ -245,7 +245,7 @@ if ($RegressionProbe.Length -gt 0) {
         "undersized-workspace-display" {
             $steps = @(Get-NamedStepBlock -Text $ci -Name "Prepare workspace display (Windows)")
             if ($steps.Count -ne 1) { throw "Workflow regression probe could not locate workspace display setup." }
-            $undersized = $steps[0].Value.Replace('-Ledger $displayLedger -Width 1920 -Height 1080', '-Ledger $displayLedger -Width 1600 -Height 900')
+            $undersized = $steps[0].Value.Replace('-RunnerTemp $env:RUNNER_TEMP -Width 1920 -Height 1080', '-RunnerTemp $env:RUNNER_TEMP -Width 1600 -Height 900')
             if ($undersized -ceq $steps[0].Value) { throw "Workflow regression probe could not lower workspace display resolution." }
             $probeCi = $ci.Remove($steps[0].Index, $steps[0].Length).Insert($steps[0].Index, $undersized)
         }
@@ -268,10 +268,10 @@ if ($RegressionProbe.Length -gt 0) {
             $probeCi = $ci.Remove($steps[0].Index, $steps[0].Length)
         }
         "mismatched-workspace-display-ledger" {
-            $probeCi = $ci.Replace("pwsh -NoProfile -File scripts/qa/windows-display.ps1 -Mode Restore -Ledger `$displayLedger", "pwsh -NoProfile -File scripts/qa/windows-display.ps1 -Mode Restore -Ledger `$otherLedger")
+            $probeCi = $ci.Replace('Invoke-WorkspaceDisplayRestore -Root $displayRoot -RunnerTemp $env:RUNNER_TEMP -Ledger $displayLedger', 'Invoke-WorkspaceDisplayRestore -Root $displayRoot -RunnerTemp $env:RUNNER_TEMP -Ledger $otherLedger')
         }
         "missing-workspace-display-restore-check" {
-            $probeCi = $ci.Replace('if ($LASTEXITCODE -ne 0) { throw "Windows workspace display restoration failed; ledger retained at $displayLedger." }', 'Write-Output "Restore result unchecked"')
+            $probeCi = $ci.Replace("catch { [Console]::Error.WriteLine('Windows workspace display restoration failed; owned state retained.'); exit 1 }", 'catch { Write-Output "Restore result unchecked" }')
         }
         "dead-terminal-engine-gate" {
             $stepHeader = "      - name: Run terminal engine gate"
@@ -344,9 +344,6 @@ if ($RegressionProbe.Length -gt 0) {
     $probeCiPath = Join-Path $temporaryRoot "rshell-workflow-contract-$probeToken.yml"
     $probeP0Path = Join-Path $temporaryRoot "rshell-workflow-contract-$probeToken.ps1"
     $probePackagePath = Join-Path $temporaryRoot "rshell-workflow-contract-$probeToken-package.ps1"
-    [System.IO.File]::WriteAllText($probeCiPath, $probeCi, [System.Text.UTF8Encoding]::new($false))
-    [System.IO.File]::WriteAllText($probeP0Path, $probeP0, [System.Text.UTF8Encoding]::new($false))
-    [System.IO.File]::WriteAllText($probePackagePath, $probePackage, [System.Text.UTF8Encoding]::new($false))
     $pwsh = (Get-Command -Name "pwsh" -ErrorAction Stop).Source
     $startInfo = [System.Diagnostics.ProcessStartInfo]::new()
     $startInfo.FileName = $pwsh
@@ -361,6 +358,10 @@ if ($RegressionProbe.Length -gt 0) {
     $started = $false
     $processCompleted = $false
     try {
+        # All three exact fixture paths are owned before any creation, even on a partial write.
+        [System.IO.File]::WriteAllText($probeCiPath, $probeCi, [System.Text.UTF8Encoding]::new($false))
+        [System.IO.File]::WriteAllText($probeP0Path, $probeP0, [System.Text.UTF8Encoding]::new($false))
+        [System.IO.File]::WriteAllText($probePackagePath, $probePackage, [System.Text.UTF8Encoding]::new($false))
         if (-not $process.Start()) { throw "Workflow regression probe could not start its validator." }
         $started = $true
         $stdout = $process.StandardOutput.ReadToEndAsync()
@@ -433,31 +434,21 @@ $displaySetup = Assert-NamedStep -Text $ci -Name $displaySetupName -Failures $fa
 $displayRestore = Assert-NamedStep -Text $ci -Name $displayRestoreName -Failures $failures
 foreach ($pattern in @(
         "(?m)^ {8}if: runner\.os == 'Windows'\s*$",
-        'Test-Path -LiteralPath \$env:RUNNER_TEMP -PathType Container',
-        'rshell-workspace-display-\$\(\[Guid\]::NewGuid\(\)\.ToString\(''N''\)\)',
-        'Test-Path -LiteralPath \$displayRoot',
-        'New-Item -ItemType Directory -Path \$displayRoot',
-        '\$displayLedger = Join-Path \$displayRoot ''display-mode\.json''',
-        'Add-Content -LiteralPath \$env:GITHUB_ENV -Value "RSHELL_WORKSPACE_DISPLAY_ROOT=\$displayRoot"',
-        'Add-Content -LiteralPath \$env:GITHUB_ENV -Value ''RSHELL_WORKSPACE_DISPLAY_APPLY_STARTED=1''',
-        'windows-display\.ps1 -Mode Apply -Ledger \$displayLedger -Width 1920 -Height 1080',
-        'if \(\$LASTEXITCODE -ne 0\) \{ throw "Windows workspace display setup failed\." \}'
+        '(?m)^ {10}\$ErrorActionPreference = ''Stop''\s*$',
+        '(?m)^ {10}\. scripts/qa/windows-display-experiment\.ps1\s*$',
+        '(?m)^ {12}Invoke-WorkspaceDisplaySetup -RunnerTemp \$env:RUNNER_TEMP -Width 1920 -Height 1080\s*$',
+        "(?m)^ {10}catch \{ \[Console\]::Error\.WriteLine\('Windows workspace display setup failed; owned state retained if required\.'\); exit 1 \}\s*$"
     )) {
     Assert-StepPattern -Step $displaySetup -Pattern $pattern -Name $displaySetupName -Failures $failures
 }
 foreach ($pattern in @(
         "(?m)^ {8}if: always\(\) && runner\.os == 'Windows'\s*$",
+        '(?m)^ {10}\$ErrorActionPreference = ''Stop''\s*$',
+        '(?m)^ {10}\. scripts/qa/windows-display-experiment\.ps1\s*$',
         '\$displayRoot = \$env:RSHELL_WORKSPACE_DISPLAY_ROOT',
-        '\$applyStarted = \$env:RSHELL_WORKSPACE_DISPLAY_APPLY_STARTED',
-        'GetDirectoryName\(\$ownedRoot\) -ne \$runnerTemp',
-        'rshell-workspace-display-\[0-9a-f\]\{32\}',
-        '\$displayLedger = Join-Path \$ownedRoot ''display-mode\.json''',
-        'if \(\$applyStarted -eq ''1''\) \{ throw "Workspace display restore ledger is missing after Apply started\." \}',
-        'windows-display\.ps1 -Mode Restore -Ledger \$displayLedger',
-        'if \(\$LASTEXITCODE -ne 0\) \{ throw "Windows workspace display restoration failed; ledger retained at \$displayLedger\." \}',
-        'Remove-Item -LiteralPath \$displayLedger -Force',
-        'Remove-Item -LiteralPath \$ownedRoot -ErrorAction Stop',
-        'if \(\$applyStarted -ne ''1''\) \{ throw "Workspace display ledger existed before Apply was recorded; restored but ownership state was inconsistent\." \}'
+        '\$displayLedger = Join-Path \$displayRoot ''display-mode\.json''',
+        '(?m)^ {12}Invoke-WorkspaceDisplayRestore -Root \$displayRoot -RunnerTemp \$env:RUNNER_TEMP -Ledger \$displayLedger\s*$',
+        "(?m)^ {10}catch \{ \[Console\]::Error\.WriteLine\('Windows workspace display restoration failed; owned state retained\.'\); exit 1 \}\s*$"
     )) {
     Assert-StepPattern -Step $displayRestore -Pattern $pattern -Name $displayRestoreName -Failures $failures
 }
@@ -469,12 +460,7 @@ if ($displaySetupMatches.Count -eq 1 -and $displayRestoreMatches.Count -eq 1 -an
     -not ($displaySetupMatches[0].Index -lt $workspaceMatches[0].Index -and $workspaceMatches[0].Index -lt $displayRestoreMatches[0].Index -and $displayRestoreMatches[0].Index -lt $windowsP0Matches[0].Index)) {
     Add-ContractFailure -Failures $failures -Message "Windows workspace display setup, gate, restoration, and P0 display must remain ordered."
 }
-if ($null -ne $displaySetup -and -not [regex]::IsMatch($displaySetup, '(?s)RSHELL_WORKSPACE_DISPLAY_ROOT=\$displayRoot.*RSHELL_WORKSPACE_DISPLAY_APPLY_STARTED=1.*windows-display\.ps1 -Mode Apply')) {
-    Add-ContractFailure -Failures $failures -Message "Workspace display ownership and restore obligation must be published before Apply."
-}
-if ($null -ne $displayRestore -and -not [regex]::IsMatch($displayRestore, '(?s)windows-display\.ps1 -Mode Restore -Ledger \$displayLedger\s+if \(\$LASTEXITCODE -ne 0\) \{ throw[^\r\n]+\}\s+Remove-Item -LiteralPath \$displayLedger -Force[^\r\n]*\s+Remove-Item -LiteralPath \$ownedRoot')) {
-    Add-ContractFailure -Failures $failures -Message "Workspace display restore must succeed before exact ledger cleanup."
-}
+Assert-Absent -Text ($displaySetup + $displayRestore) -Pattern 'RSHELL_WORKSPACE_DISPLAY_APPLY_STARTED' -Label 'Duplicate display obligation state' -Failures $failures
 foreach ($gate in @(
         "cargo fmt --all -- --check",
         "cargo check --workspace --all-targets --all-features --locked",
@@ -557,8 +543,23 @@ foreach ($pattern in @(
     Assert-StepPattern -Step $windowsModeAll -Pattern $pattern -Name "Run Credential Manager vault probe and P0 All smoke (Windows)" -Failures $failures
 }
 $displayHelper = Get-Content -LiteralPath (Join-Path $PSScriptRoot "windows-display.ps1") -Raw
-foreach ($pattern in @('EnumDisplaySettings', 'ChangeDisplaySettings', 'PreferredAtLeast', 'CDS_TEST', 'CDS_FULLSCREEN', 'The display mode did not converge\.', '\$restoreMode = \[RshellDisplayMode\]::new\(\)')) {
+$displayNative = Get-Content -LiteralPath (Join-Path $PSScriptRoot "windows-display-native.ps1") -Raw
+foreach ($pattern in @('EnumDisplaySettings', 'ChangeDisplaySettings', 'PreferredAtLeast', 'CDS_TEST', 'CDS_FULLSCREEN', 'The display mode did not converge\.')) {
+    Assert-Contains -Text $displayNative -Pattern $pattern -Label "Windows display native helper '$pattern'" -Failures $failures
+}
+foreach ($pattern in @('\$restoreMode = \[RshellDisplayMode\]::new\(\)', '\[string\]\$ChangeKind = "Fullscreen"', '(?s)"Restore" \{.*?\$ChangeKind = "Dynamic"', '\$actual = Get-WorkspaceDisplayCurrent')) {
     Assert-Contains -Text $displayHelper -Pattern $pattern -Label "Windows display helper '$pattern'" -Failures $failures
+}
+$displayCoordinator = Get-Content -LiteralPath (Join-Path $PSScriptRoot "windows-display-experiment.ps1") -Raw
+foreach ($pattern in @(
+        '(?s)Publish-WorkspaceDisplayRoot \$displayRoot.*?\$baseline = Get-WorkspaceDisplayCurrent.*?Write-DisplayNewFile \$displayLedger.*?Assert-DisplayEqual \(Read-DisplayBaseline \$displayLedger\) \$baseline.*?\$target = Select-WorkspaceDisplayTarget.*?Write-DisplayNewFile \(Join-Path \$displayRoot ''apply-started''\) ''1''.*?Invoke-WorkspaceDisplayChild',
+        'GetDirectoryName\(\$ownedRoot\) -ne \$runnerPath', 'rshell-workspace-display-\[0-9a-f\]\{32\}',
+        "@\('fullscreen', 'dynamic', 'final'\)", 'Reset-WorkspaceDisplayBaseline \$displayRoot \$displayLedger \$baseline ''between''',
+        '(?s)function Invoke-WorkspaceDisplayRestore.*?Assert-WorkspaceDisplayReady.*?Reset-WorkspaceDisplayBaseline \$ownedRoot \$Ledger \$baseline ''always''.*?Clear-WorkspaceDisplayPreparation',
+        '(?s)function Reset-WorkspaceDisplayBaseline.*?''Restore'' ''Dynamic''.*?\$current = Get-WorkspaceDisplayCurrent.*?Assert-DisplayEqual \$current \$Baseline',
+        'child-exit-unconfirmed', 'Display mode did not match all four fields\.'
+    )) {
+    Assert-Contains -Text $displayCoordinator -Pattern $pattern -Label "Windows display coordinator '$pattern'" -Failures $failures
 }
 
 foreach ($required in @(

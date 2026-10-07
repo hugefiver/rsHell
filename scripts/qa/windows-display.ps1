@@ -1,213 +1,64 @@
 param(
-    [Parameter(Mandatory)]
-    [ValidateSet("Apply", "Restore", "Probe")]
-    [string]$Mode,
-
-    [Parameter(Mandatory)]
-    [ValidateNotNullOrEmpty()]
-    [string]$Ledger,
-
+    [Parameter(Mandatory)][ValidateSet("Apply", "Restore", "Probe", "ApplySelected")][string]$Mode,
+    [Parameter(Mandatory)][ValidateNotNullOrEmpty()][string]$Ledger,
     [int]$Width = 2560,
-    [int]$Height = 1440
+    [int]$Height = 1440,
+    [int]$BitsPerPixel = 0,
+    [int]$Frequency = 0,
+    [ValidateSet("Fullscreen", "Dynamic")][string]$ChangeKind = "Fullscreen"
 )
 
 $ErrorActionPreference = "Stop"
 Set-StrictMode -Version Latest
+. (Join-Path $PSScriptRoot "windows-display-experiment.ps1")
 
-if (-not $IsWindows) {
-    throw "Windows display configuration is unavailable on this platform."
-}
-
-Add-Type -TypeDefinition @'
-using System;
-using System.Collections.Generic;
-using System.Runtime.InteropServices;
-
-public sealed class RshellDisplayMode {
-    public int Width { get; set; }
-    public int Height { get; set; }
-    public int BitsPerPixel { get; set; }
-    public int Frequency { get; set; }
-}
-
-public static class RshellDisplayConfiguration {
-    private const int ENUM_CURRENT_SETTINGS = -1;
-    private const int DISP_CHANGE_SUCCESSFUL = 0;
-    private const int CDS_TEST = 0x00000002;
-    private const int CDS_FULLSCREEN = 0x00000004;
-    private const int DM_BITSPERPEL = 0x00040000;
-    private const int DM_PELSWIDTH = 0x00080000;
-    private const int DM_PELSHEIGHT = 0x00100000;
-    private const int DM_DISPLAYFREQUENCY = 0x00400000;
-
-    [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Ansi)]
-    private struct DEVMODE {
-        [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 32)] public string dmDeviceName;
-        public short dmSpecVersion;
-        public short dmDriverVersion;
-        public short dmSize;
-        public short dmDriverExtra;
-        public int dmFields;
-        public int dmPositionX;
-        public int dmPositionY;
-        public int dmDisplayOrientation;
-        public int dmDisplayFixedOutput;
-        public short dmColor;
-        public short dmDuplex;
-        public short dmYResolution;
-        public short dmTTOption;
-        public short dmCollate;
-        [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 32)] public string dmFormName;
-        public short dmLogPixels;
-        public int dmBitsPerPel;
-        public int dmPelsWidth;
-        public int dmPelsHeight;
-        public int dmDisplayFlags;
-        public int dmDisplayFrequency;
-        public int dmICMMethod;
-        public int dmICMIntent;
-        public int dmMediaType;
-        public int dmDitherType;
-        public int dmReserved1;
-        public int dmReserved2;
-        public int dmPanningWidth;
-        public int dmPanningHeight;
-    }
-
-    [DllImport("user32.dll", CharSet = CharSet.Ansi)]
-    private static extern bool EnumDisplaySettings(string deviceName, int modeNum, ref DEVMODE devMode);
-
-    [DllImport("user32.dll", CharSet = CharSet.Ansi)]
-    private static extern int ChangeDisplaySettings(ref DEVMODE devMode, int flags);
-
-    public static RshellDisplayMode Current() {
-        var mode = NewMode();
-        if (!EnumDisplaySettings(null, ENUM_CURRENT_SETTINGS, ref mode)) {
-            throw new InvalidOperationException("The current display mode is unavailable.");
+try {
+    Initialize-WorkspaceDisplayNative
+    switch ($Mode) {
+        "Probe" {
+            $target = [RshellDisplayConfiguration]::PreferredAtLeast($Width, $Height)
+            [RshellDisplayConfiguration]::Test($target)
+            Write-Output "RSHELL_DISPLAY_PROBE width=$($target.Width) height=$($target.Height) bpp=$($target.BitsPerPixel) frequency=$($target.Frequency)"
+            exit 0
         }
-        return ToInfo(mode);
-    }
-
-    public static RshellDisplayMode PreferredAtLeast(int width, int height) {
-        DEVMODE? preferred = null;
-        var available = new SortedSet<(int Width, int Height)>();
-        for (var index = 0; ; index++) {
-            var candidate = NewMode();
-            if (!EnumDisplaySettings(null, index, ref candidate)) break;
-            available.Add((candidate.dmPelsWidth, candidate.dmPelsHeight));
-            if (candidate.dmPelsWidth < width || candidate.dmPelsHeight < height) continue;
-            if (!preferred.HasValue || Better(candidate, preferred.Value)) preferred = candidate;
+        "Apply" {
+            $baseline = Get-WorkspaceDisplayCurrent
+            Write-DisplayNewFile $Ledger ($baseline | ConvertTo-Json -Compress)
+            Assert-DisplayEqual (Read-DisplayBaseline $Ledger) $baseline
+            $target = Select-WorkspaceDisplayTarget $Width $Height
         }
-        if (!preferred.HasValue) {
-            var sample = new List<string>();
-            foreach (var size in available) {
-                if (sample.Count == 64) break;
-                sample.Add($"{size.Width}x{size.Height}");
-            }
-            throw new InvalidOperationException(
-                $"The required display mode is unavailable: requested={width}x{height} " +
-                $"available_count={available.Count} available_sample=[{string.Join(",", sample)}] " +
-                $"truncated_count={available.Count - sample.Count}.");
+        "ApplySelected" {
+            $target = ConvertTo-DisplayMode ([pscustomobject]@{
+                Width = $Width; Height = $Height; BitsPerPixel = $BitsPerPixel; Frequency = $Frequency
+            })
         }
-        return ToInfo(preferred.Value);
-    }
-
-    public static void Test(RshellDisplayMode info) {
-        var mode = FindExact(info);
-        if (ChangeDisplaySettings(ref mode, CDS_TEST) != DISP_CHANGE_SUCCESSFUL) {
-            throw new InvalidOperationException("The display mode test failed.");
+        "Restore" {
+            $target = Read-DisplayBaseline $Ledger
+            $ChangeKind = "Dynamic"
         }
     }
-
-    public static void Apply(RshellDisplayMode info) {
-        var mode = FindExact(info);
-        if (ChangeDisplaySettings(ref mode, CDS_FULLSCREEN) != DISP_CHANGE_SUCCESSFUL) {
-            throw new InvalidOperationException("The display mode change failed.");
-        }
-        var current = Current();
-        if (current.Width != info.Width || current.Height != info.Height) {
-            throw new InvalidOperationException("The display mode did not converge.");
-        }
+    $restoreMode = [RshellDisplayMode]::new()
+    $restoreMode.Width = $target.Width
+    $restoreMode.Height = $target.Height
+    $restoreMode.BitsPerPixel = $target.BitsPerPixel
+    $restoreMode.Frequency = $target.Frequency
+    [RshellDisplayConfiguration]::Test($restoreMode)
+    [RshellDisplayConfiguration]::Apply($restoreMode, ($ChangeKind -eq "Fullscreen"))
+    $actual = Get-WorkspaceDisplayCurrent
+    Assert-DisplayEqual $actual $target
+    if ($Mode -eq "ApplySelected") {
+        # One finite line of actual Current, never a target echo. The supervisor labels it.
+        Write-Output "RSHELL_DISPLAY_CHILD width=$($actual.Width) height=$($actual.Height) bpp=$($actual.BitsPerPixel) frequency=$($actual.Frequency)"
     }
-
-    private static DEVMODE FindExact(RshellDisplayMode info) {
-        for (var index = 0; ; index++) {
-            var candidate = NewMode();
-            if (!EnumDisplaySettings(null, index, ref candidate)) break;
-            if (candidate.dmPelsWidth == info.Width && candidate.dmPelsHeight == info.Height &&
-                candidate.dmBitsPerPel == info.BitsPerPixel && candidate.dmDisplayFrequency == info.Frequency) {
-                candidate.dmFields = DM_BITSPERPEL | DM_PELSWIDTH | DM_PELSHEIGHT | DM_DISPLAYFREQUENCY;
-                return candidate;
-            }
-        }
-        throw new InvalidOperationException("The exact display mode is unavailable.");
+    elseif ($Mode -eq "Apply") {
+        $flags = if ($ChangeKind -eq "Fullscreen") { 4 } else { 0 }
+        Write-Output "RSHELL_DISPLAY_APPLIED width=$($actual.Width) height=$($actual.Height) bpp=$($actual.BitsPerPixel) frequency=$($actual.Frequency) flags=$flags"
     }
-
-    private static DEVMODE NewMode() {
-        var mode = new DEVMODE();
-        mode.dmSize = (short)Marshal.SizeOf<DEVMODE>();
-        return mode;
-    }
-
-    private static bool Better(DEVMODE candidate, DEVMODE current) {
-        var candidateArea = (long)candidate.dmPelsWidth * candidate.dmPelsHeight;
-        var currentArea = (long)current.dmPelsWidth * current.dmPelsHeight;
-        if (candidateArea != currentArea) return candidateArea < currentArea;
-        var candidateAt60 = candidate.dmDisplayFrequency == 60;
-        var currentAt60 = current.dmDisplayFrequency == 60;
-        if (candidateAt60 != currentAt60) return candidateAt60;
-        if (candidate.dmBitsPerPel != current.dmBitsPerPel) return candidate.dmBitsPerPel > current.dmBitsPerPel;
-        return candidate.dmDisplayFrequency < current.dmDisplayFrequency;
-    }
-
-    private static RshellDisplayMode ToInfo(DEVMODE mode) {
-        return new RshellDisplayMode {
-            Width = mode.dmPelsWidth,
-            Height = mode.dmPelsHeight,
-            BitsPerPixel = mode.dmBitsPerPel,
-            Frequency = mode.dmDisplayFrequency,
-        };
+    if ($Mode -eq "Restore") {
+        Write-Output "RSHELL_DISPLAY_RESTORED width=$($actual.Width) height=$($actual.Height) bpp=$($actual.BitsPerPixel) frequency=$($actual.Frequency) flags=0"
     }
 }
-'@
-
-switch ($Mode) {
-    "Probe" {
-        $target = [RshellDisplayConfiguration]::PreferredAtLeast($Width, $Height)
-        [RshellDisplayConfiguration]::Test($target)
-        Write-Output "RSHELL_DISPLAY_PROBE width=$($target.Width) height=$($target.Height)"
-    }
-    "Apply" {
-        $parent = Split-Path -Parent $Ledger
-        if (-not (Test-Path -LiteralPath $parent -PathType Container)) {
-            throw "The display ledger parent is unavailable."
-        }
-        if (Test-Path -LiteralPath $Ledger) {
-            throw "The display ledger already exists."
-        }
-        $current = [RshellDisplayConfiguration]::Current()
-        [System.IO.File]::WriteAllText(
-            $Ledger,
-            ($current | ConvertTo-Json -Compress),
-            [System.Text.UTF8Encoding]::new($false)
-        )
-        $target = [RshellDisplayConfiguration]::PreferredAtLeast($Width, $Height)
-        [RshellDisplayConfiguration]::Test($target)
-        [RshellDisplayConfiguration]::Apply($target)
-        Write-Output "RSHELL_DISPLAY_APPLIED width=$($target.Width) height=$($target.Height)"
-    }
-    "Restore" {
-        if (-not (Test-Path -LiteralPath $Ledger -PathType Leaf)) {
-            throw "The display ledger is unavailable."
-        }
-        $saved = Get-Content -LiteralPath $Ledger -Raw | ConvertFrom-Json
-        $restoreMode = [RshellDisplayMode]::new()
-        $restoreMode.Width = [int]$saved.Width
-        $restoreMode.Height = [int]$saved.Height
-        $restoreMode.BitsPerPixel = [int]$saved.BitsPerPixel
-        $restoreMode.Frequency = [int]$saved.Frequency
-        [RshellDisplayConfiguration]::Test($restoreMode)
-        [RshellDisplayConfiguration]::Apply($restoreMode)
-        Write-Output "RSHELL_DISPLAY_RESTORED width=$($restoreMode.Width) height=$($restoreMode.Height)"
-    }
+catch {
+    [Console]::Error.WriteLine("RSHELL_DISPLAY helper_failed")
+    exit 1
 }

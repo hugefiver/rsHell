@@ -164,15 +164,11 @@ jobs:
         if: runner.os == 'Windows'
         run: |
           $ErrorActionPreference = 'Stop'
-          if (-not (Test-Path -LiteralPath $env:RUNNER_TEMP -PathType Container)) { throw "Runner temporary directory is unavailable." }
-          $displayRoot = Join-Path $env:RUNNER_TEMP "rshell-workspace-display-$([Guid]::NewGuid().ToString('N'))"
-          if (Test-Path -LiteralPath $displayRoot) { throw "Workspace display directory already exists." }
-          [void](New-Item -ItemType Directory -Path $displayRoot -ErrorAction Stop)
-          $displayLedger = Join-Path $displayRoot 'display-mode.json'
-          Add-Content -LiteralPath $env:GITHUB_ENV -Value "RSHELL_WORKSPACE_DISPLAY_ROOT=$displayRoot" -ErrorAction Stop
-          Add-Content -LiteralPath $env:GITHUB_ENV -Value 'RSHELL_WORKSPACE_DISPLAY_APPLY_STARTED=1' -ErrorAction Stop
-          pwsh -NoProfile -File scripts/qa/windows-display.ps1 -Mode Apply -Ledger $displayLedger -Width 1920 -Height 1080
-          if ($LASTEXITCODE -ne 0) { throw "Windows workspace display setup failed." }
+          . scripts/qa/windows-display-experiment.ps1
+          try {
+            Invoke-WorkspaceDisplaySetup -RunnerTemp $env:RUNNER_TEMP -Width 1920 -Height 1080
+          }
+          catch { [Console]::Error.WriteLine('Windows workspace display setup failed; owned state retained if required.'); exit 1 }
 
       - name: Run required workspace gates
         run: |
@@ -210,36 +206,17 @@ jobs:
         if: always() && runner.os == 'Windows'
         run: |
           $ErrorActionPreference = 'Stop'
+          . scripts/qa/windows-display-experiment.ps1
           $displayRoot = $env:RSHELL_WORKSPACE_DISPLAY_ROOT
-          $applyStarted = $env:RSHELL_WORKSPACE_DISPLAY_APPLY_STARTED
-          if ([string]::IsNullOrWhiteSpace($displayRoot) -and [string]::IsNullOrWhiteSpace($applyStarted)) {
+          if ([string]::IsNullOrWhiteSpace($displayRoot)) {
             Write-Output 'Workspace display setup did not start; no restoration required.'
             exit 0
           }
-          if ([string]::IsNullOrWhiteSpace($displayRoot) -or $applyStarted -notin @($null, '', '1')) {
-            throw "Workspace display restoration ownership is incomplete."
+          $displayLedger = Join-Path $displayRoot 'display-mode.json'
+          try {
+            Invoke-WorkspaceDisplayRestore -Root $displayRoot -RunnerTemp $env:RUNNER_TEMP -Ledger $displayLedger
           }
-          $runnerTemp = [System.IO.Path]::GetFullPath($env:RUNNER_TEMP).TrimEnd('\', '/')
-          $ownedRoot = [System.IO.Path]::GetFullPath($displayRoot)
-          if ([System.IO.Path]::GetDirectoryName($ownedRoot) -ne $runnerTemp -or
-              [System.IO.Path]::GetFileName($ownedRoot) -cnotmatch '^rshell-workspace-display-[0-9a-f]{32}$') {
-            throw "Workspace display restoration path is not run-owned."
-          }
-          $displayLedger = Join-Path $ownedRoot 'display-mode.json'
-          if (-not (Test-Path -LiteralPath $ownedRoot -PathType Container)) {
-            throw "Workspace display restoration directory is missing."
-          }
-          if (-not (Test-Path -LiteralPath $displayLedger -PathType Leaf)) {
-            if ($applyStarted -eq '1') { throw "Workspace display restore ledger is missing after Apply started." }
-            Write-Output 'Workspace display Apply did not start; no restoration required.'
-            exit 0
-          }
-          pwsh -NoProfile -File scripts/qa/windows-display.ps1 -Mode Restore -Ledger $displayLedger
-          if ($LASTEXITCODE -ne 0) { throw "Windows workspace display restoration failed; ledger retained at $displayLedger." }
-          Remove-Item -LiteralPath $displayLedger -Force -ErrorAction Stop
-          Remove-Item -LiteralPath $ownedRoot -ErrorAction Stop
-          if (Test-Path -LiteralPath $ownedRoot) { throw "Workspace display cleanup failed." }
-          if ($applyStarted -ne '1') { throw "Workspace display ledger existed before Apply was recorded; restored but ownership state was inconsistent." }
+          catch { [Console]::Error.WriteLine('Windows workspace display restoration failed; owned state retained.'); exit 1 }
 
       - name: Run terminal engine gate
         run: |
