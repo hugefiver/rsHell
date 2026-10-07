@@ -197,6 +197,8 @@ jobs:
             }
             if ('${{ runner.os }}' -eq 'Windows') {
               $env:RSHELL_NATIVE_MODAL_DIAGNOSTICS = '1'
+              cargo test --locked -p rshell-ui --test stage3_prompt_cache_native -- --exact production_prompt_cache_empty_then_populated_keeps_outer_input_reachable --nocapture
+              if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
             }
             cargo test --workspace --all-features --locked
             $workspaceTestExitCode = $LASTEXITCODE

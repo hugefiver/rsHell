@@ -9,7 +9,7 @@ param(
     [AllowEmptyString()][string]$P0Text = "",
     [AllowEmptyString()][string]$PackageText = "",
     [AllowEmptyString()][string]$DisplayCoordinatorText = "",
-    [ValidateSet("", "dead-workspace-gate", "missing-workspace-display-setup", "undersized-workspace-display", "skipped-native-workspace-test", "conditional-workspace-display-restore", "missing-workspace-display-restore", "mismatched-workspace-display-ledger", "missing-workspace-display-restore-check", "restore-before-windows-p0", "missing-workspace-display-started-handoff", "early-workspace-display-restore-exit", "old-p0-fullscreen-display-helper", "repeated-p0-display-setup", "nested-p0-display-ledger", "display-restore-in-vault-cleanup", "missing-workspace-display-observation", "missing-p0-display-observation", "missing-workarea-baseline", "missing-workarea-restore", "missing-workarea-baseline-marker", "missing-workarea-restore-marker", "dead-terminal-engine-gate", "conditional-terminal-engine-gate", "continue-terminal-engine-gate", "missing-terminal-engine-gate", "duplicate-terminal-engine-gate", "misplaced-terminal-engine-gate", "skipped-p0-gate", "conditional-p0-gate", "continued-p0-gate", "linux-ssh-p0", "windows-ssh-p0", "macos-all-p0", "missing-macos-p0", "duplicate-macos-p0", "conditional-macos-p0", "nested-conditional-macos-p0", "missing-linux-vault", "missing-macos-vault", "missing-windows-vault", "missing-linux-vault-cleanup", "missing-macos-vault-cleanup", "missing-windows-vault-cleanup", "missing-macos-gui-skip", "missing-fatal-gtk-warnings", "missing-package-startup-field", "missing-platform-matrix-member", "weakened-cleanup-secret-ordering")]
+    [ValidateSet("", "dead-workspace-gate", "missing-workspace-display-setup", "undersized-workspace-display", "skipped-native-workspace-test", "missing-prompt-cache-baseline", "moved-prompt-cache-baseline", "missing-prompt-cache-windows-guard", "swallowed-prompt-cache-baseline-error", "replaced-prompt-cache-workspace-test", "filtered-prompt-cache-workspace-test", "conditional-workspace-display-restore", "missing-workspace-display-restore", "mismatched-workspace-display-ledger", "missing-workspace-display-restore-check", "restore-before-windows-p0", "missing-workspace-display-started-handoff", "early-workspace-display-restore-exit", "old-p0-fullscreen-display-helper", "repeated-p0-display-setup", "nested-p0-display-ledger", "display-restore-in-vault-cleanup", "missing-workspace-display-observation", "missing-p0-display-observation", "missing-workarea-baseline", "missing-workarea-restore", "missing-workarea-baseline-marker", "missing-workarea-restore-marker", "dead-terminal-engine-gate", "conditional-terminal-engine-gate", "continue-terminal-engine-gate", "missing-terminal-engine-gate", "duplicate-terminal-engine-gate", "misplaced-terminal-engine-gate", "skipped-p0-gate", "conditional-p0-gate", "continued-p0-gate", "linux-ssh-p0", "windows-ssh-p0", "macos-all-p0", "missing-macos-p0", "duplicate-macos-p0", "conditional-macos-p0", "nested-conditional-macos-p0", "missing-linux-vault", "missing-macos-vault", "missing-windows-vault", "missing-linux-vault-cleanup", "missing-macos-vault-cleanup", "missing-windows-vault-cleanup", "missing-macos-gui-skip", "missing-fatal-gtk-warnings", "missing-package-startup-field", "missing-platform-matrix-member", "weakened-cleanup-secret-ordering")]
     [string]$RegressionProbe = ""
 )
 
@@ -298,6 +298,7 @@ $release = if ($ReleaseText.Length -gt 0) { $ReleaseText } else { Read-WorkflowT
 $p0 = if ($P0Text.Length -gt 0) { $P0Text } else { Read-WorkflowText -Path $P0Path -Label "P0 smoke" }
 $package = if ($PackageText.Length -gt 0) { $PackageText } else { Read-WorkflowText -Path $PackagePath -Label "Package assertion" }
 $displayCoordinator = if ($DisplayCoordinatorText.Length -gt 0) { $DisplayCoordinatorText } else { Read-WorkflowText -Path $DisplayCoordinatorPath -Label "Display coordinator" }
+$promptCacheCommand = 'cargo test --locked -p rshell-ui --test stage3_prompt_cache_native -- --exact production_prompt_cache_empty_then_populated_keeps_outer_input_reachable --nocapture'
 
 if ($RegressionProbe.Length -gt 0) {
     $probeCi = $ci
@@ -327,6 +328,31 @@ if ($RegressionProbe.Length -gt 0) {
             $skipped = $steps[0].Value.Replace('cargo test --workspace --all-features --locked', 'cargo test --workspace --all-features --locked -- --skip actor_panic_keeps_realized_main_window_alive')
             if ($skipped -ceq $steps[0].Value) { throw "Workflow regression probe could not filter native workspace tests." }
             $probeCi = $ci.Remove($steps[0].Index, $steps[0].Length).Insert($steps[0].Index, $skipped)
+        }
+        { $_ -in @('missing-prompt-cache-baseline', 'moved-prompt-cache-baseline', 'missing-prompt-cache-windows-guard', 'swallowed-prompt-cache-baseline-error', 'replaced-prompt-cache-workspace-test', 'filtered-prompt-cache-workspace-test') } {
+            $steps = @(Get-NamedStepBlock -Text $ci -Name "Run required workspace gates")
+            if ($steps.Count -ne 1) { throw "Workflow regression probe could not locate workspace gates." }
+            $original = $steps[0].Value
+            $withoutInvoke = [regex]::Replace($original, '(?m)^ {14}' + [regex]::Escape($promptCacheCommand) + '\r?\n', '')
+            $changed = switch ($RegressionProbe) {
+                'missing-prompt-cache-baseline' { $withoutInvoke }
+                'moved-prompt-cache-baseline' {
+                    $withoutInvoke.Replace('            $workspaceTestExitCode = $LASTEXITCODE', '            $workspaceTestExitCode = $LASTEXITCODE' + "`n            $promptCacheCommand")
+                }
+                'missing-prompt-cache-windows-guard' {
+                    $original.Replace('            if (''${{ runner.os }}'' -eq ''Windows'') {', '            if ($true) {')
+                }
+                'swallowed-prompt-cache-baseline-error' {
+                    $original.Replace('              if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }', '              if ($LASTEXITCODE -ne 0) { Write-Output "fixture failure swallowed" }')
+                }
+                'replaced-prompt-cache-workspace-test' {
+                    $original.Replace('cargo test --workspace --all-features --locked', $promptCacheCommand)
+                }
+                'filtered-prompt-cache-workspace-test' {
+                    $original.Replace('cargo test --workspace --all-features --locked', 'cargo test --workspace --all-features --locked -- --exact production_prompt_cache_empty_then_populated_keeps_outer_input_reachable')
+                }
+            }
+            $probeCi = $ci.Remove($steps[0].Index, $steps[0].Length).Insert($steps[0].Index, $changed)
         }
         "conditional-workspace-display-restore" {
             $steps = @(Get-NamedStepBlock -Text $ci -Name "Restore workspace display (Windows)")
@@ -614,8 +640,19 @@ foreach ($gate in @(
     )) {
     Assert-StepLine -Step $workspaceStep -Line $gate -Name "Run required workspace gates" -Failures $failures
 }
-Assert-StepLineCount -Step $workspaceStep -Line $failureCheck -Expected 4 -Name "Run required workspace gates" -Failures $failures
+Assert-StepLineCount -Step $workspaceStep -Line $failureCheck -Expected 5 -Name "Run required workspace gates" -Failures $failures
 Assert-StepLine -Step $workspaceStep -Line 'if ($workspaceTestExitCode -ne 0) { exit $workspaceTestExitCode }' -Name "Run required workspace gates" -Failures $failures
+# The dedicated baseline must fail before, never replace/filter, the full workspace gate.
+Assert-Exactly -Text $ci -Pattern ([regex]::Escape($promptCacheCommand)) -Expected 1 -Label 'Windows prompt-cache baseline invocation' -Failures $failures
+Assert-StepLineCount -Step $workspaceStep -Line $promptCacheCommand -Expected 1 -Name 'Windows prompt-cache baseline' -Failures $failures
+Assert-StepLineCount -Step $workspaceStep -Line 'cargo test --workspace --all-features --locked' -Expected 1 -Name 'Unfiltered full workspace tests' -Failures $failures
+$promptCachePattern = '(?m)^ {12}if \(''\$\{\{ runner\.os \}\}'' -eq ''Windows''\) \{\r?\n' +
+    ' {14}\$env:RSHELL_NATIVE_MODAL_DIAGNOSTICS = ''1''\r?\n' +
+    ' {14}' + [regex]::Escape($promptCacheCommand) + '\r?\n' +
+    ' {14}' + [regex]::Escape($failureCheck) + '\r?\n' +
+    ' {12}\}\r?\n {12}cargo test --workspace --all-features --locked\r?\n' +
+    ' {12}\$workspaceTestExitCode = \$LASTEXITCODE\s*$'
+Assert-StepPattern -Step $workspaceStep -Pattern $promptCachePattern -Name 'Windows-only fail-closed prompt-cache baseline before full workspace tests' -Failures $failures
 foreach ($pattern in @(
         "\$env:DISPLAY = ':98'", 'Start-Process -FilePath Xvfb',
         'Stop-Process -Id \$displayServer\.Id -Force'

@@ -963,6 +963,7 @@ fn hosted_native_credentials_and_explicit_macos_gui_skips_are_fail_closed() {
         include_str!("../crates/rshell-ui/tests/modal_host.rs"),
         include_str!("../crates/rshell-ui/tests/password_save_native.rs"),
         include_str!("../crates/rshell-ui/tests/fluent_polish_native.rs"),
+        include_str!("../crates/rshell-ui/tests/stage3_prompt_cache_native.rs"),
     ] {
         assert!(
             source.contains("#![cfg(not(target_os = \"macos\"))]"),
