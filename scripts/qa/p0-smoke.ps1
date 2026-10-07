@@ -21,6 +21,7 @@ $needsUnit = $Mode -in @("Unit", "All")
 $needsSsh = $Mode -in @("Ssh", "Gtk", "All")
 $needsVault = $Mode -in @("Vault", "Gtk", "All")
 $needsGtk = $Mode -in @("Gtk", "All")
+$needsFailureProbes = $Mode -in @("Ssh", "All")
 $surfaceNames = @(
     "gtk",
     "local_terminal",
@@ -106,6 +107,7 @@ function Start-CapturedChild {
         StderrTask = $stderrTask
         StdoutPath = $StdoutPath
         StderrPath = $StderrPath
+        Completed = $false
     }
 }
 
@@ -119,7 +121,12 @@ function Complete-CapturedChild {
     $timedOut = -not $Run.Process.WaitForExit($TimeoutSeconds * 1000)
     if ($timedOut) {
         try { $Run.Process.Kill($true) } catch {}
-        $Run.Process.WaitForExit()
+        if (-not $Run.Process.WaitForExit(5000)) {
+            throw "P0 smoke phase '$($Run.Name)' child exit is unconfirmed after bounded reap."
+        }
+    }
+    if (-not $Run.StdoutTask.Wait(5000) -or -not $Run.StderrTask.Wait(5000)) {
+        throw "P0 smoke phase '$($Run.Name)' output capture did not complete after bounded reap."
     }
     $stdout = $Run.StdoutTask.GetAwaiter().GetResult()
     $stderr = $Run.StderrTask.GetAwaiter().GetResult()
@@ -129,6 +136,7 @@ function Complete-CapturedChild {
     if ($null -ne $script:ownedChildIds) {
         [void]$script:ownedChildIds.Remove($Run.Process.Id)
     }
+    $Run.Completed = $true
     $Run.Process.Dispose()
     if ($timedOut) {
         throw "P0 smoke phase '$($Run.Name)' timed out; inspect its redacted artifact logs."
@@ -216,6 +224,30 @@ function Assert-ExactLibtestExecution {
         $runningCount -ne 1 -or $status.Count -ne 1 -or $expectedStatus.Count -ne 1 -or
         $passedCount -ne 1 -or $failedCount -ne 0 -or $ignoredCount -ne 0 -or $measuredCount -ne 0) {
         throw "P0 regression exact test did not execute and pass exactly once."
+    }
+}
+
+function Assert-ExpectedProbeFailure {
+    param(
+        [Parameter(Mandatory)][int]$ExitCode,
+        [Parameter(Mandatory)][string]$StdoutPath,
+        [Parameter(Mandatory)][string]$StderrPath,
+        [Parameter(Mandatory)][string]$TestName,
+        [Parameter(Mandatory)][string]$FaultMarker
+    )
+
+    $stdout = [System.IO.File]::ReadAllText($StdoutPath)
+    $stderr = [System.IO.File]::ReadAllText($StderrPath)
+    $test = [regex]::Escape($TestName)
+    # libtest's intentional panic exit, exact failed test and post-mutation/shutdown
+    # marker distinguish an injected fault from a build/startup/fixture error.
+    if ($ExitCode -ne 101 -or
+        [regex]::Matches($stdout, '(?m)^running 1 test\r?$').Count -ne 1 -or
+        [regex]::Matches($stdout, '(?m)^test .+ \.\.\. (?:ok|FAILED|ignored)\r?$').Count -ne 1 -or
+        [regex]::Matches($stdout, "(?m)^test $test \.\.\. FAILED\r?`$").Count -ne 1 -or
+        [regex]::Matches($stdout, '(?m)^test result: FAILED\. 0 passed; 1 failed; 0 ignored; 0 measured; \d+ filtered out; finished in .+\r?$').Count -ne 1 -or
+        [regex]::Matches($stderr, "(?m)^$([regex]::Escape($FaultMarker))\r?`$").Count -ne 1) {
+        throw "P0 failure probe '$TestName' did not prove its exact injected fault."
     }
 }
 
@@ -885,6 +917,8 @@ foreach ($entry in $secretEnvironment.GetEnumerator()) { $childEnvironment[$entr
 $phases = [System.Collections.Generic.List[object]]::new()
 $script:ownedChildIds = [System.Collections.Generic.List[int]]::new()
 $fixtureRun = $null
+$fixtureFailureRun = $null
+$fixtureNonzeroRun = $null
 $fixtureStop = Join-Path $tempRoot "fixture.stop"
 $agentBaseline = $null
 $agentPrivateKey = Join-Path $tempRoot "parent-agent-key"
@@ -1084,13 +1118,13 @@ try {
         Add-Phase "ssh_system_agent"
     }
 
-    if ($needsVault) {
+    if ($needsVault -or $needsFailureProbes) {
         Write-Utf8File $vaultCleanupLedger (([ordered]@{
                     kind = "vault-cleanup-ledger"
                     references = @($vaultReference, $vaultFailureReference)
                 }) | ConvertTo-Json)
         $vaultCleanupRequired = $true
-        if ($Mode -eq "All") {
+        if ($needsFailureProbes) {
             $failureVaultEnvironment = @{}
             foreach ($entry in $baseEnvironment.GetEnumerator()) { $failureVaultEnvironment[$entry.Key] = $entry.Value }
             $failureVaultEnvironment.RSHELL_P0_QA_VAULT_REFERENCE = $vaultFailureReference
@@ -1109,9 +1143,11 @@ try {
                 -StderrPath (Join-Path $artifactRoot "$stem-vault-failure.stderr.log") `
                 -TimeoutSeconds 120 `
                 -AllowFailure $true
-            if ($failureExit -eq 0) {
-                throw "The deterministic fail_during_vault_probe did not fail."
-            }
+            Assert-ExpectedProbeFailure -ExitCode $failureExit `
+                -StdoutPath (Join-Path $artifactRoot "$stem-vault-failure.stdout.log") `
+                -StderrPath (Join-Path $artifactRoot "$stem-vault-failure.stderr.log") `
+                -TestName "system_vault_failure_probe_leaves_exact_parent_entry_for_harness_cleanup" `
+                -FaultMarker "intentional fail_during_vault_probe after exact parent-ledger mutation"
             [void](Invoke-CapturedChild `
                     -Name "vault-failure-ledger-cleanup" `
                     -FilePath $cargo `
@@ -1125,8 +1161,14 @@ try {
                     -StdoutPath (Join-Path $artifactRoot "$stem-vault-failure-cleanup.stdout.log") `
                     -StderrPath (Join-Path $artifactRoot "$stem-vault-failure-cleanup.stderr.log") `
                     -TimeoutSeconds 120)
+            Assert-ExactLibtestExecution `
+                -Output ([System.IO.File]::ReadAllText((Join-Path $artifactRoot "$stem-vault-failure-cleanup.stdout.log"))) `
+                -TestName "system_vault_cleanup_exact_parent_reference" -ExitCode 0
             Add-Phase "fail_during_vault_probe"
+            Write-Output 'P0_FAILURE_PROBE name=fail_during_vault_probe expected_exit=101 partial_mutation=verified exact_cleanup=verified'
         }
+    }
+    if ($needsVault) {
         $vaultEnvironment = @{}
         foreach ($entry in $baseEnvironment.GetEnumerator()) { $vaultEnvironment[$entry.Key] = $entry.Value }
         $vaultEnvironment.RSHELL_P0_QA_VAULT_OBSERVATION_PATH = $directObservation.vault
@@ -1151,15 +1193,14 @@ try {
         Add-Phase "vault_real_os"
     }
 
-    if ($needsGtk) {
+    if ($needsGtk -or $needsFailureProbes) {
         $encryptedKey = Join-Path $tempRoot "encrypted-client-key"
         [void](Invoke-CapturedChild `
                 -Name "build-askpass" `
                 -FilePath $cargo `
                 -Arguments @(
                     "build", "--locked", "-p", "rshell-session",
-                    "--bin", "rshell-qa-askpass", "--bin", "rshell-p0-tui",
-                    "--bin", "rshell-interrupt-tui", "--bin", "rshell-p0-shell"
+                    "--bin", "rshell-qa-askpass"
                 ) `
                 -Environment $baseEnvironment `
                 -WorkingDirectory $repoRoot `
@@ -1168,20 +1209,8 @@ try {
                 -TimeoutSeconds 180)
         $debugRoot = Join-Path (Join-Path $repoRoot "target") "debug"
         $askpass = Join-Path $debugRoot "rshell-qa-askpass$binarySuffix"
-        $tuiFixture = Join-Path $debugRoot "rshell-p0-tui$binarySuffix"
-        $recoveryFixture = Join-Path $debugRoot "rshell-interrupt-tui$binarySuffix"
-        $shellFixture = Join-Path $debugRoot "rshell-p0-shell$binarySuffix"
         if (-not (Test-Path -LiteralPath $askpass -PathType Leaf)) {
             throw "The QA askpass helper was not built."
-        }
-        if (-not (Test-Path -LiteralPath $tuiFixture -PathType Leaf)) {
-            throw "The local TUI fixture was not built."
-        }
-        if (-not (Test-Path -LiteralPath $recoveryFixture -PathType Leaf)) {
-            throw "The local recovery fixture was not built."
-        }
-        if (-not (Test-Path -LiteralPath $shellFixture -PathType Leaf)) {
-            throw "The local P0 shell fixture was not built."
         }
         $keygenEnvironment = @{}
         foreach ($entry in $childEnvironment.GetEnumerator()) { $keygenEnvironment[$entry.Key] = $entry.Value }
@@ -1231,11 +1260,16 @@ try {
         if ($null -eq $sshSmokeBinary) {
             throw "The compiled SSH smoke fixture executable is unavailable."
         }
-        if ($Mode -eq "All") {
+        if ($needsFailureProbes) {
             $failureFixtureEnvironment = @{}
             foreach ($entry in $fixtureEnvironment.GetEnumerator()) { $failureFixtureEnvironment[$entry.Key] = $entry.Value }
             $failureFixtureEnvironment.RSHELL_QA_INJECT_FAIL_BEFORE_READY = "1"
             $failureFixtureEnvironment.RSHELL_QA_SSH_SMOKE_READY_PATH = Join-Path $tempRoot "failure-fixture.ready.json"
+            $failureFixtureEnvironment.RSHELL_QA_SSH_SMOKE_STOP_PATH = Join-Path $tempRoot "failure-fixture.stop"
+            $failureObservationRoot = Join-Path $tempRoot "failure-fixture-observations"
+            [void](New-Item -ItemType Directory -Path $failureObservationRoot)
+            $failureFixtureEnvironment.RSHELL_QA_SSH_SMOKE_OBSERVATION_DIR = $failureObservationRoot
+            $failureFixtureEnvironment.RSHELL_QA_SSH_SMOKE_FIXTURE_ID = "failure-fixture-$runId"
             $fixtureFailureRun = Start-CapturedChild `
                 -Name "fail_before_fixture_ready" `
                 -FilePath $sshSmokeBinary.FullName `
@@ -1245,11 +1279,17 @@ try {
                 -StdoutPath (Join-Path $artifactRoot "$stem-fixture-failure.stdout.log") `
                 -StderrPath (Join-Path $artifactRoot "$stem-fixture-failure.stderr.log")
             $fixtureFailureExit = Complete-CapturedChild -Run $fixtureFailureRun -TimeoutSeconds 30 -AllowFailure $true
-            if ($fixtureFailureExit -eq 0 -or
-                (Test-Path -LiteralPath $failureFixtureEnvironment.RSHELL_QA_SSH_SMOKE_READY_PATH)) {
+            $fixtureFailureRun = $null
+            if (Test-Path -LiteralPath $failureFixtureEnvironment.RSHELL_QA_SSH_SMOKE_READY_PATH) {
                 throw "The deterministic fail_before_fixture_ready probe did not fail before readiness."
             }
+            Assert-ExpectedProbeFailure -ExitCode $fixtureFailureExit `
+                -StdoutPath (Join-Path $artifactRoot "$stem-fixture-failure.stdout.log") `
+                -StderrPath (Join-Path $artifactRoot "$stem-fixture-failure.stderr.log") `
+                -TestName "local_russh_smoke_fixture_server" `
+                -FaultMarker "intentional fail_before_fixture_ready before server mutation"
             Add-Phase "fail_before_fixture_ready"
+            Write-Output 'P0_FAILURE_PROBE name=fail_before_fixture_ready expected_exit=101 ready=absent child_exit=confirmed'
 
             $nonzeroObservationRoot = Join-Path $tempRoot "fixture-nonzero-observations"
             [void](New-Item -ItemType Directory -Path $nonzeroObservationRoot)
@@ -1261,6 +1301,7 @@ try {
             $nonzeroEnvironment.RSHELL_QA_SSH_SMOKE_READY_PATH = $nonzeroReady
             $nonzeroEnvironment.RSHELL_QA_SSH_SMOKE_STOP_PATH = $nonzeroStop
             $nonzeroEnvironment.RSHELL_QA_SSH_SMOKE_OBSERVATION_DIR = $nonzeroObservationRoot
+            $nonzeroEnvironment.RSHELL_QA_SSH_SMOKE_FIXTURE_ID = "nonzero-fixture-$runId"
             $fixtureNonzeroRun = Start-CapturedChild `
                 -Name "fixture_nonzero_shutdown" `
                 -FilePath $sshSmokeBinary.FullName `
@@ -1269,13 +1310,41 @@ try {
                 -WorkingDirectory $repoRoot `
                 -StdoutPath (Join-Path $artifactRoot "$stem-fixture-nonzero.stdout.log") `
                 -StderrPath (Join-Path $artifactRoot "$stem-fixture-nonzero.stderr.log")
-            [void](Wait-ForFixtureReady -Run $fixtureNonzeroRun -ReadyPath $nonzeroReady)
+            $nonzeroReadyDocument = Wait-ForFixtureReady -Run $fixtureNonzeroRun -ReadyPath $nonzeroReady -TimeoutSeconds 30
+            if ($nonzeroReadyDocument.version -ne 1 -or $nonzeroReadyDocument.generated_by -ne "p0_qa" -or
+                $nonzeroReadyDocument.run_nonce -ne $runId -or
+                $nonzeroReadyDocument.fixture -ne "nonzero-fixture-$runId") {
+                throw "The nonzero fixture readiness contract is invalid."
+            }
             Write-Utf8File $nonzeroStop "stop`n"
             $nonzeroExit = Complete-CapturedChild -Run $fixtureNonzeroRun -TimeoutSeconds 30 -AllowFailure $true
-            if ($nonzeroExit -eq 0) {
-                throw "The deterministic fixture_nonzero_shutdown probe did not report its final assertion failure."
-            }
+            $fixtureNonzeroRun = $null
+            Assert-ExpectedProbeFailure -ExitCode $nonzeroExit `
+                -StdoutPath (Join-Path $artifactRoot "$stem-fixture-nonzero.stdout.log") `
+                -StderrPath (Join-Path $artifactRoot "$stem-fixture-nonzero.stderr.log") `
+                -TestName "local_russh_smoke_fixture_server" `
+                -FaultMarker "intentional fixture final assertions failure after exact server shutdown"
             Add-Phase "fixture_nonzero_shutdown"
+            Write-Output 'P0_FAILURE_PROBE name=fixture_nonzero_shutdown expected_exit=101 ready=verified stop=owned server_shutdown=verified child_exit=confirmed'
+        }
+    }
+    if ($needsGtk) {
+        [void](Invoke-CapturedChild `
+                -Name "build-gui-fixtures" `
+                -FilePath $cargo `
+                -Arguments @("build", "--locked", "-p", "rshell-session", "--bin", "rshell-p0-tui", "--bin", "rshell-interrupt-tui", "--bin", "rshell-p0-shell") `
+                -Environment $baseEnvironment `
+                -WorkingDirectory $repoRoot `
+                -StdoutPath (Join-Path $artifactRoot "$stem-gui-fixtures-build.stdout.log") `
+                -StderrPath (Join-Path $artifactRoot "$stem-gui-fixtures-build.stderr.log") `
+                -TimeoutSeconds 180)
+        $tuiFixture = Join-Path $debugRoot "rshell-p0-tui$binarySuffix"
+        $recoveryFixture = Join-Path $debugRoot "rshell-interrupt-tui$binarySuffix"
+        $shellFixture = Join-Path $debugRoot "rshell-p0-shell$binarySuffix"
+        foreach ($guiFixture in @($tuiFixture, $recoveryFixture, $shellFixture)) {
+            if (-not (Test-Path -LiteralPath $guiFixture -PathType Leaf)) {
+                throw "A local GUI fixture was not built."
+            }
         }
         $fixtureRun = Start-CapturedChild `
             -Name "ssh-fixture" `
@@ -1730,6 +1799,21 @@ catch {
     $failure = $_.Exception.Message
 }
 finally {
+    # A readiness/startup/capture failure still owns these exact children. Do not
+    # turn fallback cleanup into evidence of a successful expected-fault probe.
+    foreach ($probeRun in @($fixtureFailureRun, $fixtureNonzeroRun)) {
+        if ($null -ne $probeRun -and -not $probeRun.Completed) {
+            try {
+                if ($probeRun.Name -eq "fixture_nonzero_shutdown") {
+                    Write-Utf8File $nonzeroStop "stop`n"
+                }
+                [void](Complete-CapturedChild -Run $probeRun -TimeoutSeconds 5 -AllowFailure $true)
+            }
+            catch {
+                if ($null -eq $failure) { $failure = "Failure-probe owned child cleanup was not confirmed." }
+            }
+        }
+    }
     if ($null -ne $fixtureRun) {
         try {
             if (-not (Test-Path -LiteralPath $fixtureStop)) {
@@ -1826,6 +1910,9 @@ exit 91
                         -StdoutPath (Join-Path $artifactRoot "$stem-vault-ledger-cleanup.stdout.log") `
                         -StderrPath (Join-Path $artifactRoot "$stem-vault-ledger-cleanup.stderr.log") `
                         -TimeoutSeconds 120)
+                Assert-ExactLibtestExecution `
+                    -Output ([System.IO.File]::ReadAllText((Join-Path $artifactRoot "$stem-vault-ledger-cleanup.stdout.log"))) `
+                    -TestName "system_vault_cleanup_exact_parent_reference" -ExitCode 0
             }
             catch {
                 if ($null -eq $failure) { $failure = "Parent-ledger system vault cleanup failed." }

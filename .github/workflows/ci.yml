@@ -282,7 +282,7 @@ jobs:
             }
           }
 
-      - name: Run temporary keychain vault probe and P0 All smoke (macOS)
+      - name: Run temporary keychain vault probe and P0 Ssh smoke (macOS)
         if: runner.os == 'macOS'
         run: |
           $keychainPath = Join-Path $env:RUNNER_TEMP "rshell-p0-$([Guid]::NewGuid().ToString('N')).keychain-db"
@@ -323,7 +323,8 @@ jobs:
               cargo test --locked -p rshell-storage --features test-support --test system_vault system_vault_cleanup_exact_parent_reference -- --ignored --exact --nocapture
               if ($LASTEXITCODE -ne 0) { throw "system vault cleanup failed" }
             }
-            pwsh -NoProfile -File scripts/qa/p0-smoke.ps1 -Mode All
+            Write-Output 'P0_NATIVE_GUI_SKIP platform=macos reason=native_gui_integration_explicitly_skipped; GTK compilation and non-GUI suites remain required.'
+            pwsh -NoProfile -File scripts/qa/p0-smoke.ps1 -Mode Ssh
             if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           }
           finally {

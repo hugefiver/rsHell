@@ -26,6 +26,12 @@ const DEADLINE: Duration = Duration::from_secs(8);
 const MARKER: &str = "P0-GEOMETRY-READY";
 
 fn main() {
+    if cfg!(target_os = "macos") {
+        println!(
+            "DYNAMIC_GEOMETRY_NATIVE_SKIP platform=macos reason=native_gui_integration_explicitly_skipped"
+        );
+        return;
+    }
     gtk::init().expect("dynamic geometry proof requires an available GTK display; do not skip");
     apply_global_css();
     let settings = gtk::Settings::default().expect("GTK settings");

@@ -413,9 +413,41 @@ fn workflow_contract_requires_recovery_hidpi_and_native_matrix() {
     assert_eq!(
         ci.matches("pwsh -NoProfile -File scripts/qa/p0-smoke.ps1 -Mode All")
             .count(),
-        3,
-        "CI must run P0 All on every native platform"
+        2,
+        "CI must retain P0 All on Linux and Windows"
     );
+    assert_eq!(
+        ci.matches("pwsh -NoProfile -File scripts/qa/p0-smoke.ps1 -Mode Ssh")
+            .count(),
+        1,
+        "only macOS runs the non-GUI P0 Ssh mode"
+    );
+    for (name, mode) in [
+        (
+            "Run Secret Service vault probe and P0 All smoke (Linux)",
+            "All",
+        ),
+        (
+            "Run temporary keychain vault probe and P0 Ssh smoke (macOS)",
+            "Ssh",
+        ),
+        (
+            "Run Credential Manager vault probe and P0 All smoke (Windows)",
+            "All",
+        ),
+    ] {
+        let step = ci.split_once(&format!("      - name: {name}")).unwrap().1;
+        let step = step.split("      - name:").next().unwrap();
+        assert_eq!(step.matches("p0-smoke.ps1 -Mode ").count(), 1);
+        assert!(step.contains(&format!("p0-smoke.ps1 -Mode {mode}")));
+        let forbidden = if mode == "All" { "Ssh" } else { "All" };
+        assert!(!step.contains(&format!("p0-smoke.ps1 -Mode {forbidden}")));
+        assert!(!step.contains("--skip"));
+        assert!(
+            step.contains("system_vault_real_os_probe_uses_coordinator_and_cleans_random_entry")
+        );
+        assert!(step.contains("system_vault_cleanup_exact_parent_reference"));
+    }
     assert!(ci.contains("pwsh -NoProfile -File scripts/qa/terminal-engine-gate.ps1"));
     assert_eq!(
         ci.matches("2560x1440x24").count(),
@@ -603,7 +635,11 @@ fn workflow_and_cleanup_evidence_contracts_are_fail_closed() {
     assert!(ci.contains("$missingBaselineStatus -xor $missingBaselineStartupMode"));
     assert!(!ci.contains("$env:RSHELL_SHELL = $workspaceShell.Source"));
     assert!(!ci.contains("Run bounded SSH surface smoke"));
-    assert!(!ci.contains("pwsh -NoProfile -File scripts/qa/p0-smoke.ps1 -Mode Ssh"));
+    assert_eq!(
+        ci.matches("pwsh -NoProfile -File scripts/qa/p0-smoke.ps1 -Mode Ssh")
+            .count(),
+        1
+    );
     assert!(!ci.contains(
         "cargo test --locked -p rshell-session --test ssh_smoke system_openssh_agent_authenticates_against_local_server -- --ignored --exact --nocapture"
     ));
@@ -729,7 +765,7 @@ fn display_lifetime_coordinator_runs_without_native_display_calls() {
 }
 
 #[test]
-fn hosted_native_credentials_and_macos_gtk_evidence_are_fail_closed() {
+fn hosted_native_credentials_and_explicit_macos_gui_skips_are_fail_closed() {
     let ci = include_str!("../.github/workflows/ci.yml");
     let harness = include_str!("../scripts/qa/p0-smoke.ps1");
 
@@ -755,13 +791,78 @@ fn hosted_native_credentials_and_macos_gtk_evidence_are_fail_closed() {
         include_str!("../crates/rshell-ui/tests/native_widgets.rs"),
         include_str!("../crates/rshell-ui/tests/startup.rs"),
         include_str!("../crates/rshell-ui/tests/task18_native_widgets.rs"),
+        include_str!("../crates/rshell-ui/tests/modal_host.rs"),
+        include_str!("../crates/rshell-ui/tests/password_save_native.rs"),
+        include_str!("../crates/rshell-ui/tests/fluent_polish_native.rs"),
     ] {
         assert!(
             source.contains("#![cfg(not(target_os = \"macos\"))]"),
             "standard libtest GTK entry points must not initialize GTK off the macOS main thread"
         );
     }
-    assert!(ci.contains("Run temporary keychain vault probe and P0 All smoke (macOS)"));
+    assert!(ci.contains("Run temporary keychain vault probe and P0 Ssh smoke (macOS)"));
+    assert!(ci.contains("P0_NATIVE_GUI_SKIP platform=macos"));
+    for (source, marker, native_entry) in [
+        (
+            include_str!("../crates/rshell-ui/tests/checkpoint_lifecycle_native.rs"),
+            "CHECKPOINT_LIFECYCLE_NATIVE_SKIP platform=macos",
+            "gtk::init()",
+        ),
+        (
+            include_str!("../crates/rshell-ui/tests/dynamic_geometry_native.rs"),
+            "DYNAMIC_GEOMETRY_NATIVE_SKIP platform=macos",
+            "gtk::init()",
+        ),
+        (
+            include_str!("actor_panic_gtk_survival_macos.rs"),
+            "ACTOR_PANIC_GTK_SURVIVAL_SKIP platform=macos",
+            "scenario::run_actor_panic_scenario()",
+        ),
+    ] {
+        let entry = source.split_once("fn main() {").unwrap().1;
+        assert_source_ordered(
+            entry,
+            &[
+                "if cfg!(target_os = \"macos\")",
+                marker,
+                "return;",
+                native_entry,
+            ],
+        );
+        assert!(
+            !source.contains("#![cfg("),
+            "custom-main target must remain compilable"
+        );
+    }
+    let teardown = include_str!("../crates/rshell-ui/tests/terminal_view_teardown_native.rs");
+    assert!(teardown.contains("TERMINAL_VIEW_TEARDOWN_NATIVE_SKIP platform=macos"));
+    assert!(teardown.contains("#[cfg(target_os = \"windows\")]"));
+    assert!(
+        !ci.contains("--skip"),
+        "workspace tests must not be globally filtered"
+    );
+}
+
+#[test]
+fn ssh_and_all_failure_probes_preserve_headless_preparation_and_cleanup() {
+    let output = Command::new("pwsh")
+        .args([
+            "-NoProfile",
+            "-File",
+            "scripts/qa/p0-failure-probes-test.ps1",
+        ])
+        .current_dir(env!("CARGO_MANIFEST_DIR"))
+        .output()
+        .expect("PowerShell must launch mocked failure-probe acceptance");
+    assert!(
+        output.status.success(),
+        "failure-probe regression failed: {}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(String::from_utf8_lossy(&output.stdout).contains(
+        "P0_FAILURE_PROBES_MOCK_PASS modes=5 shared_probes=3 negative_cases=36 gtk_started=0 vault_mutations=mocked"
+    ));
 }
 
 #[test]

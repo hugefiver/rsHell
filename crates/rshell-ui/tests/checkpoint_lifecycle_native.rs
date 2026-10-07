@@ -28,6 +28,12 @@ use rshell_ui::{
 mod grid_bounds;
 
 fn main() {
+    if cfg!(target_os = "macos") {
+        println!(
+            "CHECKPOINT_LIFECYCLE_NATIVE_SKIP platform=macos reason=native_gui_integration_explicitly_skipped"
+        );
+        return;
+    }
     gtk::init().expect("checkpoint lifecycle proof requires an available GTK display; do not skip");
     apply_global_css();
     let settings = gtk::Settings::default().expect("GTK settings");

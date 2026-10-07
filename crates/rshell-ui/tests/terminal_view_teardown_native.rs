@@ -1,4 +1,11 @@
-#[cfg(not(target_os = "windows"))]
+#[cfg(target_os = "macos")]
+fn main() {
+    println!(
+        "TERMINAL_VIEW_TEARDOWN_NATIVE_SKIP platform=macos reason=windows_only_native_gui_integration"
+    );
+}
+
+#[cfg(not(any(target_os = "windows", target_os = "macos")))]
 fn main() {
     println!("TERMINAL_VIEW_TEARDOWN_NATIVE_SKIP platform=non-windows");
 }

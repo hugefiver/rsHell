@@ -7,7 +7,7 @@ param(
     [AllowEmptyString()][string]$ReleaseText = "",
     [AllowEmptyString()][string]$P0Text = "",
     [AllowEmptyString()][string]$PackageText = "",
-    [ValidateSet("", "dead-workspace-gate", "missing-workspace-display-setup", "undersized-workspace-display", "skipped-native-workspace-test", "conditional-workspace-display-restore", "missing-workspace-display-restore", "mismatched-workspace-display-ledger", "missing-workspace-display-restore-check", "dead-terminal-engine-gate", "conditional-terminal-engine-gate", "continue-terminal-engine-gate", "missing-terminal-engine-gate", "duplicate-terminal-engine-gate", "misplaced-terminal-engine-gate", "skipped-p0-gate", "conditional-p0-gate", "continued-p0-gate", "missing-fatal-gtk-warnings", "missing-package-startup-field", "missing-platform-matrix-member", "weakened-cleanup-secret-ordering")]
+    [ValidateSet("", "dead-workspace-gate", "missing-workspace-display-setup", "undersized-workspace-display", "skipped-native-workspace-test", "conditional-workspace-display-restore", "missing-workspace-display-restore", "mismatched-workspace-display-ledger", "missing-workspace-display-restore-check", "dead-terminal-engine-gate", "conditional-terminal-engine-gate", "continue-terminal-engine-gate", "missing-terminal-engine-gate", "duplicate-terminal-engine-gate", "misplaced-terminal-engine-gate", "skipped-p0-gate", "conditional-p0-gate", "continued-p0-gate", "linux-ssh-p0", "windows-ssh-p0", "macos-all-p0", "missing-macos-p0", "duplicate-macos-p0", "conditional-macos-p0", "nested-conditional-macos-p0", "missing-linux-vault", "missing-macos-vault", "missing-windows-vault", "missing-linux-vault-cleanup", "missing-macos-vault-cleanup", "missing-windows-vault-cleanup", "missing-macos-gui-skip", "missing-fatal-gtk-warnings", "missing-package-startup-field", "missing-platform-matrix-member", "weakened-cleanup-secret-ordering")]
     [string]$RegressionProbe = ""
 )
 
@@ -198,6 +198,53 @@ function Assert-TerminalEngineGateStep {
     return $step
 }
 
+function Assert-UnconditionalSmokeCommand {
+    param([string]$Step, [string]$Name, $Failures)
+
+    if ($null -eq $Step) { return }
+    $run = [regex]::Match($Step, '(?ms)^ {8}run: \|\r?\n(?<script>.*)$').Groups['script'].Value
+    $run = [regex]::Replace($run, '(?m)^ {10}', '')
+    $tokens = $null
+    $errors = $null
+    $ast = [System.Management.Automation.Language.Parser]::ParseInput($run, [ref]$tokens, [ref]$errors)
+    if ($errors.Count -ne 0) {
+        Add-ContractFailure $Failures "CI step '$Name' has an invalid PowerShell run block."
+        return
+    }
+    # Linux runs its smoke in the literal dbus-session script, not the parent.
+    $inner = @($ast.FindAll({ param($node)
+                $node -is [System.Management.Automation.Language.AssignmentStatementAst] -and
+                $node.Left.Extent.Text -ceq '$inner'
+            }, $true))
+    if ($inner.Count -eq 1) {
+        $literal = @($inner[0].Right.FindAll({ param($node)
+                    $node -is [System.Management.Automation.Language.StringConstantExpressionAst]
+                }, $true))
+        if ($literal.Count -ne 1) {
+            Add-ContractFailure $Failures "CI step '$Name' requires one literal session script."
+            return
+        }
+        $ast = [System.Management.Automation.Language.Parser]::ParseInput(
+            $literal[0].Value, [ref]$tokens, [ref]$errors)
+    }
+    $commands = @($ast.FindAll({ param($node)
+                $node -is [System.Management.Automation.Language.CommandAst] -and
+                $node.Extent.Text -match 'p0-smoke\.ps1'
+            }, $true))
+    if ($errors.Count -ne 0 -or $commands.Count -ne 1) {
+        Add-ContractFailure $Failures "CI step '$Name' must execute exactly one smoke command."
+        return
+    }
+    for ($parent = $commands[0].Parent; $null -ne $parent; $parent = $parent.Parent) {
+        if ($parent -is [System.Management.Automation.Language.IfStatementAst] -or
+            $parent -is [System.Management.Automation.Language.LoopStatementAst] -or
+            $parent -is [System.Management.Automation.Language.FunctionDefinitionAst] -or
+            $parent -is [System.Management.Automation.Language.ScriptBlockExpressionAst]) {
+            Add-ContractFailure $Failures "CI step '$Name' must not condition or defer its smoke command."
+        }
+    }
+}
+
 function Get-NamedStepBlock {
     param(
         [Parameter(Mandatory)][string]$Text,
@@ -314,6 +361,25 @@ if ($RegressionProbe.Length -gt 0) {
         "continued-p0-gate" {
             $stepHeader = "      - name: Run Secret Service vault probe and P0 All smoke (Linux)"
             $probeCi = $ci.Replace($stepHeader, "$stepHeader`n        continue-on-error: true")
+        }
+        { $_ -in @("linux-ssh-p0", "windows-ssh-p0", "macos-all-p0", "missing-macos-p0", "duplicate-macos-p0", "conditional-macos-p0", "nested-conditional-macos-p0", "missing-linux-vault", "missing-macos-vault", "missing-windows-vault", "missing-linux-vault-cleanup", "missing-macos-vault-cleanup", "missing-windows-vault-cleanup", "missing-macos-gui-skip") } {
+            $platform = if ($_ -match 'linux') { 'Linux' } elseif ($_ -match 'windows') { 'Windows' } else { 'macOS' }
+            $steps = @(Get-NamedStepBlocks -Text $ci | Where-Object { $_.Groups['name'].Value -match "vault probe and P0 .* smoke \($platform\)$" })
+            if ($steps.Count -ne 1) { throw "Workflow regression probe could not locate its platform smoke." }
+            $original = $steps[0].Value
+            $command = 'pwsh -NoProfile -File scripts/qa/p0-smoke.ps1 -Mode ' + $(if ($platform -eq 'macOS') { 'Ssh' } else { 'All' })
+            $changed = switch ($RegressionProbe) {
+                { $_ -in @('linux-ssh-p0', 'windows-ssh-p0') } { $original.Replace($command, $command.Replace('-Mode All', '-Mode Ssh')) }
+                'macos-all-p0' { $original.Replace($command, $command.Replace('-Mode Ssh', '-Mode All')) }
+                'missing-macos-p0' { $original.Replace($command, 'Write-Output "smoke removed"') }
+                'duplicate-macos-p0' { $original.Replace($command, "$command`n            $command") }
+                'conditional-macos-p0' { $original.Replace($command, "if (`$true) { $command }") }
+                'nested-conditional-macos-p0' { $original.Replace($command, "if (`$true) {`n            $command`n            }") }
+                'missing-macos-gui-skip' { $original.Replace('P0_NATIVE_GUI_SKIP platform=macos', 'GUI_UNVERIFIED') }
+                { $_ -match 'vault-cleanup$' } { $original.Replace('system_vault_cleanup_exact_parent_reference', 'missing_cleanup') }
+                { $_ -match 'vault$' } { $original.Replace('system_vault_real_os_probe_uses_coordinator_and_cleans_random_entry', 'missing_probe') }
+            }
+            $probeCi = $ci.Remove($steps[0].Index, $steps[0].Length).Insert($steps[0].Index, $changed)
         }
         "missing-fatal-gtk-warnings" {
             $probeP0 = $p0.Replace('G_DEBUG = "fatal-warnings"', 'G_DEBUG = "warnings"')
@@ -491,27 +557,33 @@ Assert-StepLine -Step $openSshToolsStep -Line '$ssh = Get-Command ssh -ErrorActi
 Assert-StepLine -Step $openSshToolsStep -Line '$sshKeygen = Get-Command ssh-keygen -ErrorAction Stop' -Name "Confirm system OpenSSH tools" -Failures $failures
 
 Assert-Absent -Text $ci -Pattern 'Run bounded SSH surface smoke' -Label "CI duplicate SSH smoke step" -Failures $failures
-Assert-Absent -Text $ci -Pattern 'p0-smoke\.ps1 -Mode Ssh' -Label "CI duplicate SSH smoke invocation" -Failures $failures
+Assert-Exactly -Text $ci -Pattern 'p0-smoke\.ps1 -Mode All' -Expected 2 -Label "CI Linux/Windows All smoke" -Failures $failures
+Assert-Exactly -Text $ci -Pattern 'p0-smoke\.ps1 -Mode Ssh' -Expected 1 -Label "CI macOS Ssh smoke" -Failures $failures
 Assert-Absent -Text $ci -Pattern 'cargo test --locked -p rshell-session --test ssh_smoke system_openssh_agent_authenticates_against_local_server' -Label "CI unbounded system-agent smoke" -Failures $failures
 
 foreach ($modeAllStep in @(
-        [pscustomobject]@{ Name = "Run Secret Service vault probe and P0 All smoke (Linux)"; Condition = "runner.os == 'Linux'" },
-        [pscustomobject]@{ Name = "Run temporary keychain vault probe and P0 All smoke (macOS)"; Condition = "runner.os == 'macOS'" },
-        [pscustomobject]@{ Name = "Run Credential Manager vault probe and P0 All smoke (Windows)"; Condition = "runner.os == 'Windows'" }
+        [pscustomobject]@{ Name = "Run Secret Service vault probe and P0 All smoke (Linux)"; Condition = "runner.os == 'Linux'"; Mode = "All" },
+        [pscustomobject]@{ Name = "Run temporary keychain vault probe and P0 Ssh smoke (macOS)"; Condition = "runner.os == 'macOS'"; Mode = "Ssh" },
+        [pscustomobject]@{ Name = "Run Credential Manager vault probe and P0 All smoke (Windows)"; Condition = "runner.os == 'Windows'"; Mode = "All" }
     )) {
     $step = Assert-NamedStep -Text $ci -Name $modeAllStep.Name -Failures $failures
     if ($null -eq $step -or -not [regex]::IsMatch($step, "(?m)^ {8}if:\s*$([regex]::Escape($modeAllStep.Condition))\s*$")) {
         Add-ContractFailure -Failures $failures -Message "CI step '$($modeAllStep.Name)' must have its exact platform condition."
     }
-    if ($null -eq $step -or [regex]::Matches($step, "(?m)^\s*pwsh -NoProfile -File scripts/qa/p0-smoke\.ps1 -Mode All\s*$").Count -ne 1) {
-        Add-ContractFailure -Failures $failures -Message "CI step '$($modeAllStep.Name)' must run exactly one P0 All smoke command."
+    if ($null -eq $step -or [regex]::Matches($step, "(?m)^\s*pwsh -NoProfile -File scripts/qa/p0-smoke\.ps1 -Mode $($modeAllStep.Mode)\s*$").Count -ne 1) {
+        Add-ContractFailure -Failures $failures -Message "CI step '$($modeAllStep.Name)' must run exactly one P0 $($modeAllStep.Mode) smoke command."
     }
+    Assert-UnconditionalSmokeCommand -Step $step -Name $modeAllStep.Name -Failures $failures
+    $forbiddenMode = if ($modeAllStep.Mode -eq 'All') { 'Ssh' } else { 'All' }
+    Assert-Absent -Text ([string]$step) -Pattern "p0-smoke\.ps1 -Mode $forbiddenMode" -Label "$($modeAllStep.Name) forbidden mode" -Failures $failures
+    Assert-StepPattern -Step $step -Name $modeAllStep.Name -Failures $failures -Pattern '(?ms)^\s*try \{\r?\n\s*cargo test --locked -p rshell-storage --features test-support --test system_vault system_vault_real_os_probe_uses_coordinator_and_cleans_random_entry -- --ignored --exact --nocapture\r?\n\s*if \(\$LASTEXITCODE -ne 0\) \{ throw "system vault probe failed" \}\r?\n\s*\}\r?\n\s*finally \{\r?\n\s*cargo test --locked -p rshell-storage --features test-support --test system_vault system_vault_cleanup_exact_parent_reference -- --ignored --exact --nocapture\r?\n\s*if \(\$LASTEXITCODE -ne 0\) \{ throw "system vault cleanup failed" \}'
     $modeAllMatches = @(Get-NamedStepBlock -Text $ci -Name $modeAllStep.Name)
     if ($null -ne $ciTerminalGate -and $modeAllMatches.Count -eq 1 -and $ciTerminalGate.Index -ge $modeAllMatches[0].Index) {
         Add-ContractFailure -Failures $failures -Message "CI terminal-engine gate must run before '$($modeAllStep.Name)'."
     }
 }
 Assert-Exactly -Text $ci -Pattern "(?m)system_vault_real_os_probe_uses_coordinator_and_cleans_random_entry" -Expected 3 -Label "CI ignored system vault probe" -Failures $failures
+Assert-Exactly -Text $ci -Pattern "(?m)system_vault_cleanup_exact_parent_reference" -Expected 3 -Label "CI ignored system vault exact cleanup" -Failures $failures
 
 $windowsAgentStart = Assert-NamedStep -Text $ci -Name "Start Credential Manager SSH agent (Windows)" -Failures $failures
 foreach ($pattern in @(
@@ -528,12 +600,12 @@ foreach ($pattern in @(
     )) {
     Assert-StepPattern -Step $windowsAgentStop -Pattern $pattern -Name "Stop Credential Manager SSH agent (Windows)" -Failures $failures
 }
-$macosModeAll = Assert-NamedStep -Text $ci -Name "Run temporary keychain vault probe and P0 All smoke (macOS)" -Failures $failures
+$macosModeAll = Assert-NamedStep -Text $ci -Name "Run temporary keychain vault probe and P0 Ssh smoke (macOS)" -Failures $failures
 foreach ($pattern in @(
         "security list-keychains", '\$cleanupErrors', "default keychain restore failed", "temporary keychain delete failed",
-        "vault root cleanup failed"
+        "vault root cleanup failed", "P0_NATIVE_GUI_SKIP platform=macos", "keychain search list restore failed"
     )) {
-    Assert-StepPattern -Step $macosModeAll -Pattern $pattern -Name "Run temporary keychain vault probe and P0 All smoke (macOS)" -Failures $failures
+    Assert-StepPattern -Step $macosModeAll -Pattern $pattern -Name "Run temporary keychain vault probe and P0 Ssh smoke (macOS)" -Failures $failures
 }
 $windowsModeAll = Assert-NamedStep -Text $ci -Name "Run Credential Manager vault probe and P0 All smoke (Windows)" -Failures $failures
 foreach ($pattern in @(
