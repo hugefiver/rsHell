@@ -67,7 +67,10 @@ fn run(evidence_root: &Path) {
     let scenario = SmokeScenario::with_steps(
         "checkpoint-lifecycle-native",
         vec![
-            SmokeStep::new(SmokeAction::WaitWindowRealized),
+            SmokeStep {
+                surface: Some("gtk".into()),
+                ..SmokeStep::new(SmokeAction::WaitWindowRealized)
+            },
             SmokeStep::new(SmokeAction::ResizeWindow {
                 width: 800,
                 height: 600,
@@ -127,6 +130,7 @@ fn run(evidence_root: &Path) {
     let trace = std::env::var_os("CI").is_some()
         || std::env::var("RSHELL_CHECKPOINT_TRACE").as_deref() == Ok("1");
     let mut timing = trace.then(|| CompactPumpTrace::new(compact_resize_started));
+    let mut readiness_checked = false;
     while report.report().steps[1].state != SmokeStepState::Passed {
         pump_once_timed(
             &main,
@@ -136,6 +140,24 @@ fn run(evidence_root: &Path) {
             &target_profile,
             timing.as_mut(),
         );
+        if !readiness_checked && report.report().steps[0].state == SmokeStepState::Passed {
+            let window = main.widget();
+            assert!(window.is_realized() && window.is_mapped());
+            assert!(window.width() > 0 && window.height() > 0);
+            assert!(
+                report.report().steps[0]
+                    .binding
+                    .as_ref()
+                    .is_some_and(|binding| { binding.verified && binding.component_verified })
+            );
+            println!(
+                "CHECKPOINT_WINDOW_READY realized=true mapped=true allocation={}x{} elapsed_ms={}",
+                window.width(),
+                window.height(),
+                compact_resize_started.elapsed().as_millis()
+            );
+            readiness_checked = true;
+        }
         if Instant::now() >= compact_resize_deadline {
             if let Some(timing) = &timing {
                 timing.report();
@@ -169,6 +191,40 @@ fn run(evidence_root: &Path) {
     if let Some(timing) = &timing {
         timing.report();
     }
+    assert!(readiness_checked, "first readiness gate must be checked");
+    let compact_report = report.report();
+    let resize = compact_report.steps[1]
+        .evidence
+        .window_resize
+        .expect("compact resize evidence");
+    assert!(
+        resize.sequence
+            > compact_report.steps[0]
+                .evidence
+                .window_resize
+                .map_or(0, |prior| prior.sequence)
+    );
+    assert_eq!(
+        (resize.requested_width, resize.requested_height),
+        (800, 600)
+    );
+    assert_eq!(resize.expected_layout, ShellLayoutMode::Compact);
+    assert_eq!(resize.layout, ShellLayoutMode::Compact);
+    let tolerance = if cfg!(target_os = "windows") { 2 } else { 0 };
+    assert!(resize.realized_width.abs_diff(800) <= tolerance);
+    assert!(resize.realized_height.abs_diff(600) <= tolerance);
+    assert_eq!(
+        (main.widget().width(), main.widget().height()),
+        (resize.realized_width, resize.realized_height)
+    );
+    println!(
+        "CHECKPOINT_FIRST_RESIZE requested=800x600 allocation={}x{} sequence={} mode=Compact elapsed_ms={} step_elapsed_ms={}",
+        resize.realized_width,
+        resize.realized_height,
+        resize.sequence,
+        compact_resize_started.elapsed().as_millis(),
+        compact_report.steps[1].elapsed.as_millis()
+    );
     assert_empty_closes_bootstrap(
         &main,
         &commands,
@@ -207,6 +263,10 @@ fn run(evidence_root: &Path) {
     assert!((2..=4).contains(&empty.png.focus_or_selection_thickness_px));
     assert!(empty_path.is_file());
     assert!(mapped_terminal(main.widget()).is_none());
+    println!(
+        "CHECKPOINT_FIRST_COMPACT_PASS id=compact-empty elapsed_ms={}",
+        compact_resize_started.elapsed().as_millis()
+    );
     wait_for(
         "retained local tab",
         &main,

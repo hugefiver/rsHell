@@ -13,6 +13,8 @@ pub(crate) struct SmokeBindingRequest {
 
 pub(crate) struct SmokeObservation {
     pub window_realized: bool,
+    pub window_mapped: bool,
+    pub window_allocation: (i32, i32),
     pub editor_open: bool,
     pub sidebar_selection: Option<ConnectionId>,
     pub connection_panes: BTreeSet<ConnectionId>,
@@ -25,4 +27,8 @@ pub(crate) struct SmokeObservation {
     pub last_interaction_response: Option<InteractionId>,
     pub binding: Option<SmokeBindingEvidence>,
     pub counters: SmokeCounters,
+}
+
+pub(crate) fn window_ready(realized: bool, mapped: bool, allocation: (i32, i32)) -> bool {
+    realized && mapped && allocation.0 > 0 && allocation.1 > 0
 }

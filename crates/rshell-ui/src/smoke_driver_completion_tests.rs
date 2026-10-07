@@ -11,6 +11,8 @@ use crate::{
 fn observation(counters: SmokeCounters) -> SmokeObservation {
     SmokeObservation {
         window_realized: false,
+        window_mapped: false,
+        window_allocation: (0, 0),
         editor_open: false,
         sidebar_selection: None,
         connection_panes: BTreeSet::new(),
@@ -229,3 +231,6 @@ fn stale_exact_resize_evidence_cannot_complete_a_new_resize_action() {
 
 #[path = "smoke_driver_window_resize_tests.rs"]
 mod window_resize_tests;
+
+#[path = "smoke_driver_window_readiness_tests.rs"]
+mod window_readiness_tests;

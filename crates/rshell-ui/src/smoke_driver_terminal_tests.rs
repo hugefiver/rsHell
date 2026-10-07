@@ -11,6 +11,8 @@ use crate::{
 fn observation(counters: SmokeCounters) -> SmokeObservation {
     SmokeObservation {
         window_realized: false,
+        window_mapped: false,
+        window_allocation: (0, 0),
         editor_open: false,
         sidebar_selection: None,
         connection_panes: BTreeSet::new(),

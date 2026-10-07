@@ -1,5 +1,6 @@
 use std::collections::BTreeSet;
 
+use gtk::prelude::*;
 use rshell_core::{AppViewModel, PaneLaunchTarget, SessionId, TabId};
 
 use crate::{
@@ -55,8 +56,11 @@ impl MainWindow {
             pixel_height: frame.size.pixel_height,
             dpi: frame.size.dpi,
         });
+        let (window_realized, window_mapped, window_allocation) = self.smoke_window_observation();
         SmokeObservation {
-            window_realized: self.smoke_state.window_realized,
+            window_realized,
+            window_mapped,
+            window_allocation,
             editor_open: self.smoke_state.editor_open,
             sidebar_selection: self.smoke_state.sidebar_selection,
             connection_panes,
@@ -99,6 +103,22 @@ impl MainWindow {
                 window_resize: self.smoke_state.window_resize,
             },
         }
+    }
+
+    pub(crate) fn smoke_window_observation(&self) -> (bool, bool, (i32, i32)) {
+        let Some(window) = self
+            .shell
+            .overlay
+            .root()
+            .and_then(|root| root.downcast::<gtk::ApplicationWindow>().ok())
+        else {
+            return (false, false, (0, 0));
+        };
+        (
+            window.is_realized(),
+            window.is_mapped(),
+            (window.width(), window.height()),
+        )
     }
 }
 

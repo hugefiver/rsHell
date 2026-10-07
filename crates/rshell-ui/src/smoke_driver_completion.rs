@@ -9,7 +9,10 @@ use crate::smoke_driver_sequences::{
     clipboard_sequence, color_sequence, paste_sequence, reconnect_sequence, resize_sequence,
     search_sequence, selection_sequence,
 };
-use crate::{SmokeAction, SmokeCounters, smoke_driver_observation::SmokeObservation};
+use crate::{
+    SmokeAction, SmokeCounters,
+    smoke_driver_observation::{SmokeObservation, window_ready},
+};
 
 pub(crate) struct CompletionContext<'a> {
     pub(crate) before: &'a SmokeCounters,
@@ -57,7 +60,11 @@ pub(crate) fn action_is_complete(
     let auth_interaction = context.auth_interaction;
     let auth_submits = context.auth_submits;
     let complete = match action {
-        SmokeAction::WaitWindowRealized => now.window_realized,
+        SmokeAction::WaitWindowRealized => window_ready(
+            now.window_realized,
+            now.window_mapped,
+            now.window_allocation,
+        ),
         SmokeAction::NewTab => now.counters.tabs > before.tabs,
         SmokeAction::OpenConnectionEditor => {
             now.editor_open && now.counters.editor_revisions > before.editor_revisions

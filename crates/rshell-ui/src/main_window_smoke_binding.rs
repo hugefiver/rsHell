@@ -7,7 +7,7 @@ use crate::{
         ComponentSessionState, actual_label, profile_matches_surface, session_component_is_ready,
     },
     main_window_smoke_visual::{visual_checkpoint_binding, visual_checkpoint_component_verified},
-    smoke_driver_observation::SmokeBindingRequest,
+    smoke_driver_observation::{SmokeBindingRequest, window_ready},
 };
 
 impl MainWindow {
@@ -174,7 +174,10 @@ fn component_verified(
     session: ComponentSessionState,
 ) -> bool {
     match action {
-        SmokeActionKind::WaitWindowRealized => window.smoke_state.window_realized,
+        SmokeActionKind::WaitWindowRealized => {
+            let (realized, mapped, allocation) = window.smoke_window_observation();
+            window_ready(realized, mapped, allocation)
+        }
         SmokeActionKind::OpenConnectionEditor | SmokeActionKind::SetConnectionField => {
             window.smoke_state.editor_open
         }

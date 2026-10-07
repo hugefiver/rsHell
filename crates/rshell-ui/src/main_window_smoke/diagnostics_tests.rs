@@ -12,6 +12,8 @@ use std::{
 fn observed() -> SmokeObservation {
     SmokeObservation {
         window_realized: true,
+        window_mapped: true,
+        window_allocation: (1_360, 860),
         editor_open: false,
         sidebar_selection: None,
         connection_panes: BTreeSet::new(),

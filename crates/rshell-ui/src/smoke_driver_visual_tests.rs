@@ -160,6 +160,8 @@ fn visual_contract_rejects_terminal_clipping_and_insufficient_line_separation() 
 fn observation(counters: SmokeCounters) -> SmokeObservation {
     SmokeObservation {
         window_realized: false,
+        window_mapped: false,
+        window_allocation: (0, 0),
         editor_open: false,
         sidebar_selection: None,
         connection_panes: BTreeSet::new(),
