@@ -15,6 +15,8 @@ use std::sync::Arc;
 
 #[path = "fluent_interaction_auth.rs"]
 mod auth;
+#[path = "fluent_interaction_diagnostics.rs"]
+mod diagnostics;
 #[path = "fluent_interaction_layout.rs"]
 mod measurements;
 #[path = "fluent_interaction_port.rs"]
@@ -122,7 +124,7 @@ impl Case {
             session,
             request,
         }));
-        wait_for_frame(main.widget(), "secure modal first focus", |root| {
+        diagnostics::wait(root, mode, name, |root| {
             modal_ready(root, "interaction-dialog") && measurements::first_open_ready(root)
         });
         let modal = layout::modal(root, "interaction-dialog");

@@ -195,6 +195,9 @@ jobs:
               Start-Sleep -Seconds 1
               if ($displayServer.HasExited) { throw "The workspace GTK display server stopped before tests started." }
             }
+            if ('${{ runner.os }}' -eq 'Windows') {
+              $env:RSHELL_NATIVE_MODAL_DIAGNOSTICS = '1'
+            }
             cargo test --workspace --all-features --locked
             $workspaceTestExitCode = $LASTEXITCODE
           }

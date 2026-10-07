@@ -19,6 +19,7 @@ pub(crate) use image::{capture, is_accent, is_control, pixels};
 mod frames;
 use frames::iterate_until;
 pub(crate) use frames::wait_for_frame;
+pub(crate) use frames::{FailurePhase, FrameFailure, wait_for_frame_with_failure_report};
 
 pub(crate) fn launch(width: i32, height: i32) -> relm4::Controller<MainWindow> {
     launch_with_port(width, height, Arc::new(AcceptingPort))

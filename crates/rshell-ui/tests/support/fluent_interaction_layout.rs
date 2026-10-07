@@ -1,5 +1,95 @@
 use super::*;
 
+// Kind: 0 absent, 1 PasswordEntry, 2 Entry, 3 Button, 4 Text, 5 other.
+fn kind(widget: Option<&gtk::Widget>) -> u8 {
+    widget.map_or(0, |w| {
+        if w.is::<gtk::PasswordEntry>() {
+            1
+        } else if w.is::<gtk::Entry>() {
+            2
+        } else if w.is::<gtk::Button>() {
+            3
+        } else if w.is::<gtk::Text>() {
+            4
+        } else {
+            5
+        }
+    })
+}
+
+pub(super) fn observe(root: &gtk::Widget) -> diagnostics::State {
+    let mut state = diagnostics::State {
+        modal_ready: modal_ready(root, "interaction-dialog"),
+        outer_ready: first_open_ready(root),
+        active: root.downcast_ref::<gtk::Window>().map(|w| w.is_active()),
+        ..Default::default()
+    };
+    let focused = root.root().and_then(|r| gtk::prelude::RootExt::focus(&r));
+    state.focus_kind = kind(focused.as_ref());
+    state.focus = focused
+        .as_ref()
+        .map(|w| (w.is_mapped(), w.is_sensitive(), w.width(), w.height()));
+    state.same_root = focused.as_ref().map(|w| w.root() == root.root());
+    let Some(modal) = descendants(root)
+        .into_iter()
+        .find(|w| w.has_css_class("interaction-dialog"))
+    else {
+        return state;
+    };
+    state.modal = Some((modal.is_mapped(), modal.width(), modal.height()));
+    state.focus_in_modal = focused
+        .as_ref()
+        .is_some_and(|w| *w == modal || w.is_ancestor(&modal));
+    let Some(first) = descendants(&modal)
+        .into_iter()
+        .find(|w| w.has_css_class("modal-focus-first"))
+    else {
+        return state;
+    };
+    state.first_kind = kind(Some(&first));
+    state.first = Some((
+        first.is_mapped(),
+        first.is_sensitive(),
+        first.width(),
+        first.height(),
+    ));
+    state.focus_relation = focused.as_ref().map_or(0, |w| {
+        if *w == first {
+            1
+        } else if w.is_ancestor(&first) {
+            2
+        } else {
+            3
+        }
+    });
+    let bounds = |w: &gtk::Widget| {
+        w.compute_bounds(root)
+            .map(|b| [b.x(), b.y(), b.width(), b.height()])
+    };
+    state.input = bounds(&first);
+    if let Some(viewport) = first.ancestor(gtk::Viewport::static_type()) {
+        state.viewport = bounds(&viewport);
+        state.viewport_allocation = Some((viewport.width(), viewport.height()));
+        state.scroll_to_focus = Some(viewport.property::<bool>("scroll-to-focus"));
+    }
+    if let (Some(i), Some(v)) = (state.input, state.viewport) {
+        state.overflow_ltrb = Some([
+            (v[0] - i[0]).max(0.0),
+            (v[1] - i[1]).max(0.0),
+            (i[0] + i[2] - v[0] - v[2]).max(0.0),
+            (i[1] + i[3] - v[1] - v[3]).max(0.0),
+        ]);
+    }
+    if let Some(scroll) = first
+        .ancestor(gtk::ScrolledWindow::static_type())
+        .and_then(|w| w.downcast::<gtk::ScrolledWindow>().ok())
+    {
+        let a = scroll.vadjustment();
+        state.adjustment_luvp = Some([a.lower(), a.upper(), a.value(), a.page_size()]);
+    }
+    state
+}
+
 // Read-only readiness: allow GTK's post-layout focus reconciliation to paint.
 // No adjustment writes or test-local reveal are permitted before this predicate.
 pub(super) fn first_open_ready(root: &gtk::Widget) -> bool {
