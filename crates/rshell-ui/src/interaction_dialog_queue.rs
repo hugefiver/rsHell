@@ -105,6 +105,7 @@ mod tests {
             error: Some("redacted".into()),
             queued: Default::default(),
             revision: 0,
+            answer_handlers: Default::default(),
         };
 
         assert!(dialog.advance_response());

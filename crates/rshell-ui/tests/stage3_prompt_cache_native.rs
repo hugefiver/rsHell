@@ -1,6 +1,6 @@
 //! Native production reproduction for the GTK 4.16 empty-container mode cache.
 //! GTK 4.18.5 refreshes this getter; a pass there is not older-runtime RED/GREEN.
-//! Older-runtime RED is unverified: run this fixture on actual GTK 4.16.12.
+//! Hosted GTK 4.16.12 RED verified: baseline e9c29c4, CI 37636327315/job 112843401952.
 //! No cache override, adjustment write, substitute renderer or external input.
 #![cfg(not(target_os = "macos"))]
 use gtk::prelude::*;

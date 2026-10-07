@@ -21,9 +21,12 @@ pub fn render_interaction(
         return;
     };
     if widgets.rendered != Some(view.interaction_id()) {
+        widgets.wipe_inputs();
         clear(&widgets.prompts);
         clear(&widgets.actions);
         widgets.inputs.clear();
+        let prompts = gtk::Box::new(gtk::Orientation::Vertical, 8);
+        prompts.add_css_class("interaction-prompts");
         match view.request() {
             InteractionRequest::HostKey(prompt) => {
                 widgets.title.set_label(if prompt.changed {
@@ -45,21 +48,30 @@ pub fn render_interaction(
             InteractionRequest::Password(prompt) => {
                 widgets.title.set_label("Password required");
                 widgets.summary.set_label(&prompt.label);
-                add_prompt(&widgets.prompts, &mut widgets.inputs, prompt, 0, sender);
+                add_prompt(&prompts, &mut widgets.inputs, prompt, 0, sender, model);
             }
             InteractionRequest::PrivateKeyPassphrase(prompt) => {
                 widgets.title.set_label("Private key passphrase required");
                 widgets.summary.set_label(&prompt.label);
-                add_prompt(&widgets.prompts, &mut widgets.inputs, prompt, 0, sender);
+                add_prompt(&prompts, &mut widgets.inputs, prompt, 0, sender, model);
             }
             InteractionRequest::KeyboardInteractive(prompt) => {
                 widgets.title.set_label(&prompt.name);
                 widgets.summary.set_label(&prompt.instruction);
                 for (index, prompt) in prompt.prompts.iter().enumerate() {
-                    add_prompt(&widgets.prompts, &mut widgets.inputs, prompt, index, sender);
+                    add_prompt(&prompts, &mut widgets.inputs, prompt, index, sender, model);
                 }
             }
         }
+        let body = widgets
+            .prompts
+            .parent()
+            .expect("prompts body")
+            .downcast::<gtk::Box>()
+            .expect("prompts body box");
+        body.insert_child_after(&prompts, widgets.prompts.prev_sibling().as_ref());
+        body.remove(&widgets.prompts);
+        widgets.prompts = prompts;
         for action in view.actions() {
             let button = action_button(*action);
             let input = sender.input_sender().clone();
@@ -110,6 +122,7 @@ fn add_prompt(
     prompt: &AuthPrompt,
     index: usize,
     sender: &ComponentSender<InteractionDialog>,
+    model: &InteractionDialog,
 ) {
     let label = gtk::Label::new(Some(&prompt.label));
     label.set_halign(gtk::Align::Start);
@@ -121,14 +134,14 @@ fn add_prompt(
     if prompt.echo {
         let entry = gtk::Entry::new();
         entry.update_property(&[gtk::accessible::Property::Label(&prompt.label)]);
-        connect_editable(&entry, index, sender);
+        connect_editable(&entry, index, sender, model);
         container.append(&entry);
         inputs.push(entry.upcast());
     } else {
         let entry = gtk::PasswordEntry::new();
         entry.set_show_peek_icon(false);
         entry.update_property(&[gtk::accessible::Property::Label(&prompt.label)]);
-        connect_editable(&entry, index, sender);
+        connect_editable(&entry, index, sender, model);
         container.append(&entry);
         inputs.push(entry.upcast());
     }
@@ -138,11 +151,14 @@ fn connect_editable(
     entry: &impl IsA<gtk::Editable>,
     index: usize,
     sender: &ComponentSender<InteractionDialog>,
+    model: &InteractionDialog,
 ) {
     let input = sender.input_sender().clone();
-    entry.connect_changed(move |entry| {
+    let handler = entry.connect_changed(move |entry| {
         let _ = input.send(InteractionDialogMsg::Answer(index, entry.text().into()));
     });
+    let weak = entry.as_ref().downgrade();
+    model.answer_handlers.borrow_mut().push((weak, handler));
 }
 
 fn action_button(action: InteractionAction) -> gtk::Button {

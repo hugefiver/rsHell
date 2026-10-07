@@ -1,6 +1,6 @@
 use gtk::prelude::*;
 use relm4::{ComponentParts, ComponentSender, SimpleComponent, gtk};
-use std::collections::VecDeque;
+use std::{cell::RefCell, collections::VecDeque};
 
 pub use crate::interaction_dialog_message::{
     InteractionDialogInit, InteractionDialogMsg, InteractionDialogOutput, InteractionDialogState,
@@ -18,6 +18,12 @@ pub struct InteractionDialog {
     pub(crate) error: Option<String>,
     pub(crate) queued: VecDeque<InteractionViewModel>,
     pub(crate) revision: u64,
+    pub(crate) answer_handlers: RefCell<
+        Vec<(
+            gtk::glib::WeakRef<gtk::Editable>,
+            gtk::glib::SignalHandlerId,
+        )>,
+    >,
 }
 
 impl SimpleComponent for InteractionDialog {
@@ -48,6 +54,7 @@ impl SimpleComponent for InteractionDialog {
             error: None,
             queued: VecDeque::new(),
             revision: 0,
+            answer_handlers: RefCell::default(),
         };
         let mut widgets = InteractionDialogWidgets::build(&root);
         attach_keys(&root, &sender);
@@ -151,6 +158,9 @@ impl SimpleComponent for InteractionDialog {
     }
 
     fn update_view(&self, widgets: &mut Self::Widgets, sender: ComponentSender<Self>) {
+        if self.view.as_ref().map(InteractionViewModel::interaction_id) != widgets.rendered {
+            self.retire_answer_forwarding();
+        }
         if self.pending || self.closing || !self.visible {
             widgets.park_focus();
             widgets.wipe_inputs();
@@ -166,6 +176,15 @@ impl SimpleComponent for InteractionDialog {
 }
 
 impl InteractionDialog {
+    pub(crate) fn retire_answer_forwarding(&self) {
+        let handlers = self.answer_handlers.take();
+        for (entry, handler) in handlers {
+            if let Some(entry) = entry.upgrade() {
+                entry.disconnect(handler);
+            }
+        }
+    }
+
     pub(crate) fn output(
         &self,
         command: Option<rshell_core::UiCommand>,
@@ -174,6 +193,12 @@ impl InteractionDialog {
         if let Some(command) = command {
             let _ = sender.output(InteractionDialogOutput::Command(Box::new(command)));
         }
+    }
+}
+
+impl Drop for InteractionDialog {
+    fn drop(&mut self) {
+        self.retire_answer_forwarding();
     }
 }
 
