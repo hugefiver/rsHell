@@ -131,6 +131,7 @@ impl SessionTabBarWidgets {
         activate.set_tooltip_text(Some(&label));
         set_accessible_label(&activate, &label);
         if active {
+            group.add_css_class("active-tab");
             activate.add_css_class("active-tab");
         }
         activate.connect_clicked(send(sender, SessionTabBarMsg::Activate(tab)));
