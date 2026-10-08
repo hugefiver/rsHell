@@ -1,5 +1,5 @@
 use relm4::ComponentController;
-use rshell_core::{UiCommand, UiPortError};
+use rshell_core::{NewLocalTabSubmitError, UiCommand, UiPortError};
 
 use crate::{
     ConnectionEditorMsg, ConnectionSidebarMsg, ImportDialogMsg, InteractionDialogMsg, MainWindow,
@@ -19,9 +19,30 @@ pub(crate) enum CommandSource {
 
 impl MainWindow {
     pub(crate) fn dispatch(&mut self, command: UiCommand, source: CommandSource) -> bool {
-        match dispatch(&self.command_port, command) {
+        let result = if matches!(command, UiCommand::NewLocalTab) {
+            let preparation = self.pane_host.model().prepare_new_local_focus();
+            let intent = preparation.begin(self.modal.open_kind().is_none());
+            match self.command_port.try_new_local_tab_with_completion() {
+                Ok(receipt) => {
+                    intent.receive(receipt);
+                    Ok(())
+                }
+                Err(NewLocalTabSubmitError::Unsupported) => {
+                    intent.cancel();
+                    dispatch(&self.command_port, command)
+                }
+                Err(NewLocalTabSubmitError::Rejected(error)) => {
+                    intent.cancel();
+                    Err(error)
+                }
+            }
+        } else {
+            dispatch(&self.command_port, command)
+        };
+        match result {
             Ok(()) => true,
             Err(error) => {
+                self.cancel_terminal_focus();
                 self.status = error.to_string();
                 self.reject(source, error);
                 if !self
@@ -34,6 +55,11 @@ impl MainWindow {
                 false
             }
         }
+    }
+
+    pub(crate) fn cancel_terminal_focus(&self) {
+        let focus = self.pane_host.model().focus_handle();
+        focus.cancel();
     }
 
     fn reject(&self, source: CommandSource, error: UiPortError) {

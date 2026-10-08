@@ -14,7 +14,10 @@ use crate::{
     SessionUiEvent, UiCommand,
 };
 
-use super::{AppDependencies, SessionBinding};
+use super::{
+    AppDependencies, SessionBinding,
+    completion_queue::{CommandEnvelope, CommandQueue},
+};
 
 pub(super) enum InternalEvent {
     Session(SessionId, SessionUiEvent),
@@ -22,7 +25,6 @@ pub(super) enum InternalEvent {
 }
 
 pub(super) struct LoopControl {
-    pub(super) accepting: Arc<AtomicBool>,
     pub(super) closed: Arc<AtomicBool>,
     pub(super) shutdown: watch::Receiver<bool>,
 }
@@ -59,7 +61,7 @@ impl CommandLoop {
 
     pub(super) async fn run(
         mut self,
-        commands: async_channel::Receiver<UiCommand>,
+        commands: CommandQueue,
         internal: async_channel::Receiver<InternalEvent>,
         done: watch::Sender<Option<Result<(), super::AppError>>>,
     ) {
@@ -71,7 +73,7 @@ impl CommandLoop {
                         break;
                     }
                 },
-                command = commands.recv() => match command {
+                command = commands.receiver.recv() => match command {
                     Ok(command) => {
                         if !self.dispatch(command).await {
                             break;
@@ -86,19 +88,22 @@ impl CommandLoop {
             }
         }
         commands.close();
-        self.control.accepting.store(false, Ordering::Release);
         let shutdown = self.finish_shutdown().await;
         self.control.closed.store(true, Ordering::Release);
         done.send_replace(Some(shutdown));
     }
 
-    async fn dispatch(&mut self, command: UiCommand) -> bool {
+    async fn dispatch(&mut self, envelope: CommandEnvelope) -> bool {
+        let CommandEnvelope {
+            command,
+            new_local_completion,
+        } = envelope;
         match command {
             UiCommand::ApplyCatalog { mutation, secret } => {
                 self.apply_catalog(mutation, secret).await
             }
             UiCommand::SearchConnections(query) => self.search_connections(&query).await,
-            UiCommand::NewLocalTab => self.new_local_tab().await,
+            UiCommand::NewLocalTab => self.new_local_tab(new_local_completion).await,
             UiCommand::StartLocal { pane } => self.start_local(pane).await,
             UiCommand::Connect { pane, connection } => self.connect(pane, connection).await,
             UiCommand::Split { pane, axis } => self.split(pane, axis).await,

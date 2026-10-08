@@ -142,6 +142,11 @@ impl SimpleComponent for MainWindow {
             &sender,
         );
 
+        if authoritative_view && modal.open_kind().is_none() {
+            let focus = pane_host.model().focus_handle();
+            focus.authorize_startup(&root, &view_model);
+        }
+
         let live_forwarders = live_sources
             .map(|sources| spawn_live_forwarders(sources, &sender))
             .unwrap_or_default();
@@ -212,13 +217,21 @@ impl SimpleComponent for MainWindow {
             MainWindowMsg::Modal(request) => self.handle_modal(request),
             MainWindowMsg::OpenSettings => self.open_settings(),
             MainWindowMsg::OpenImport => self.open_import(),
-            MainWindowMsg::AppEvent(event) => self.handle_event(event),
+            MainWindowMsg::AppEvent(event) => {
+                if matches!(event, rshell_core::AppEvent::OperationFailed(_)) {
+                    self.cancel_terminal_focus();
+                }
+                self.handle_event(event);
+            }
             MainWindowMsg::ReplaceViewModel(view_model) => self.replace_view_model(view_model),
             MainWindowMsg::LiveEvent {
                 view,
                 event,
                 pending,
             } => {
+                if matches!(event.as_ref(), rshell_core::AppEvent::OperationFailed(_)) {
+                    self.cancel_terminal_focus();
+                }
                 if !matches!(
                     event.as_ref(),
                     rshell_core::AppEvent::Session { .. }
@@ -236,6 +249,7 @@ impl SimpleComponent for MainWindow {
             MainWindowMsg::SmokeTick => {}
             MainWindowMsg::SmokeWindowRealized => self.smoke_state.window_realized = true,
         }
+        self.synchronize_terminal_focus_selection();
         if drive_smoke {
             self.drive_smoke(&sender);
         }

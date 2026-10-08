@@ -9,9 +9,10 @@ pub mod workspace;
 pub use application::{
     AppBootstrapState, AppDependencies, AppError, AppEventStream, AppViewModel, ApplicationHandle,
     ApplicationService, ConnectionRepository, CredentialOperationError, CredentialPort,
-    ErrorPaneView, ImportCommitResult, ImportError, ImportPort, LatestViewStream, PaneLaunchTarget,
-    RepositoryError, SessionBinding, SessionPort, UI_COMMAND_CAPACITY, UiCommandPort, UiPortError,
-    VaultFailure,
+    ErrorPaneView, ImportCommitResult, ImportError, ImportPort, LatestViewStream,
+    NewLocalTabCompletion, NewLocalTabIdentity, NewLocalTabReceipt, NewLocalTabReceiptClosed,
+    NewLocalTabSubmitError, PaneLaunchTarget, RepositoryError, SessionBinding, SessionPort,
+    UI_COMMAND_CAPACITY, UiCommandPort, UiPortError, VaultFailure,
 };
 pub use connection::{
     AuthenticationKind, CatalogMutation, CatalogOutcome, ConnectionCatalog, ConnectionGroup,
@@ -40,3 +41,6 @@ pub use terminal::{
     validate_terminal_profile, validate_terminal_settings,
 };
 pub use workspace::{PaneTree, SplitAxis, TabId, TabState, WorkspaceError, WorkspaceState};
+
+#[cfg(test)]
+extern crate self as rshell_core;

@@ -16,6 +16,15 @@ use crate::{
 mod pane;
 
 impl MainWindow {
+    pub(crate) fn synchronize_terminal_focus_selection(&self) {
+        let focus = self.pane_host.model().focus_handle();
+        focus.set_ui_tab(
+            self.smoke_state
+                .active_tab
+                .or(self.view_model.workspace.active_tab),
+        );
+    }
+
     pub(crate) fn new_local_tab(&mut self) {
         self.dispatch(UiCommand::NewLocalTab, CommandSource::TabBar);
     }
@@ -71,7 +80,10 @@ impl MainWindow {
             SessionTabBarOutput::Command(command) => {
                 self.dispatch(*command, CommandSource::TabBar);
             }
-            SessionTabBarOutput::ActivateTab(tab) => self.send_pane(PaneHostMsg::ActivateTab(tab)),
+            SessionTabBarOutput::ActivateTab(tab) => {
+                self.smoke_state.active_tab = Some(tab);
+                self.send_pane(PaneHostMsg::ActivateTab(tab));
+            }
         }
     }
 

@@ -1,4 +1,4 @@
-use std::{collections::BTreeSet, path::Path, sync::Arc};
+use std::{collections::BTreeSet, future::Future, path::Path, pin::Pin, sync::Arc};
 
 use async_trait::async_trait;
 use secrecy::SecretString;
@@ -9,7 +9,7 @@ use crate::{
     AppSettings, CatalogMutation, ConnectionCatalog, ConnectionProfile, CredentialRef,
     ImportCandidateId, ImportPreviewId, ImportPreviewView, ImportReportView, ImportSourceKind,
     PaneId, RenderFrame, ResolvedTerminalProfile, SecretUpdate, SessionFailure, SessionId,
-    SessionUiCommand, SessionUiEvent, TerminalProfile, TerminalSize, UiCommand,
+    SessionUiCommand, SessionUiEvent, TabId, TerminalProfile, TerminalSize, UiCommand,
 };
 
 pub const UI_COMMAND_CAPACITY: usize = 256;
@@ -83,6 +83,36 @@ pub enum UiPortError {
     #[error("application command port is closed")]
     Closed,
 }
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct NewLocalTabIdentity {
+    pub tab: TabId,
+    pub pane: PaneId,
+    pub session: SessionId,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NewLocalTabCompletion {
+    Created(NewLocalTabIdentity),
+    NoCreation,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
+pub enum NewLocalTabSubmitError {
+    #[error("new local tab completion is unsupported")]
+    Unsupported,
+    #[error("new local tab submission rejected: {0}")]
+    Rejected(UiPortError),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
+#[error("new local tab producer closed without completing")]
+pub struct NewLocalTabReceiptClosed;
+
+/// Created is sent only after the producer publishes the exact workspace identity.
+/// Dropping this future does not cancel an accepted creation.
+pub type NewLocalTabReceipt =
+    Pin<Box<dyn Future<Output = Result<NewLocalTabCompletion, NewLocalTabReceiptClosed>> + Send>>;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
 pub enum AppError {
@@ -168,6 +198,13 @@ pub trait SessionPort: Send + Sync {
 
 pub trait UiCommandPort: Send + Sync {
     fn try_send(&self, command: UiCommand) -> Result<(), UiPortError>;
+
+    /// Unsupported is a capability refusal and must not enqueue a command.
+    fn try_new_local_tab_with_completion(
+        &self,
+    ) -> Result<NewLocalTabReceipt, NewLocalTabSubmitError> {
+        Err(NewLocalTabSubmitError::Unsupported)
+    }
 }
 
 pub struct AppDependencies {

@@ -3,11 +3,16 @@ use crate::{
     SplitAxis, TabState,
 };
 
-use super::runtime::CommandLoop;
+use super::{
+    NewLocalTabCompletion, NewLocalTabIdentity,
+    completion_queue::{CompletionSender, complete},
+    runtime::CommandLoop,
+};
 
 impl CommandLoop {
-    pub(super) async fn new_local_tab(&mut self) {
+    pub(super) async fn new_local_tab(&mut self, completion: Option<CompletionSender>) {
         let Some(terminal) = Self::resolve_terminal_from(&self.view_model, None) else {
+            complete(completion, NewLocalTabCompletion::NoCreation);
             self.fail(validation_failure()).await;
             return;
         };
@@ -20,6 +25,11 @@ impl CommandLoop {
         {
             Ok(binding) => {
                 let id = uuid::Uuid::new_v4();
+                let identity = NewLocalTabIdentity {
+                    tab: id,
+                    pane,
+                    session: binding.id,
+                };
                 self.view_model.workspace.tabs.push(TabState {
                     id,
                     title: "Local".into(),
@@ -31,9 +41,14 @@ impl CommandLoop {
                     .pane_launches
                     .insert(pane, PaneLaunchTarget::Local);
                 self.bind(binding);
-                self.workspace_changed().await;
+                self.publish_view();
+                complete(completion, NewLocalTabCompletion::Created(identity));
+                self.emit_workspace_changed().await;
             }
-            Err(error) => self.fail(Self::session_failure(error, None)).await,
+            Err(error) => {
+                complete(completion, NewLocalTabCompletion::NoCreation);
+                self.fail(Self::session_failure(error, None)).await;
+            }
         }
     }
 
@@ -77,6 +92,10 @@ impl CommandLoop {
 
     pub(super) async fn workspace_changed(&mut self) {
         self.publish_view();
+        self.emit_workspace_changed().await;
+    }
+
+    async fn emit_workspace_changed(&self) {
         self.emit(AppEvent::WorkspaceChanged(
             self.view_model.workspace.clone(),
         ))

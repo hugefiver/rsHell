@@ -28,6 +28,11 @@ use rshell_ui::{
 use secrecy::SecretString;
 use tokio::time::timeout;
 
+#[path = "support/terminal_focus_cases.rs"]
+mod terminal_focus_cases;
+#[path = "support/terminal_focus_fixture.rs"]
+mod terminal_focus_fixture;
+
 fn assert_breakpoint_crossing_preserves_controller_and_reducer_identity() {
     if let Err(error) = gtk::init() {
         eprintln!("live adaptive shell regression skipped: {error}");
@@ -355,6 +360,7 @@ fn press_key(
 
 #[tokio::test(flavor = "current_thread")]
 async fn application_live_view_contracts_run_on_one_gtk_thread() {
+    terminal_focus_cases::run();
     assert_breakpoint_crossing_preserves_controller_and_reducer_identity();
     if let Err(error) = gtk::init() {
         eprintln!("live MainWindow stream regression skipped: {error}");
