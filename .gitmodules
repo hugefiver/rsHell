@@ -1,0 +1,4 @@
+[submodule "corelibs"]
+	path = corelibs
+	url = https://github.com/MoyuTeams/rsHell-corelibs.git
+	branch = master

@@ -37,6 +37,8 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
+        with:
+          submodules: recursive
 
       - name: Validate workflow contract
         run: |
@@ -182,7 +184,11 @@ jobs:
           }
           cargo fmt --all -- --check
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          cargo fmt --manifest-path corelibs/Cargo.toml --all -- --check
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           cargo check --workspace --all-targets --all-features --locked
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          cargo check --manifest-path corelibs/Cargo.toml --workspace --all-targets --all-features --locked
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           $displayServer = $null
           $workspaceTestExitCode = 1
@@ -202,6 +208,10 @@ jobs:
             }
             cargo test --workspace --all-features --locked
             $workspaceTestExitCode = $LASTEXITCODE
+            if ($workspaceTestExitCode -eq 0) {
+              cargo test --manifest-path corelibs/Cargo.toml --workspace --all-features --locked
+              $workspaceTestExitCode = $LASTEXITCODE
+            }
           }
           finally {
             if ($null -ne $displayServer -and -not $displayServer.HasExited) {
@@ -214,10 +224,12 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          cargo clippy --manifest-path corelibs/Cargo.toml --workspace --all-targets --all-features --locked -- -D warnings
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: Run terminal engine gate
         run: |
-          pwsh -NoProfile -File scripts/qa/terminal-engine-gate.ps1
+          pwsh -NoProfile -File corelibs/scripts/qa/terminal-engine-gate.ps1
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: Run Secret Service vault probe and P0 All smoke (Linux)
@@ -255,11 +267,11 @@ jobs:
           & secret-tool clear rshell-ci $warmupKey
           if ($LASTEXITCODE -ne 0) { throw "Secret Service warmup cleanup failed" }
           try {
-            cargo test --locked -p rshell-storage --features test-support --test system_vault system_vault_real_os_probe_uses_coordinator_and_cleans_random_entry -- --ignored --exact --nocapture
+            cargo test --manifest-path corelibs/Cargo.toml --locked -p rshell-storage --features test-support --test system_vault system_vault_real_os_probe_uses_coordinator_and_cleans_random_entry -- --ignored --exact --nocapture
             if ($LASTEXITCODE -ne 0) { throw "system vault probe failed" }
           }
           finally {
-            cargo test --locked -p rshell-storage --features test-support --test system_vault system_vault_cleanup_exact_parent_reference -- --ignored --exact --nocapture
+            cargo test --manifest-path corelibs/Cargo.toml --locked -p rshell-storage --features test-support --test system_vault system_vault_cleanup_exact_parent_reference -- --ignored --exact --nocapture
             if ($LASTEXITCODE -ne 0) { throw "system vault cleanup failed" }
           }
           $env:RSHELL_P0_RESIZE_DIAGNOSTICS = '1'
@@ -313,11 +325,11 @@ jobs:
             $env:RSHELL_P0_QA_VAULT_REFERENCE = "rshell://credential/$([Guid]::NewGuid().ToString('N'))"
             $env:RSHELL_P0_QA_VAULT_OBSERVATION_PATH = Join-Path $vaultRoot "vault-observation.json"
             try {
-              cargo test --locked -p rshell-storage --features test-support --test system_vault system_vault_real_os_probe_uses_coordinator_and_cleans_random_entry -- --ignored --exact --nocapture
+              cargo test --manifest-path corelibs/Cargo.toml --locked -p rshell-storage --features test-support --test system_vault system_vault_real_os_probe_uses_coordinator_and_cleans_random_entry -- --ignored --exact --nocapture
               if ($LASTEXITCODE -ne 0) { throw "system vault probe failed" }
             }
             finally {
-              cargo test --locked -p rshell-storage --features test-support --test system_vault system_vault_cleanup_exact_parent_reference -- --ignored --exact --nocapture
+              cargo test --manifest-path corelibs/Cargo.toml --locked -p rshell-storage --features test-support --test system_vault system_vault_cleanup_exact_parent_reference -- --ignored --exact --nocapture
               if ($LASTEXITCODE -ne 0) { throw "system vault cleanup failed" }
             }
             Write-Output 'P0_NATIVE_GUI_SKIP platform=macos reason=native_gui_integration_explicitly_skipped; GTK compilation and non-GUI suites remain required.'
@@ -374,11 +386,11 @@ jobs:
             $env:RSHELL_P0_QA_VAULT_REFERENCE = "rshell://credential/$([Guid]::NewGuid().ToString('N'))"
             $env:RSHELL_P0_QA_VAULT_OBSERVATION_PATH = Join-Path $vaultRoot "vault-observation.json"
             try {
-              cargo test --locked -p rshell-storage --features test-support --test system_vault system_vault_real_os_probe_uses_coordinator_and_cleans_random_entry -- --ignored --exact --nocapture
+              cargo test --manifest-path corelibs/Cargo.toml --locked -p rshell-storage --features test-support --test system_vault system_vault_real_os_probe_uses_coordinator_and_cleans_random_entry -- --ignored --exact --nocapture
               if ($LASTEXITCODE -ne 0) { throw "system vault probe failed" }
             }
             finally {
-              cargo test --locked -p rshell-storage --features test-support --test system_vault system_vault_cleanup_exact_parent_reference -- --ignored --exact --nocapture
+              cargo test --manifest-path corelibs/Cargo.toml --locked -p rshell-storage --features test-support --test system_vault system_vault_cleanup_exact_parent_reference -- --ignored --exact --nocapture
               if ($LASTEXITCODE -ne 0) { throw "system vault cleanup failed" }
             }
             pwsh -NoProfile -File scripts/qa/p0-smoke.ps1 -Mode All

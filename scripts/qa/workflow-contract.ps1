@@ -188,7 +188,7 @@ function Assert-TerminalEngineGateStep {
 
     $step = $matches[0]
     $body = $step.Groups["body"].Value
-    $command = "pwsh -NoProfile -File scripts/qa/terminal-engine-gate.ps1"
+    $command = "pwsh -NoProfile -File corelibs/scripts/qa/terminal-engine-gate.ps1"
     Assert-StepHasNoYamlCondition -Step $body -Name "$Workflow $name" -Failures $Failures
     Assert-StepPattern -Step $body -Pattern "(?m)^ {8}run: \|\s*$" -Name "$Workflow $name" -Failures $Failures
     Assert-StepLineCount -Step $body -Line $command -Expected 1 -Name "$Workflow $name" -Failures $Failures
@@ -578,6 +578,8 @@ foreach ($workflow in @(
     Assert-OnlyPowerShellShells -Text $workflow.Text -Label "$($workflow.Name) shell" -Failures $failures
     Assert-Absent -Text $workflow.Text -Pattern "(?i)wezterm" -Label "$($workflow.Name) WezTerm terminal runtime" -Failures $failures
 }
+Assert-Exactly -Text $ci -Pattern '(?m)^ {6}- uses: actions/checkout@v4\r?\n {8}with:\r?\n {10}submodules: recursive[ \t]*\r?$' -Expected 1 -Label "CI recursive submodule checkout" -Failures $failures
+Assert-Exactly -Text $release -Pattern '(?m)^ {6}- uses: actions/checkout@v4\r?\n {8}with:\r?\n {10}submodules: recursive[ \t]*\r?$' -Expected 2 -Label "Release recursive submodule checkout" -Failures $failures
 
 Assert-Contains -Text $ci -Pattern "(?ms)^permissions:\s*\r?\n\s*contents:\s*read\s*$" -Label "CI least-privilege permissions" -Failures $failures
 foreach ($runner in @(
@@ -633,19 +635,24 @@ Assert-StepPattern -Step $workspaceStep -Pattern '(?m)^ {10}if \(''\$\{\{ runner
 Assert-ReadOnlyDisplayObservation -Step $workspaceStep -Phase 'before_workspace' -Gate 'cargo fmt --all -- --check' -Name 'Run required workspace gates' -Failures $failures
 foreach ($gate in @(
         "cargo fmt --all -- --check",
+        "cargo fmt --manifest-path corelibs/Cargo.toml --all -- --check",
         "cargo check --workspace --all-targets --all-features --locked",
+        "cargo check --manifest-path corelibs/Cargo.toml --workspace --all-targets --all-features --locked",
         "cargo test --workspace --all-features --locked",
+        "cargo test --manifest-path corelibs/Cargo.toml --workspace --all-features --locked",
         "cargo test --locked --test production_module_limits",
-        "cargo clippy --workspace --all-targets --all-features --locked -- -D warnings"
+        "cargo clippy --workspace --all-targets --all-features --locked -- -D warnings",
+        "cargo clippy --manifest-path corelibs/Cargo.toml --workspace --all-targets --all-features --locked -- -D warnings"
     )) {
     Assert-StepLine -Step $workspaceStep -Line $gate -Name "Run required workspace gates" -Failures $failures
 }
-Assert-StepLineCount -Step $workspaceStep -Line $failureCheck -Expected 5 -Name "Run required workspace gates" -Failures $failures
+Assert-StepLineCount -Step $workspaceStep -Line $failureCheck -Expected 8 -Name "Run required workspace gates" -Failures $failures
 Assert-StepLine -Step $workspaceStep -Line 'if ($workspaceTestExitCode -ne 0) { exit $workspaceTestExitCode }' -Name "Run required workspace gates" -Failures $failures
 # The dedicated baseline must fail before, never replace/filter, the full workspace gate.
 Assert-Exactly -Text $ci -Pattern ([regex]::Escape($promptCacheCommand)) -Expected 1 -Label 'Windows prompt-cache baseline invocation' -Failures $failures
 Assert-StepLineCount -Step $workspaceStep -Line $promptCacheCommand -Expected 1 -Name 'Windows prompt-cache baseline' -Failures $failures
 Assert-StepLineCount -Step $workspaceStep -Line 'cargo test --workspace --all-features --locked' -Expected 1 -Name 'Unfiltered full workspace tests' -Failures $failures
+Assert-StepLineCount -Step $workspaceStep -Line 'cargo test --manifest-path corelibs/Cargo.toml --workspace --all-features --locked' -Expected 1 -Name 'Unfiltered core workspace tests' -Failures $failures
 $promptCachePattern = '(?m)^ {12}if \(''\$\{\{ runner\.os \}\}'' -eq ''Windows''\) \{\r?\n' +
     ' {14}\$env:RSHELL_NATIVE_MODAL_DIAGNOSTICS = ''1''\r?\n' +
     ' {14}' + [regex]::Escape($promptCacheCommand) + '\r?\n' +
@@ -691,7 +698,7 @@ foreach ($modeAllStep in @(
     Assert-UnconditionalSmokeCommand -Step $step -Name $modeAllStep.Name -Failures $failures
     $forbiddenMode = if ($modeAllStep.Mode -eq 'All') { 'Ssh' } else { 'All' }
     Assert-Absent -Text ([string]$step) -Pattern "p0-smoke\.ps1 -Mode $forbiddenMode" -Label "$($modeAllStep.Name) forbidden mode" -Failures $failures
-    Assert-StepPattern -Step $step -Name $modeAllStep.Name -Failures $failures -Pattern '(?ms)^\s*try \{\r?\n\s*cargo test --locked -p rshell-storage --features test-support --test system_vault system_vault_real_os_probe_uses_coordinator_and_cleans_random_entry -- --ignored --exact --nocapture\r?\n\s*if \(\$LASTEXITCODE -ne 0\) \{ throw "system vault probe failed" \}\r?\n\s*\}\r?\n\s*finally \{\r?\n\s*cargo test --locked -p rshell-storage --features test-support --test system_vault system_vault_cleanup_exact_parent_reference -- --ignored --exact --nocapture\r?\n\s*if \(\$LASTEXITCODE -ne 0\) \{ throw "system vault cleanup failed" \}'
+    Assert-StepPattern -Step $step -Name $modeAllStep.Name -Failures $failures -Pattern '(?ms)^\s*try \{\r?\n\s*cargo test --manifest-path corelibs/Cargo\.toml --locked -p rshell-storage --features test-support --test system_vault system_vault_real_os_probe_uses_coordinator_and_cleans_random_entry -- --ignored --exact --nocapture\r?\n\s*if \(\$LASTEXITCODE -ne 0\) \{ throw "system vault probe failed" \}\r?\n\s*\}\r?\n\s*finally \{\r?\n\s*cargo test --manifest-path corelibs/Cargo\.toml --locked -p rshell-storage --features test-support --test system_vault system_vault_cleanup_exact_parent_reference -- --ignored --exact --nocapture\r?\n\s*if \(\$LASTEXITCODE -ne 0\) \{ throw "system vault cleanup failed" \}'
     $modeAllMatches = @(Get-NamedStepBlock -Text $ci -Name $modeAllStep.Name)
     if ($null -ne $ciTerminalGate -and $modeAllMatches.Count -eq 1 -and $ciTerminalGate.Index -ge $modeAllMatches[0].Index) {
         Add-ContractFailure -Failures $failures -Message "CI terminal-engine gate must run before '$($modeAllStep.Name)'."
@@ -831,8 +838,8 @@ foreach ($runtimeInvocation in @(
 }
 Assert-Contains -Text $package -Pattern "(?i)wezterm" -Label "Package WezTerm negative QA sentinel" -Failures $failures
 
-$terminalEngine = Read-WorkflowText -Path (Join-Path $PSScriptRoot "terminal-engine-gate.ps1") -Label "Terminal-engine gate"
-$terminalRecord = Read-WorkflowText -Path (Join-Path $PSScriptRoot "..\..\crates\rshell-session\TERMINAL_ENGINE.md") -Label "Terminal-engine decision record"
+$terminalEngine = Read-WorkflowText -Path (Join-Path $PSScriptRoot "..\..\corelibs\scripts\qa\terminal-engine-gate.ps1") -Label "Terminal-engine gate"
+$terminalRecord = Read-WorkflowText -Path (Join-Path $PSScriptRoot "..\..\corelibs\crates\rshell-session\TERMINAL_ENGINE.md") -Label "Terminal-engine decision record"
 Assert-Contains -Text $terminalEngine -Pattern '(?m)^\$Backend = "alacritty-terminal@0\.26\.0"\s*$' -Label "Terminal-engine Alacritty 0.26 backend" -Failures $failures
 Assert-Contains -Text $terminalRecord -Pattern '(?m)^Decision: \*\*GO\*\*\s*$' -Label "Terminal-engine recorded GO decision" -Failures $failures
 Assert-Contains -Text $terminalRecord -Pattern '(?m)^- Selected sole adapter: `alacritty-terminal@0\.26\.0`\s*$' -Label "Terminal-engine recorded Alacritty 0.26 backend" -Failures $failures

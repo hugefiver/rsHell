@@ -1,12 +1,6 @@
 [workspace]
-members = [
-    "crates/rshell-core",
-    "crates/rshell-platform",
-    "crates/rshell-session",
-    "crates/rshell-storage",
-    "crates/rshell-ui",
-]
-exclude = ["third_party/portable-pty-psmux"]
+members = ["crates/rshell-ui"]
+exclude = ["corelibs"]
 resolver = "3"
 
 [patch.crates-io]
@@ -20,10 +14,10 @@ license = "MIT"
 
 [dependencies]
 relm4 = "0.10.1"
-rshell-core = { path = "crates/rshell-core" }
-rshell-platform = { path = "crates/rshell-platform" }
-rshell-session = { path = "crates/rshell-session" }
-rshell-storage = { path = "crates/rshell-storage" }
+rshell-core = { path = "corelibs/crates/rshell-core" }
+rshell-platform = { path = "corelibs/crates/rshell-platform" }
+rshell-session = { path = "corelibs/crates/rshell-session" }
+rshell-storage = { path = "corelibs/crates/rshell-storage" }
 rshell-ui = { path = "crates/rshell-ui" }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"

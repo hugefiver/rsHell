@@ -8,8 +8,8 @@ license = "MIT"
 gtk = { package = "gtk4", version = "0.10.3" }
 pangocairo = "0.21.5"
 relm4 = "0.10.1"
-rshell-core = { path = "../rshell-core" }
-rshell-platform = { path = "../rshell-platform" }
+rshell-core = { path = "../../corelibs/crates/rshell-core" }
+rshell-platform = { path = "../../corelibs/crates/rshell-platform" }
 
 [dev-dependencies]
 async-channel = "2.5"

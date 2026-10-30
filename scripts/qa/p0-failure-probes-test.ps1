@@ -73,10 +73,13 @@ function Assert-Observation {} # Positive vault evidence is hosted, not synthesi
 function Invoke-CapturedChild {
     param($Name, $FilePath, $Arguments, $Environment, $WorkingDirectory, $StdoutPath, $StderrPath, $TimeoutSeconds, $AllowFailure)
     $script:calls.Add($Name)
+    if ($Name -in @('build-askpass', 'fail_during_vault_probe', 'vault-failure-ledger-cleanup', 'vault-ledger-cleanup', 'vault-real-os')) {
+        Assert-Test ($WorkingDirectory -ceq $coreRoot) "Core child used the parent workspace: $Name"
+    }
     switch ($Name) {
         'build-askpass' {
             Assert-Test (($Arguments -join ' ') -ceq 'build --locked -p rshell-session --bin rshell-qa-askpass') 'Ssh must build only headless askpass.'
-            Write-Utf8File (Join-Path $repoRoot 'target/debug/rshell-qa-askpass') 'mock helper'
+            Write-Utf8File (Join-Path $coreRoot 'target/debug/rshell-qa-askpass') 'mock helper'
         }
         'keygen-encrypted' {
             Assert-Test (Test-Path -LiteralPath $Environment.SSH_ASKPASS) 'Askpass prerequisite missing.'
@@ -119,6 +122,7 @@ function Invoke-CapturedChild {
 function Start-CapturedChild {
     param($Name, $FilePath, $Arguments, $Environment, $WorkingDirectory, $StdoutPath, $StderrPath)
     $script:calls.Add($Name)
+    Assert-Test ($WorkingDirectory -ceq $coreRoot) "Core fixture used the parent workspace: $Name"
     Assert-Test ($Arguments -join ' ' -ceq 'local_russh_smoke_fixture_server --ignored --exact --nocapture') 'Fixture must run its exact ignored test.'
     foreach ($path in @($Environment.RSHELL_QA_SSH_SMOKE_ENCRYPTED_KEY_PATH, "$($Environment.RSHELL_QA_SSH_SMOKE_ENCRYPTED_KEY_PATH).pub", $Environment.RSHELL_QA_SSH_SMOKE_AGENT_PUBLIC_KEY_PATH, $Environment.RSHELL_QA_SSH_SMOKE_OBSERVATION_DIR)) {
         Assert-Test (Test-Path -LiteralPath $path) 'Fixture file prerequisite missing.'
@@ -189,7 +193,8 @@ function Invoke-ModeCase {
     $runId = [Guid]::NewGuid().ToString('N')
     $tempRoot = Join-Path $testRoot $runId
     $repoRoot = Join-Path $tempRoot 'repo'
-    [void][System.IO.Directory]::CreateDirectory((Join-Path $repoRoot 'target/debug/deps'))
+    $coreRoot = Join-Path $repoRoot 'corelibs'
+    [void][System.IO.Directory]::CreateDirectory((Join-Path $coreRoot 'target/debug/deps'))
     $artifactRoot = Join-Path $tempRoot 'logs'
     [void][System.IO.Directory]::CreateDirectory($artifactRoot)
     $fixtureObservationRoot = Join-Path $tempRoot 'observations'
@@ -202,7 +207,7 @@ function Invoke-ModeCase {
     $fixtureStop = Join-Path $tempRoot 'fixture.stop'
     $agentPublicKey = Join-Path $tempRoot 'parent-agent-key.pub'
     Write-Utf8File $agentPublicKey 'mock agent public key'
-    Write-Utf8File (Join-Path $repoRoot 'target/debug/deps/ssh_smoke-0123') 'mock fixture'
+    Write-Utf8File (Join-Path $coreRoot 'target/debug/deps/ssh_smoke-0123') 'mock fixture'
     $vaultReference = "rshell://credential/$runId"
     $vaultFailureReference = "rshell://credential/$runId-failure"
     $vaultCleanupLedger = Join-Path $tempRoot 'vault-cleanup-ledger.json'

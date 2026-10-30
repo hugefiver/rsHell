@@ -302,6 +302,11 @@ function Invoke-RegressionCase {
         [AllowEmptyString()][string]$Features = ""
     )
 
+    $workingDirectory = if ($Package -in @("rshell-core", "rshell-platform", "rshell-session", "rshell-storage")) {
+        $coreRoot
+    } else {
+        $repoRoot
+    }
     $ordinal = 0
     foreach ($test in $Tests) {
         $ordinal++
@@ -325,7 +330,7 @@ function Invoke-RegressionCase {
                 -FilePath $cargo `
                 -Arguments $arguments `
                 -Environment $baseEnvironment `
-                -WorkingDirectory $repoRoot `
+                -WorkingDirectory $workingDirectory `
                 -StdoutPath $listingPath `
                 -StderrPath (Join-Path $artifactRoot "$stem-regression-$Name-$ordinal.list.stderr.log") `
                 -TimeoutSeconds 300)
@@ -338,7 +343,7 @@ function Invoke-RegressionCase {
                 -FilePath $cargo `
             -Arguments $arguments `
             -Environment $baseEnvironment `
-            -WorkingDirectory $repoRoot `
+            -WorkingDirectory $workingDirectory `
             -StdoutPath $resultPath `
             -StderrPath (Join-Path $artifactRoot "$stem-regression-$Name-$ordinal.stderr.log") `
             -TimeoutSeconds 300 `
@@ -780,6 +785,7 @@ if ($RegressionParserProbe) {
 }
 
 $repoRoot = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot "..\..")).Path
+$coreRoot = [System.IO.Path]::GetFullPath((Join-Path $repoRoot "corelibs"))
 $artifactRootWasExplicit = $PSBoundParameters.ContainsKey("ArtifactRoot")
 $temporaryBase = [System.IO.Path]::GetTempPath()
 if (-not (Test-Path -LiteralPath $temporaryBase -PathType Container)) {
@@ -1050,7 +1056,7 @@ try {
                 -FilePath $cargo `
                 -Arguments @("test", "--locked", "-p", "rshell-session", "--test", "ssh_smoke", "--", "--nocapture") `
                 -Environment $sshEnvironment `
-                -WorkingDirectory $repoRoot `
+                -WorkingDirectory $coreRoot `
                 -StdoutPath (Join-Path $artifactRoot "$stem-ssh-native.stdout.log") `
                 -StderrPath (Join-Path $artifactRoot "$stem-ssh-native.stderr.log") `
                 -TimeoutSeconds 300)
@@ -1107,7 +1113,7 @@ try {
                 "system_openssh_agent_authenticates_against_local_server", "--", "--ignored", "--exact", "--nocapture"
             ) `
             -Environment $agentEnvironment `
-            -WorkingDirectory $repoRoot `
+            -WorkingDirectory $coreRoot `
             -StdoutPath (Join-Path $artifactRoot "$stem-ssh-agent.stdout.log") `
             -StderrPath (Join-Path $artifactRoot "$stem-ssh-agent.stderr.log") `
             -TimeoutSeconds 180)
@@ -1138,7 +1144,7 @@ try {
                     "--", "--ignored", "--exact", "--nocapture"
                 ) `
                 -Environment $failureVaultEnvironment `
-                -WorkingDirectory $repoRoot `
+                -WorkingDirectory $coreRoot `
                 -StdoutPath (Join-Path $artifactRoot "$stem-vault-failure.stdout.log") `
                 -StderrPath (Join-Path $artifactRoot "$stem-vault-failure.stderr.log") `
                 -TimeoutSeconds 120 `
@@ -1157,7 +1163,7 @@ try {
                         "--", "--ignored", "--exact", "--nocapture"
                     ) `
                     -Environment $failureVaultEnvironment `
-                    -WorkingDirectory $repoRoot `
+                    -WorkingDirectory $coreRoot `
                     -StdoutPath (Join-Path $artifactRoot "$stem-vault-failure-cleanup.stdout.log") `
                     -StderrPath (Join-Path $artifactRoot "$stem-vault-failure-cleanup.stderr.log") `
                     -TimeoutSeconds 120)
@@ -1182,7 +1188,7 @@ try {
                     "--", "--ignored", "--exact", "--nocapture"
                 ) `
                 -Environment $vaultEnvironment `
-                -WorkingDirectory $repoRoot `
+                -WorkingDirectory $coreRoot `
                 -StdoutPath (Join-Path $artifactRoot "$stem-vault.stdout.log") `
                 -StderrPath (Join-Path $artifactRoot "$stem-vault.stderr.log") `
                 -TimeoutSeconds 180)
@@ -1203,11 +1209,11 @@ try {
                     "--bin", "rshell-qa-askpass"
                 ) `
                 -Environment $baseEnvironment `
-                -WorkingDirectory $repoRoot `
+                -WorkingDirectory $coreRoot `
                 -StdoutPath (Join-Path $artifactRoot "$stem-askpass-build.stdout.log") `
                 -StderrPath (Join-Path $artifactRoot "$stem-askpass-build.stderr.log") `
                 -TimeoutSeconds 180)
-        $debugRoot = Join-Path (Join-Path $repoRoot "target") "debug"
+        $debugRoot = Join-Path (Join-Path $coreRoot "target") "debug"
         $askpass = Join-Path $debugRoot "rshell-qa-askpass$binarySuffix"
         if (-not (Test-Path -LiteralPath $askpass -PathType Leaf)) {
             throw "The QA askpass helper was not built."
@@ -1275,7 +1281,7 @@ try {
                 -FilePath $sshSmokeBinary.FullName `
                 -Arguments @("local_russh_smoke_fixture_server", "--ignored", "--exact", "--nocapture") `
                 -Environment $failureFixtureEnvironment `
-                -WorkingDirectory $repoRoot `
+                -WorkingDirectory $coreRoot `
                 -StdoutPath (Join-Path $artifactRoot "$stem-fixture-failure.stdout.log") `
                 -StderrPath (Join-Path $artifactRoot "$stem-fixture-failure.stderr.log")
             $fixtureFailureExit = Complete-CapturedChild -Run $fixtureFailureRun -TimeoutSeconds 30 -AllowFailure $true
@@ -1307,7 +1313,7 @@ try {
                 -FilePath $sshSmokeBinary.FullName `
                 -Arguments @("local_russh_smoke_fixture_server", "--ignored", "--exact", "--nocapture") `
                 -Environment $nonzeroEnvironment `
-                -WorkingDirectory $repoRoot `
+                -WorkingDirectory $coreRoot `
                 -StdoutPath (Join-Path $artifactRoot "$stem-fixture-nonzero.stdout.log") `
                 -StderrPath (Join-Path $artifactRoot "$stem-fixture-nonzero.stderr.log")
             $nonzeroReadyDocument = Wait-ForFixtureReady -Run $fixtureNonzeroRun -ReadyPath $nonzeroReady -TimeoutSeconds 30
@@ -1334,7 +1340,7 @@ try {
                 -FilePath $cargo `
                 -Arguments @("build", "--locked", "-p", "rshell-session", "--bin", "rshell-p0-tui", "--bin", "rshell-interrupt-tui", "--bin", "rshell-p0-shell") `
                 -Environment $baseEnvironment `
-                -WorkingDirectory $repoRoot `
+                -WorkingDirectory $coreRoot `
                 -StdoutPath (Join-Path $artifactRoot "$stem-gui-fixtures-build.stdout.log") `
                 -StderrPath (Join-Path $artifactRoot "$stem-gui-fixtures-build.stderr.log") `
                 -TimeoutSeconds 180)
@@ -1351,7 +1357,7 @@ try {
             -FilePath $sshSmokeBinary.FullName `
             -Arguments @("local_russh_smoke_fixture_server", "--ignored", "--exact", "--nocapture") `
             -Environment $fixtureEnvironment `
-            -WorkingDirectory $repoRoot `
+            -WorkingDirectory $coreRoot `
             -StdoutPath (Join-Path $artifactRoot "$stem-fixture.stdout.log") `
             -StderrPath (Join-Path $artifactRoot "$stem-fixture.stderr.log")
         $ready = Wait-ForFixtureReady -Run $fixtureRun -ReadyPath $fixtureReady
@@ -1906,7 +1912,7 @@ exit 91
                             "--", "--ignored", "--exact", "--nocapture"
                         ) `
                         -Environment $vaultCleanupEnvironment `
-                        -WorkingDirectory $repoRoot `
+                        -WorkingDirectory $coreRoot `
                         -StdoutPath (Join-Path $artifactRoot "$stem-vault-ledger-cleanup.stdout.log") `
                         -StderrPath (Join-Path $artifactRoot "$stem-vault-ledger-cleanup.stderr.log") `
                         -TimeoutSeconds 120)

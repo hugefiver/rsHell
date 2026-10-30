@@ -5,7 +5,7 @@ rsHell 是使用 Rust、GTK4 与 Relm4 构建的跨平台 SSH 终端管理器。
 ## P0 功能
 
 - 本地 shell 与完整终端模拟：ANSI 样式、Unicode、滚动缓冲、搜索、选择、复制粘贴和尺寸调整。
-- 唯一终端后端是 Alacritty 0.26（`alacritty-terminal@0.26.0`）。其 100 MiB×5、120×40 p95、1000 行滚动缓冲 SHA-256 的记录契约为 **GO**；`scripts/qa/terminal-engine-gate.ps1` 会将后端、记录和测量不一致视为失败。
+- 唯一终端后端是 Alacritty 0.26（`alacritty-terminal@0.26.0`）。其 100 MiB×5、120×40 p95、1000 行滚动缓冲 SHA-256 的记录契约为 **GO**；`corelibs/scripts/qa/terminal-engine-gate.ps1` 会将后端、记录和测量不一致视为失败。
 - 连接目录：创建、编辑、复制、移动、删除和搜索连接；支持嵌套分组与 tags。
 - 工作区：多标签页、水平/垂直分屏、关闭、重连和明确的会话状态/错误页面。
 - 两种 SSH transport：
@@ -53,6 +53,20 @@ rshell
 
 ## 从源码构建
 
+克隆时一并检出核心库子模块：
+
+```text
+git clone --recurse-submodules https://github.com/hugefiver/rsHell.git
+```
+
+已有 checkout 在切换分支或拉取更新后执行：
+
+```text
+git submodule update --init --recursive
+```
+
+`corelibs/` 指向 [rsHell-corelibs](https://github.com/MoyuTeams/rsHell-corelibs)，版本由本仓库提交中的子模块指针固定。应用使用 Cargo path 依赖引用其中的 crate。
+
 通用依赖：
 
 - Rust stable（edition 2024）
@@ -84,15 +98,26 @@ cargo build --release --workspace --locked
 
 ## 开发与验证
 
-完整自动质量门：
+应用 workspace 的自动质量门：
 
 ```text
 cargo fmt --all -- --check
 cargo check --workspace --all-targets --all-features --locked
 cargo test --workspace --all-features --locked
 cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
-pwsh -NoProfile -File scripts/qa/terminal-engine-gate.ps1
 ```
+
+核心库是独立 workspace，另行运行：
+
+```text
+cargo fmt --manifest-path corelibs/Cargo.toml --all -- --check
+cargo check --manifest-path corelibs/Cargo.toml --workspace --all-targets --all-features --locked
+cargo test --manifest-path corelibs/Cargo.toml --workspace --all-features --locked
+cargo clippy --manifest-path corelibs/Cargo.toml --workspace --all-targets --all-features --locked -- -D warnings
+pwsh -NoProfile -File corelibs/scripts/qa/terminal-engine-gate.ps1
+```
+
+两个 workspace 分别维护 `Cargo.lock` 和 `target/`。修改核心库时，在 `corelibs/` 中切到工作分支并提交、推送核心变更，然后在应用仓库提交更新后的子模块指针。CI 使用记录的提交，不自动跟踪核心库分支最新版本。
 
 真实 P0 surface（会使用 GTK、PTY、System OpenSSH、真实系统凭据库与临时 QA 资源）：
 
@@ -106,14 +131,16 @@ Smoke 报告、JUnit 与截图写入 `artifacts/p0-smoke/`；报告中的 artifa
 ## 架构
 
 ```text
-src/                    composition root、bootstrap、cleanup 与 P0 smoke
-crates/rshell-core/     连接领域、workspace、协议与 application ports
-crates/rshell-platform/ 平台目录、权限、进程、shell 与 clipboard
-crates/rshell-session/  终端引擎、session actor、PTY 与 SSH transports
-crates/rshell-storage/  SQLite、系统凭据库 journal 与 importers
-crates/rshell-ui/       GTK4/Relm4 Fluent UI 与 TerminalView
-resources/              编译期 CSS 与产品 SVG 图标
-scripts/qa/             P0 smoke、secret、workflow 与 package contracts
+src/                              composition root、bootstrap、cleanup 与 P0 smoke
+crates/rshell-ui/                  GTK4/Relm4 Fluent UI 与 TerminalView
+resources/                        编译期 CSS 与产品 SVG 图标
+scripts/qa/                       P0 smoke、secret、workflow 与 package contracts
+corelibs/                         rsHell-corelibs Git submodule（独立 Cargo workspace）
+  crates/rshell-core/              连接领域、workspace、协议与 application ports
+  crates/rshell-platform/          平台目录、权限、进程、shell 与 clipboard
+  crates/rshell-session/           终端引擎、session actor、PTY 与 SSH transports
+  crates/rshell-storage/           SQLite、系统凭据库 journal 与 importers
+  third_party/portable-pty-psmux/  PTY fork 与平台补丁
 ```
 
 CI 在 Linux x86_64、macOS arm64 与 Windows x86_64 上依次运行 workspace gates、记录的 Alacritty 0.26 terminal-engine gate、真实 SSH/vault/GTK smoke。Release workflow 在每个构建矩阵路径先运行同一 gate，再构建并验证三个平台包的架构、runtime、启动报告与禁止的旧依赖标记。
