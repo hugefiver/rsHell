@@ -1,7 +1,7 @@
 use rshell_core::{AppSettings, TerminalProfile, TerminalSettingsV1};
 use rusqlite::{Connection, params};
 
-use crate::{StorageError, error, mapping, transaction};
+use crate::{StorageError, configuration, error, mapping, transaction};
 
 pub(crate) fn load_profiles(connection: &Connection) -> Result<Vec<TerminalProfile>, StorageError> {
     let mut statement = connection
@@ -28,19 +28,28 @@ pub(crate) fn save_profile(
     connection: &mut Connection,
     profile: TerminalProfile,
 ) -> Result<(), StorageError> {
-    let settings =
-        serde_json::to_string(&profile.settings).map_err(|_| StorageError::Serialization)?;
     transaction::immediate(connection, |transaction| {
-        transaction
-            .execute(
-                "INSERT INTO terminal_profiles(id, name, settings_json) VALUES(?1, ?2, ?3) \
-                 ON CONFLICT(id) DO UPDATE SET name=excluded.name, \
-                 settings_json=excluded.settings_json",
-                params![mapping::uuid_text(profile.id.0), profile.name, settings],
-            )
-            .map_err(error::sqlite)?;
+        write_profile(transaction, profile)?;
+        configuration::advance_revision(transaction)?;
         Ok(())
     })
+}
+
+pub(crate) fn write_profile(
+    connection: &Connection,
+    profile: TerminalProfile,
+) -> Result<(), StorageError> {
+    let settings =
+        serde_json::to_string(&profile.settings).map_err(|_| StorageError::Serialization)?;
+    connection
+        .execute(
+            "INSERT INTO terminal_profiles(id, name, settings_json) VALUES(?1, ?2, ?3) \
+             ON CONFLICT(id) DO UPDATE SET name=excluded.name, \
+             settings_json=excluded.settings_json",
+            params![mapping::uuid_text(profile.id.0), profile.name, settings],
+        )
+        .map_err(error::sqlite)?;
+    Ok(())
 }
 
 pub(crate) fn load_settings(connection: &Connection) -> Result<AppSettings, StorageError> {
@@ -65,23 +74,32 @@ pub(crate) fn save_settings(
     connection: &mut Connection,
     settings: AppSettings,
 ) -> Result<(), StorageError> {
-    let key_bindings = mapping::key_bindings_json(&settings.key_bindings)?;
     transaction::immediate(connection, |transaction| {
-        transaction
-            .execute(
-                "INSERT INTO app_settings(\
-                 singleton, default_terminal_profile, color_scheme, key_bindings_json) \
-                 VALUES(1, ?1, ?2, ?3) ON CONFLICT(singleton) DO UPDATE SET \
-                 default_terminal_profile=excluded.default_terminal_profile, \
-                 color_scheme=excluded.color_scheme, \
-                 key_bindings_json=excluded.key_bindings_json",
-                params![
-                    mapping::uuid_text(settings.default_terminal_profile.0),
-                    mapping::color_text(settings.color_scheme),
-                    key_bindings,
-                ],
-            )
-            .map_err(error::sqlite)?;
+        write_settings(transaction, settings)?;
+        configuration::advance_revision(transaction)?;
         Ok(())
     })
+}
+
+pub(crate) fn write_settings(
+    connection: &Connection,
+    settings: AppSettings,
+) -> Result<(), StorageError> {
+    let key_bindings = mapping::key_bindings_json(&settings.key_bindings)?;
+    connection
+        .execute(
+            "INSERT INTO app_settings(\
+             singleton, default_terminal_profile, color_scheme, key_bindings_json) \
+             VALUES(1, ?1, ?2, ?3) ON CONFLICT(singleton) DO UPDATE SET \
+             default_terminal_profile=excluded.default_terminal_profile, \
+             color_scheme=excluded.color_scheme, \
+             key_bindings_json=excluded.key_bindings_json",
+            params![
+                mapping::uuid_text(settings.default_terminal_profile.0),
+                mapping::color_text(settings.color_scheme),
+                key_bindings,
+            ],
+        )
+        .map_err(error::sqlite)?;
+    Ok(())
 }

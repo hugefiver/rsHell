@@ -192,6 +192,24 @@ pub enum TerminalInput {
     },
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum KeyEventPhase {
+    Press,
+    Repeat,
+    Release,
+}
+
+/// 同一硬件事件的双表示；不表示原生文本提交或 IME 文本。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TerminalKeyEvent {
+    /// 当前布局下未移位的逻辑键；编码器不猜测布局或反推 Shift。
+    pub code: KeyCode,
+    /// 原调用适配器处理 Shift/布局后交给旧入口的键；非字符键须与 code 相同。
+    pub legacy_code: KeyCode,
+    pub modifiers: KeyModifiers,
+    pub phase: KeyEventPhase,
+}
+
 impl fmt::Debug for TerminalInput {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
@@ -237,4 +255,31 @@ pub enum MouseButton {
     Forward,
     WheelUp,
     WheelDown,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn old_input_fixtures_keep_decode_and_exhaustive_match() {
+        fn old_match(input: TerminalInput) -> String {
+            match input {
+                TerminalInput::CommittedText(text) => text,
+                TerminalInput::Key { code, modifiers } => {
+                    assert_eq!(code, KeyCode::Character('A'));
+                    assert!(modifiers.shift && modifiers.control);
+                    "key".into()
+                }
+            }
+        }
+
+        let text_fixture = r#"{"CommittedText":"输入文本"}"#;
+        let key_fixture = r#"{"Key":{"code":{"character":"A"},"modifiers":{"shift":true,"control":true,"alt":false,"super_key":false}}}"#;
+        for (fixture, expected) in [(text_fixture, "输入文本"), (key_fixture, "key")] {
+            let input: TerminalInput = serde_json::from_str(fixture).unwrap();
+            assert_eq!(serde_json::to_string(&input).unwrap(), fixture);
+            assert_eq!(old_match(input), expected);
+        }
+    }
 }

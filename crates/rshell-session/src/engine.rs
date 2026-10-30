@@ -1,8 +1,8 @@
 use std::sync::Arc;
 
 use rshell_core::{
-    RenderFrame, ResolvedTerminalProfile, SearchMatch, SearchQuery, SelectionRange, TerminalInput,
-    TerminalMouseEvent, TerminalSize, Viewport,
+    KeyCode, KeyEventPhase, RenderFrame, ResolvedTerminalProfile, SearchMatch, SearchQuery,
+    SelectionRange, TerminalInput, TerminalKeyEvent, TerminalMouseEvent, TerminalSize, Viewport,
     render::{DisplayRecovery, TerminalDisplayModes},
 };
 
@@ -25,6 +25,20 @@ pub trait TerminalEngine: Send {
         selection: Option<SelectionRange>,
     ) -> Result<Arc<RenderFrame>, EngineError>;
     fn encode_input(&mut self, input: TerminalInput) -> Result<Vec<u8>, EngineError>;
+    /// 旧实现者默认使用原适配码；空字节表示合法无发送，不是输入拒绝。
+    fn encode_key_event(&mut self, event: TerminalKeyEvent) -> Result<Vec<u8>, EngineError> {
+        validate_key_event(&event)?;
+        if event.modifiers.super_key {
+            return Err(EngineError::UnsupportedInput("super-modified key"));
+        }
+        match event.phase {
+            KeyEventPhase::Press | KeyEventPhase::Repeat => self.encode_input(TerminalInput::Key {
+                code: event.legacy_code,
+                modifiers: event.modifiers,
+            }),
+            KeyEventPhase::Release => Ok(Vec::new()),
+        }
+    }
     fn encode_mouse(&mut self, input: TerminalMouseEvent) -> Result<Vec<u8>, EngineError>;
     fn clear_scrollback(&mut self) -> Result<(), EngineError>;
     fn scroll(&mut self, delta_rows: i32) -> Result<(), EngineError>;
@@ -157,6 +171,11 @@ impl TerminalEngine for DefaultTerminalEngine {
         }
     }
 
+    fn encode_key_event(&mut self, event: TerminalKeyEvent) -> Result<Vec<u8>, EngineError> {
+        validate_key_event(&event)?;
+        self.adapter.encode_key_event(event)
+    }
+
     fn encode_mouse(&mut self, input: TerminalMouseEvent) -> Result<Vec<u8>, EngineError> {
         if !self.adapter.mouse_reporting_active() {
             return Err(EngineError::UnsupportedMouse("mouse reporting is disabled"));
@@ -196,4 +215,18 @@ fn validate_size(size: TerminalSize) -> Result<(), EngineError> {
     } else {
         Ok(())
     }
+}
+
+fn validate_key_event(event: &TerminalKeyEvent) -> Result<(), EngineError> {
+    if event.code != event.legacy_code
+        && !matches!(
+            (&event.code, &event.legacy_code),
+            (KeyCode::Character(_), KeyCode::Character(_))
+        )
+    {
+        return Err(EngineError::UnsupportedInput(
+            "inconsistent key representations",
+        ));
+    }
+    Ok(())
 }

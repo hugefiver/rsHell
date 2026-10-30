@@ -5,7 +5,7 @@ edition = "2024"
 license = "MIT"
 
 [dependencies]
-alacritty_terminal = "=0.26.0"
+alacritty_terminal = { version = "=0.26.0", git = "https://github.com/MoyuTeams/alacritty", rev = "78f36350907b9145a16a6f12e01bfec34ad5b3dd" }
 async-channel = "2.5"
 async-trait = "0.1"
 libc = "0.2"
@@ -17,7 +17,7 @@ rshell-platform = { path = "../rshell-platform" }
 rshell-storage = { path = "../rshell-storage" }
 # Keep russh on its supported ring backend: aws-lc needs NASM on Windows and is not otherwise
 # required by rsHell's managed SSH feature set.
-russh = { version = "=0.62.5", default-features = false, features = ["flate2", "ring", "rsa"] }
+russh = { version = "=0.62.5", git = "https://github.com/MoyuTeams/russh", rev = "392265d2b622fdce3fd57f836db134773c475950", default-features = false, features = ["flate2", "ring", "rsa"] }
 secrecy = "0.10.3"
 thiserror = "2.0"
 tokio = { version = "1", features = ["macros", "rt", "rt-multi-thread", "sync", "time"] }

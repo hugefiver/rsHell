@@ -1,3 +1,5 @@
+use std::collections::BTreeMap;
+
 use serde::{Deserialize, Serialize};
 
 use super::{ColorScheme, KeyBinding, TerminalSettingsV1};
@@ -93,6 +95,8 @@ pub struct ResolvedTerminalProfile {
     pub scroll_on_output: bool,
     pub scroll_on_keypress: bool,
     pub answerback: String,
+    /// 解析时原样保留的应用元数据，不参与终端 overrides。
+    pub extensions: BTreeMap<String, serde_json::Value>,
 }
 
 impl TerminalSettingsV1 {
@@ -150,6 +154,7 @@ impl TerminalSettingsV1 {
                 overrides.answerback.as_ref().unwrap_or(&self.answerback),
                 &defaults.answerback,
             ),
+            extensions: self.extensions.clone(),
         }
     }
 }

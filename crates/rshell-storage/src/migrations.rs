@@ -4,6 +4,7 @@ use crate::{StorageError, error, transaction};
 
 const INITIAL: &str = include_str!("../migrations/0001_initial.sql");
 const IMPORT_METADATA: &str = include_str!("../migrations/0002_import_metadata.sql");
+const CONFIGURATION_REVISION: &str = include_str!("../migrations/0003_configuration_revision.sql");
 
 pub(crate) fn migrate(connection: &mut Connection) -> Result<(), StorageError> {
     transaction::immediate(connection, |transaction| {
@@ -14,24 +15,19 @@ pub(crate) fn migrate(connection: &mut Connection) -> Result<(), StorageError> {
             )
             .map_err(error::sqlite)?;
         let versions = versions(transaction)?;
-        match versions.as_slice() {
-            [] => {
-                transaction.execute_batch(INITIAL).map_err(error::sqlite)?;
-                record(transaction, 1)?;
-                apply_import_metadata(transaction)
-            }
-            [1] => apply_import_metadata(transaction),
-            [1, 2] => Ok(()),
-            _ => Err(StorageError::Migration),
+        if !matches!(versions.as_slice(), [] | [1] | [1, 2] | [1, 2, 3]) {
+            return Err(StorageError::Migration);
         }
+        for (index, sql) in [INITIAL, IMPORT_METADATA, CONFIGURATION_REVISION]
+            .into_iter()
+            .enumerate()
+            .skip(versions.len())
+        {
+            transaction.execute_batch(sql).map_err(error::sqlite)?;
+            record(transaction, (index + 1) as i64)?;
+        }
+        Ok(())
     })
-}
-
-fn apply_import_metadata(connection: &Connection) -> Result<(), StorageError> {
-    connection
-        .execute_batch(IMPORT_METADATA)
-        .map_err(error::sqlite)?;
-    record(connection, 2)
 }
 
 fn record(connection: &Connection, version: i64) -> Result<(), StorageError> {

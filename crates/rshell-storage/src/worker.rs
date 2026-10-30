@@ -7,8 +7,8 @@ use std::{
 use rusqlite::Connection;
 
 use crate::{
-    DatabaseStatus, StorageError, catalog, command::Command, database::DatabaseSource, error,
-    migrations, profiles,
+    DatabaseStatus, StorageError, catalog, command::Command, configuration,
+    database::DatabaseSource, error, migrations, profiles,
 };
 
 pub(crate) struct FailureInjector {
@@ -82,6 +82,15 @@ pub(crate) fn run(
             Command::LoadSettings(reply) => send(reply, profiles::load_settings(&connection)),
             Command::SaveSettings(settings, reply) => {
                 send(reply, profiles::save_settings(&mut connection, settings));
+            }
+            Command::LoadConfiguration(reply) => {
+                send(reply, configuration::load(&mut connection));
+            }
+            Command::CommitConfiguration(change, reply) => {
+                send(
+                    reply,
+                    configuration::commit(&mut connection, &mut failure, *change),
+                );
             }
             Command::DatabaseStatus(reply) => send(reply, status(&connection, path.as_deref())),
             Command::Credential(command, reply) => send(

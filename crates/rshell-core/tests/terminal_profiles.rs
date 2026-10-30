@@ -1,3 +1,5 @@
+use std::collections::BTreeMap;
+
 use rshell_core::{
     SettingsValidationCode, TerminalKeyAction, TerminalSendSequence,
     connection::{ConnectionProfile, TerminalOverrides},
@@ -109,6 +111,93 @@ fn settings_round_trip_always_contains_version_one() {
 }
 
 #[test]
+fn settings_extensions_are_optional_and_empty_values_are_omitted() {
+    let legacy = r#"{
+        "version": 1,
+        "terminal_type": "xterm-256color",
+        "initial_cols": 120,
+        "initial_rows": 36,
+        "scrollback_lines": 6000,
+        "font_family": "CaskaydiaCove NF Mono",
+        "font_size": 18.0,
+        "color_scheme": "default",
+        "key_bindings": [],
+        "left_alt_as_meta": true,
+        "right_alt_as_meta": true,
+        "enable_csi_u": false,
+        "enable_kitty_keyboard": false,
+        "mouse_reporting": true,
+        "scroll_on_output": true,
+        "scroll_on_keypress": false,
+        "answerback": "rsHell"
+    }"#;
+    let decoded: TerminalSettingsV1 = serde_json::from_str(legacy).unwrap();
+    assert_eq!(decoded, TerminalSettingsV1::default());
+    let serialized = serde_json::to_value(&decoded).unwrap();
+    assert!(serialized.get("extensions").is_none());
+    assert_eq!(
+        serialized,
+        serde_json::from_str::<serde_json::Value>(legacy).unwrap()
+    );
+
+    let mut explicit_empty = serialized;
+    explicit_empty["extensions"] = serde_json::json!({});
+    assert_eq!(
+        serde_json::from_value::<TerminalSettingsV1>(explicit_empty).unwrap(),
+        decoded
+    );
+}
+
+#[test]
+fn settings_extensions_round_trip_unknown_versions_and_arbitrary_json() {
+    for version in [1, 999] {
+        let mut encoded = serde_json::to_value(TerminalSettingsV1::default()).unwrap();
+        encoded["extensions"] = serde_json::json!({
+            "example.app": {
+                "version": version,
+                "future": {"nested": [null, true, 42, 1.25, "元数据", [], {}]}
+            },
+            "unknown.null": null,
+            "unknown.boolean": false,
+            "unknown.number": 18446744073709551615_u64,
+            "unknown.string": "未知版本",
+            "unknown.array": [1, {"unknown": "保留"}],
+            "unknown.object": {}
+        });
+        let decoded: TerminalSettingsV1 = serde_json::from_value(encoded.clone()).unwrap();
+        validate_terminal_settings(&decoded).unwrap();
+        assert_eq!(serde_json::to_value(&decoded).unwrap(), encoded);
+    }
+}
+
+#[test]
+fn resolution_and_app_key_bindings_preserve_extensions_without_interpreting_them() {
+    let settings = TerminalSettingsV1 {
+        extensions: BTreeMap::from([(
+            "example.app".into(),
+            serde_json::json!({"version": 999, "future": [null, {"nested": true}]}),
+        )]),
+        ..TerminalSettingsV1::default()
+    };
+    let original = settings.clone();
+    let overrides = TerminalOverrides {
+        font_family: Some("Consolas".into()),
+        font_size: Some(20.0),
+        ..TerminalOverrides::default()
+    };
+    let resolved = settings.resolve(&overrides);
+    assert_eq!(resolved.extensions, settings.extensions);
+    assert_eq!(resolved.font_family, "Consolas");
+    assert_eq!(resolved.font_size, 20.0);
+
+    let app_binding = binding(KeyCode::F(4), KeyModifiers::default(), "new_tab");
+    let merged = resolved.with_app_key_bindings(std::slice::from_ref(&app_binding));
+    assert_eq!(merged.extensions, settings.extensions);
+    assert_eq!(merged.key_bindings, vec![app_binding]);
+    assert_eq!(settings, original);
+}
+
+#[test]
 fn default_profile_settings_and_connection_path_are_stable() {
     let profile = TerminalProfile::p0_default();
     let app_settings = AppSettings::default();
@@ -130,12 +219,14 @@ fn default_profile_settings_and_connection_path_are_stable() {
     assert!(profile.settings.scroll_on_output);
     assert!(!profile.settings.scroll_on_keypress);
     assert_eq!(profile.settings.answerback, "rsHell");
+    assert!(profile.settings.extensions.is_empty());
     assert_eq!(app_settings.default_terminal_profile, profile.id);
     assert_eq!(connection.terminal_profile_id, None);
     assert_eq!(connection.terminal_overrides, TerminalOverrides::default());
     let resolved = profile.settings.resolve(&connection.terminal_overrides);
     assert_eq!(resolved.font_family, profile.settings.font_family);
     assert_eq!(resolved.font_size, profile.settings.font_size);
+    assert!(resolved.extensions.is_empty());
 }
 
 #[test]

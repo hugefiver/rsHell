@@ -210,6 +210,10 @@ pub(crate) fn visible_tables(connection: &Connection) -> Result<Vec<u8>, Storage
             "SELECT quote(key)||'|'||quote(value) FROM app_setting_values ORDER BY key",
         ),
         (
+            "configuration_revision",
+            "SELECT quote(singleton)||'|'||quote(revision) FROM configuration_revision ORDER BY singleton",
+        ),
+        (
             "credential_operations",
             "SELECT quote(operation_id)||'|'||quote(credential_ref)||'|'||quote(action)||'|'||quote(state)||'|'||quote(created_at) FROM credential_operations ORDER BY operation_id",
         ),
